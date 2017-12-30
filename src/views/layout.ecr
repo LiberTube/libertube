@@ -1,1 +1,33 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/4e4ef58554a74182f9b47298cb2910e1
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta content="">
+  <link rel="stylesheet" href="/css/pure-min.css">
+  <link rel="stylesheet" href="/css/grids-responsive-min.css">
+  <link rel="stylesheet" href="/css/font-awesome.min.css">
+</head>
+
+<body>
+  <div class="pure-g">
+    <div class="pure-u-1 pure-u-md-1-5"></div>
+    <div class="pure-u-1 pure-u-md-3-5">
+      <div class="pure-g" style="padding:1em;">
+        <div class="pure-u-1 pure-u-md-1-5">
+          <a href="/" class="pure-menu-heading">Invidious</a>
+        </div>
+        <div class="pure-u-1 pure-u-md-4-5">
+          <form class="pure-form" action="/search" method="get">
+            <input type="search" style="width:100%;" name="q" placeholder="search" value="<%= env.params.query["q"]? %>">
+          </form>
+        </div>
+      </div>
+      <%= content %>
+    </div>
+    <div class="pure-u-1 pure-u-md-1-5"></div>
+  </div>
+</body>
+
+</html>

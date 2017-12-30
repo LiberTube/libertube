@@ -1,1 +1,21 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/2c49505f14af4c5ea3da37d719b1eb18
+name: invidious
+version: 0.1.0
+
+authors:
+  - Omar Roth <omarroth@hotmail.com>
+
+targets:
+  invidious:
+    main: src/invidious.cr
+
+dependencies:
+  kemal:
+     github: kemalcr/kemal
+     branch: master
+  pg:
+    github: will/crystal-pg
+    branch: crystalv024
+
+crystal: 0.23.1
+
+license: MIT
