@@ -1,176 +1,207 @@
-require "http/client"
-require "json"
+# "Invidious" (which indexes popular video sites)
+# Copyright (C) 2018  Omar Roth
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 require "kemal"
 require "pg"
 require "xml"
-require "time"
+require "./helpers"
+
+PG_DB   = DB.open "postgres://kemal:kemal@localhost:5432/invidious"
+URL     = URI.parse("https://www.youtube.com")
+CONTEXT = OpenSSL::SSL::Context::Client.new
+CONTEXT.verify_mode = OpenSSL::SSL::VerifyMode::NONE
+CONTEXT.add_options(
+  OpenSSL::SSL::Options::ALL |
+  OpenSSL::SSL::Options::NO_SSL_V2 |
+  OpenSSL::SSL::Options::NO_SSL_V3
+)
+POOL = Deque.new(30) do
+  client = HTTP::Client.new(URL, CONTEXT)
+  client.read_timeout = 5.seconds
+  client.connect_timeout = 5.seconds
+  client
+end
+
+# Refresh pool by crawling YT
+10.times do
+  spawn do
+    io = STDOUT
+    ids = Deque(String).new
+    random = Random.new
+    client = get_client(POOL)
+
+    search(random.base64(3), client) do |id|
+      ids << id
+    end
+
+    loop do
+      if ids.empty?
+        search(random.base64(3), client) do |id|
+          ids << id
+        end
+      end
+
+      if rand(300) < 1
+        client = HTTP::Client.new(URL, CONTEXT)
+        client.read_timeout = 5.seconds
+        client.connect_timeout = 5.seconds
+        POOL << client
+      end
+
+      time = Time.now
+
+      begin
+        id = ids[0]
+        video = get_video(id, client, PG_DB, false)
+      rescue ex
+        io << id << " : " << ex << "\n"
+        client = HTTP::Client.new(URL, CONTEXT)
+        client.read_timeout = 5.seconds
+        client.connect_timeout = 5.seconds
+        POOL << client
+        next
+      ensure
+        ids.delete(id)
+      end
+
+      rvs = [] of Hash(String, String)
+      if video.info.has_key?("rvs")
+        video.info["rvs"].split(",").each do |rv|
+          rvs << HTTP::Params.parse(rv).to_h
+        end
+      end
+
+      rvs.each do |rv|
+        if rv.has_key?("id") && !PG_DB.query_one?("SELECT EXISTS (SELECT true FROM videos WHERE id = $1)", rv["id"], as: Bool)
+          ids.delete(id)
+          ids << rv["id"]
+          if ids.size == 150
+            ids.shift
+          end
+        end
+      end
+
+      io << Time.now << " 200 GET www.youtube.com/watch?v=" << video.id << " " << elapsed_text(Time.now - time) << "\n"
+    end
+  end
+end
 
 macro templated(filename)
   render "src/views/#{{{filename}}}.ecr", "src/views/layout.ecr"
-end
-
-class Video
-  getter last_updated : Time
-  getter video_id : String
-  getter video_info : String
-  getter video_html : String
-  getter views : String
-  getter likes : Int32
-  getter dislikes : Int32
-  getter rating : Float64
-  getter description : String
-
-  def initialize(last_updated, video_id, video_info, video_html, views, likes, dislikes, rating, description)
-    @last_updated = last_updated
-    @video_id = video_id
-    @video_info = video_info
-    @video_html = video_html
-    @views = views
-    @likes = likes
-    @dislikes = dislikes
-    @rating = rating
-    @description = description
-  end
-
-  def to_a
-    return [@last_updated, @video_id, @video_info, @video_html, @views, @likes, @dislikes, @rating, @description]
-  end
-
-  DB.mapping({
-    last_updated: Time,
-    video_id:     String,
-    video_info:   String,
-    video_html:   String,
-    views:        Int64,
-    likes:        Int32,
-    dislikes:     Int32,
-    rating:       Float64,
-    description:  String,
-  })
-end
-
-def get_video(video_id, context)
-  client = HTTP::Client.new("www.youtube.com", 443, context)
-  video_info = client.get("/get_video_info?video_id=#{video_id}&el=info&ps=default&eurl=&gl=US&hl=en").body
-  info = HTTP::Params.parse(video_info)
-  video_html = client.get("/watch?v=#{video_id}").body
-  html = XML.parse(video_html)
-  views = info["view_count"].to_i64
-  rating = info["avg_rating"].to_f64
-
-  likes = html.xpath_node(%q(//button[@title="I like this"]/span))
-  if likes
-    likes = likes.content.delete(",").to_i
-  else
-    likes = 1
-  end
-
-  dislikes = html.xpath_node(%q(//button[@title="I dislike this"]/span))
-  if dislikes
-    dislikes = dislikes.content.delete(",").to_i
-  else
-    dislikes = 1
-  end
-
-  description = html.xpath_node(%q(//p[@id="eow-description"]))
-  if description
-    description = description.to_xml
-  else
-    description = ""
-  end
-
-  video_record = Video.new(Time.now, video_id, video_info, video_html, views, likes, dislikes, rating, description)
-
-  return video_record
-end
-
-# See http://www.evanmiller.org/how-not-to-sort-by-average-rating.html
-def ci_lower_bound(pos, n)
-  if n == 0
-    return 0
-  end
-
-  # z value here represents a confidence level of 0.95
-  z = 1.96
-  phat = 1.0*pos/n
-
-  return (phat + z*z/(2*n) - z * Math.sqrt((phat*(1 - phat) + z*z/(4*n))/n))/(1 + z*z/n)
 end
 
 get "/" do |env|
   templated "index"
 end
 
-pg = DB.open "postgres://kemal:kemal@localhost:5432/invidious"
-context = OpenSSL::SSL::Context::Client.insecure
-
 get "/watch" do |env|
-  video_id = env.params.query["v"]
+  id = env.params.query["v"]
+  listen = env.params.query["listen"]? || "false"
 
-  if pg.query_one?("select exists (select true from videos where video_id = $1)", video_id, as: Bool)
-    video_record = pg.query_one("select * from videos where video_id = $1", video_id, as: Video)
+  env.params.query.delete_all("listen")
 
-    # If record was last updated more than 1 hour ago, refresh
-    if Time.now - video_record.last_updated > Time::Span.new(1, 0, 0, 0)
-      video_record = get_video(video_id, context)
-      pg.exec("update videos set last_updated = $1, video_info = $3, video_html = $4,\
-      views = $5, likes = $6, dislikes = $7, rating = $8, description = $9 where video_id = $2",
-        video_record.to_a)
-    end
-  else
-    client = HTTP::Client.new("www.youtube.com", 443, context)
-    video_info = client.get("/get_video_info?video_id=#{video_id}&el=info&ps=default&eurl=&gl=US&hl=en").body
-    info = HTTP::Params.parse(video_info)
-
-    if info["reason"]?
-      error_message = info["reason"]
-      next templated "error"
-    end
-
-    video_record = get_video(video_id, context)
-    pg.exec("insert into videos values ($1,$2,$3,$4,$5,$6,$7,$8, $9)", video_record.to_a)
+  client = get_client(POOL)
+  begin
+    video = get_video(id, client, PG_DB)
+  rescue ex
+    error_message = ex.message
+    next templated "error"
   end
 
-  # last_updated, video_id, video_info, video_html, views, likes, dislikes, rating
-  video_info = HTTP::Params.parse(video_record.video_info)
-  video_html = XML.parse(video_record.video_html)
-
   fmt_stream = [] of HTTP::Params
-  video_info["url_encoded_fmt_stream_map"].split(",") do |string|
+  video.info["url_encoded_fmt_stream_map"].split(",") do |string|
     fmt_stream << HTTP::Params.parse(string)
   end
 
   fmt_stream.reverse! # We want lowest quality first
 
-  related_videos = video_html.xpath_nodes(%q(//li/div/a[contains(@class,"content-link")]/@href))
-
-  if related_videos.empty?
-    related_videos = video_html.xpath_nodes(%q(//ytd-compact-video-renderer/div/a/@href))
+  adaptive_fmts = [] of HTTP::Params
+  if video.info.has_key?("adaptive_fmts")
+    video.info["adaptive_fmts"].split(",") do |string|
+      adaptive_fmts << HTTP::Params.parse(string)
+    end
   end
 
-  likes = video_record.likes.to_f
-  dislikes = video_record.dislikes.to_f
-  views = video_record.views.to_f
+  rvs = [] of Hash(String, String)
+  if video.info.has_key?("rvs")
+    video.info["rvs"].split(",").each do |rv|
+      rvs << HTTP::Params.parse(rv).to_h
+    end
+  end
 
-  engagement = ((dislikes + likes)/views * 100)
-  calculated_rating = (likes/(likes + dislikes) * 4 + 1)
+  player_response = JSON.parse(video.info["player_response"])
+
+  description = video.html.xpath_node(%q(//p[@id="eow-description"]))
+  description = description ? description.to_xml : "Could not load description"
+
+  rating = video.info["avg_rating"].to_f64
+
+  engagement = ((video.dislikes.to_f + video.likes.to_f)/video.views * 100)
+  calculated_rating = (video.likes.to_f/(video.likes.to_f + video.dislikes.to_f) * 4 + 1)
 
   templated "watch"
 end
 
 get "/search" do |env|
-  query = URI.escape(env.params.query["q"])
-  client = HTTP::Client.new("www.youtube.com", 443, context)
-  results_html = client.get("https://www.youtube.com/results?q=#{query}&page=1").body
-  html = XML.parse(results_html)
+  query = env.params.query["q"]
+  page = env.params.query["page"]? && env.params.query["page"].to_i? ? env.params.query["page"].to_i : 1
 
-  videos = html.xpath_nodes(%q(//div[@class="style-scope ytd-item-section-renderer"]/ytd-video-renderer))
-  channels = html.xpath_nodes(%q(//div[@class="style-scope ytd-item-section-renderer"]/ytd-channel-renderer))
+  client = get_client(POOL)
 
-  if videos.empty?
-    videos = html.xpath_nodes(%q(//div[contains(@class,"yt-lockup-video")]/div/div[contains(@class,"yt-lockup-thumbnail")]/a/@href))
-    channels = html.xpath_nodes(%q(//div[contains(@class,"yt-lockup-channel")]/div/div[contains(@class,"yt-lockup-thumbnail")]/a/@href))
+  html = client.get("https://www.youtube.com/results?q=#{URI.escape(query)}&page=#{page}&sp=EgIQAVAU").body
+  html = XML.parse_html(html)
+
+  videos = Array(Hash(String, String)).new
+
+  html.xpath_nodes(%q(//ol[@class="item-section"]/li)).each do |item|
+    root = item.xpath_node(%q(div[contains(@class,"yt-lockup-video")]/div))
+    if root
+      video = {} of String => String
+
+      link = root.xpath_node(%q(div[contains(@class,"yt-lockup-thumbnail")]/a/@href))
+      if link
+        video["link"] = link.content
+      else
+        video["link"] = "#"
+      end
+
+      title = root.xpath_node(%q(div[@class="yt-lockup-content"]/h3/a))
+      if title
+        video["title"] = title.content
+      else
+        video["title"] = "Something went wrong"
+      end
+
+      thumbnail = root.xpath_node(%q(div[contains(@class,"yt-lockup-thumbnail")]/a/div/span/img/@src))
+      if thumbnail && !thumbnail.content.ends_with?(".gif")
+        video["thumbnail"] = thumbnail.content
+      else
+        thumbnail = root.xpath_node(%q(div[contains(@class,"yt-lockup-thumbnail")]/a/div/span/img/@data-thumb))
+        if thumbnail
+          video["thumbnail"] = thumbnail.content
+        else
+          video["thumbnail"] = "http://via.placeholder.com/246x138"
+        end
+      end
+
+      videos << video
+    end
   end
+
+  POOL << client
 
   templated "search"
 end
