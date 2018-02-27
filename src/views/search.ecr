@@ -1,1 +1,23 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/cd91e0d1f031790753bc30b2c338dab7
+<% content_for "header" do %>
+<title><%= query.size > 30 ? query[0,30].rstrip(".") + "..." : query %> - Invidious</title>
+<% end %>
+
+<% videos.each_slice(4) do |slice| %>
+<div class="pure-g">
+<% slice.each do |video| %>
+    <div class="pure-u-1 pure-u-md-1-4">
+        <div style="margin:1em;">
+            <a style="width:100%;" class="link" href="<%= video["link"] %>">
+                <img style="width:100%;" src="<%= video["thumbnail"] %>"/>
+                <%= video["title"] %>
+            </a>
+            <p><b><a style="width:100%;" class="link" href="<%= video["author_url"]%>"><%= video["author"] %></a></b></p>
+        </div>
+    </div>
+    <% end %>
+</div>
+<% end %>
+
+<p style="text-align:right;">
+    <a class="link" href="/search?q=<%= query %>&page=<%= page + 1 %>">Next page</a>
+</p>

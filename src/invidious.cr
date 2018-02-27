@@ -15,9 +15,26 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 require "kemal"
+require "option_parser"
 require "pg"
 require "xml"
 require "./helpers"
+
+threads = 10
+
+Kemal.config.extra_options do |parser|
+  parser.banner = "Usage: invidious [arguments]"
+  parser.on("-t THREADS", "--threads=THREADS", "Number of threads for crawling (default: 10)") do |number|
+    begin
+      threads = number.to_i32
+    rescue ex
+      puts "THREADS must be integer"
+      exit
+    end
+  end
+end
+
+Kemal::CLI.new
 
 PG_DB   = DB.open "postgres://kemal:kemal@localhost:5432/invidious"
 URL     = URI.parse("https://www.youtube.com")
@@ -28,26 +45,27 @@ CONTEXT.add_options(
   OpenSSL::SSL::Options::NO_SSL_V2 |
   OpenSSL::SSL::Options::NO_SSL_V3
 )
-POOL = Deque.new(30) do
-  client = HTTP::Client.new(URL, CONTEXT)
-  client.read_timeout = 5.seconds
-  client.connect_timeout = 5.seconds
-  client
+pool = Deque.new((threads * 1.2 + 1).to_i) do
+  make_client(URL, CONTEXT)
 end
 
 # Refresh pool by crawling YT
-10.times do
+threads.times do
   spawn do
     io = STDOUT
     ids = Deque(String).new
     random = Random.new
-    client = get_client(POOL)
+    client = get_client(pool)
 
     search(random.base64(3), client) do |id|
       ids << id
     end
 
+    pool << client
+
     loop do
+      client = get_client(pool)
+
       if ids.empty?
         search(random.base64(3), client) do |id|
           ids << id
@@ -55,23 +73,16 @@ end
       end
 
       if rand(300) < 1
-        client = HTTP::Client.new(URL, CONTEXT)
-        client.read_timeout = 5.seconds
-        client.connect_timeout = 5.seconds
-        POOL << client
+        pool << make_client(URL, CONTEXT)
+        client = get_client(pool)
       end
-
-      time = Time.now
 
       begin
         id = ids[0]
-        video = get_video(id, client, PG_DB, false)
+        video = get_video(id, client, PG_DB)
       rescue ex
-        io << id << " : " << ex << "\n"
-        client = HTTP::Client.new(URL, CONTEXT)
-        client.read_timeout = 5.seconds
-        client.connect_timeout = 5.seconds
-        POOL << client
+        io << id << " : " << ex.message << "\n"
+        pool << make_client(URL, CONTEXT)
         next
       ensure
         ids.delete(id)
@@ -94,26 +105,65 @@ end
         end
       end
 
-      io << Time.now << " 200 GET www.youtube.com/watch?v=" << video.id << " " << elapsed_text(Time.now - time) << "\n"
+      pool << client
     end
   end
 end
 
-macro templated(filename)
-  render "src/views/#{{{filename}}}.ecr", "src/views/layout.ecr"
+top_videos = [] of Video
+
+spawn do
+  loop do
+    top = rank_videos(PG_DB, 40)
+    client = get_client(pool)
+
+    args = [] of String
+    if top.size > 0
+      (1..top.size).each { |i| args << "($#{i})," }
+      args = args.join("")
+      args = args.chomp(",")
+    else
+      next
+    end
+
+    videos = [] of Video
+
+    PG_DB.query("SELECT * FROM videos d INNER JOIN (VALUES #{args}) v(id) USING (id)", top) do |rs|
+      rs.each do
+        video = rs.read(Video)
+        videos << video
+      end
+    end
+
+    top_videos = videos
+
+    pool << client
+  end
 end
+
+macro templated(filename)
+    render "src/views/#{{{filename}}}.ecr", "src/views/layout.ecr"
+  end
 
 get "/" do |env|
   templated "index"
 end
 
 get "/watch" do |env|
-  id = env.params.query["v"]
-  listen = env.params.query["listen"]? || "false"
+  if env.params.query["v"]?
+    id = env.params.query["v"]
+  else
+    env.redirect "/"
+    next
+  end
 
-  env.params.query.delete_all("listen")
+  listen = false
+  if env.params.query["listen"]? && env.params.query["listen"] == "true"
+    listen = true
+    env.params.query.delete_all("listen")
+  end
 
-  client = get_client(POOL)
+  client = get_client(pool)
   begin
     video = get_video(id, client, PG_DB)
   rescue ex
@@ -126,12 +176,28 @@ get "/watch" do |env|
     fmt_stream << HTTP::Params.parse(string)
   end
 
-  fmt_stream.reverse! # We want lowest quality first
+  signature = false
+  if fmt_stream[0]? && fmt_stream[0]["s"]?
+    signature = true
+  end
+
+  # We want lowest quality first
+  fmt_stream.reverse!
 
   adaptive_fmts = [] of HTTP::Params
   if video.info.has_key?("adaptive_fmts")
     video.info["adaptive_fmts"].split(",") do |string|
       adaptive_fmts << HTTP::Params.parse(string)
+    end
+  end
+
+  if signature
+    adaptive_fmts.each do |fmt|
+      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"])
+    end
+
+    fmt_stream.each do |fmt|
+      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"])
     end
   end
 
@@ -144,22 +210,32 @@ get "/watch" do |env|
 
   player_response = JSON.parse(video.info["player_response"])
 
-  description = video.html.xpath_node(%q(//p[@id="eow-description"]))
-  description = description ? description.to_xml : "Could not load description"
-
   rating = video.info["avg_rating"].to_f64
 
   engagement = ((video.dislikes.to_f + video.likes.to_f)/video.views * 100)
-  calculated_rating = (video.likes.to_f/(video.likes.to_f + video.dislikes.to_f) * 4 + 1)
+
+  if video.likes > 0 || video.dislikes > 0
+    calculated_rating = (video.likes.to_f/(video.likes.to_f + video.dislikes.to_f) * 4 + 1)
+  else
+    calculated_rating = 0.0
+  end
+
+  pool << client
 
   templated "watch"
 end
 
 get "/search" do |env|
-  query = env.params.query["q"]
+  if env.params.query["q"]?
+    query = env.params.query["q"]
+  else
+    env.redirect "/"
+    next
+  end
+
   page = env.params.query["page"]? && env.params.query["page"].to_i? ? env.params.query["page"].to_i : 1
 
-  client = get_client(POOL)
+  client = get_client(pool)
 
   html = client.get("https://www.youtube.com/results?q=#{URI.escape(query)}&page=#{page}&sp=EgIQAVAU").body
   html = XML.parse_html(html)
@@ -197,21 +273,32 @@ get "/search" do |env|
         end
       end
 
+      author = root.xpath_node(%q(div[@class="yt-lockup-content"]/div/a))
+      if author
+        video["author"] = author.content
+        video["author_url"] = author["href"]
+      else
+        video["author"] = ""
+        video["author_url"] = ""
+      end
+
       videos << video
     end
   end
 
-  POOL << client
+  pool << client
 
   templated "search"
 end
 
 error 404 do |env|
-  templated "index"
+  error_message = "404 Page not found"
+  templated "error"
 end
 
 error 500 do |env|
-  templated "index"
+  error_message = "500 Server error"
+  templated "error"
 end
 
 public_folder "assets"

@@ -11,20 +11,21 @@ class Video
     end
   end
 
-  def initialize(id, info, html, updated, title, views, likes, dislikes, wilson_score)
+  def initialize(id, info, updated, title, views, likes, dislikes, wilson_score, published, description)
     @id = id
     @info = info
-    @html = html
     @updated = updated
     @title = title
     @views = views
     @likes = likes
     @dislikes = dislikes
     @wilson_score = wilson_score
+    @published = published
+    @description = description
   end
 
   def to_a
-    return [@id, @info, @html, @updated, @title, @views, @likes, @dislikes, @wilson_score]
+    return [@id, @info, @updated, @title, @views, @likes, @dislikes, @wilson_score, @published, @description]
   end
 
   DB.mapping({
@@ -34,17 +35,14 @@ class Video
       default:   HTTP::Params.parse(""),
       converter: Video::HTTPParamConverter,
     },
-    html: {
-      type:      XML::Node,
-      default:   XML.parse_html(""),
-      converter: Video::XMLConverter,
-    },
     updated:      Time,
     title:        String,
     views:        Int64,
     likes:        Int32,
     dislikes:     Int32,
     wilson_score: Float64,
+    published:    Time,
+    description:  String,
   })
 end
 
@@ -86,7 +84,11 @@ def fetch_video(id, client)
   info = HTTP::Params.parse(info)
 
   if info["reason"]?
-    raise info["reason"]
+    info = client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en").body
+    info = HTTP::Params.parse(info)
+    if info["reason"]?
+      raise info["reason"]
+    end
   end
 
   title = info["title"]
@@ -94,14 +96,44 @@ def fetch_video(id, client)
   views = info["view_count"].to_i64
 
   likes = html.xpath_node(%q(//button[@title="I like this"]/span))
-  likes = likes ? likes.content.delete(",").to_i : 1
+  likes = likes ? likes.content.delete(",").to_i : 0
 
   dislikes = html.xpath_node(%q(//button[@title="I dislike this"]/span))
   dislikes = dislikes ? dislikes.content.delete(",").to_i : 0
 
+  description = html.xpath_node(%q(//p[@id="eow-description"]))
+  description = description ? description.to_xml : ""
+
   wilson_score = ci_lower_bound(likes, likes + dislikes)
 
-  video = Video.new(id, info, html, Time.now, title, views, likes, dislikes, wilson_score)
+  published = html.xpath_node(%q(//strong[contains(@class,"watch-time-text")]))
+  if published
+    published = published.content
+  else
+    raise "Could not find date published"
+  end
+
+  published = published.lchop("Published ")
+  published = published.lchop("Streamed live ")
+  published = published.lchop("Started streaming ")
+  published = published.lchop("on ")
+  published = published.lchop("Scheduled for ")
+  if !published.includes?("ago")
+    published = Time.parse(published, "%b %-d, %Y")
+  else
+    # Time matches format "20 hours ago", "40 minutes ago"...
+    delta = published.split(" ")[0].to_i
+    case published
+    when .includes? "minute"
+      published = Time.now - delta.minutes
+    when .includes? "hour"
+      published = Time.now - delta.hours
+    else
+      raise "Could not parse #{published}"
+    end
+  end
+
+  video = Video.new(id, info, Time.now, title, views, likes, dislikes, wilson_score, published, description)
 
   return video
 end
@@ -113,12 +145,13 @@ def get_video(id, client, db, refresh = true)
     # If record was last updated over an hour ago, refresh (expire param in response lasts for 6 hours)
     if refresh && Time.now - video.updated > 1.hours
       video = fetch_video(id, client)
-      db.exec("UPDATE videos SET info = $2, html = $3, updated = $4,\
-       title = $5, views = $6, likes = $7, dislikes = $8, wilson_score = $9 WHERE id = $1", video.to_a)
+      db.exec("UPDATE videos SET info = $2, updated = $3,\
+       title = $4, views = $5, likes = $6, dislikes = $7, wilson_score = $8,\
+      published = $9, description = $10 WHERE id = $1", video.to_a)
     end
   else
     video = fetch_video(id, client)
-    db.exec("INSERT INTO videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", video.to_a)
+    db.exec("INSERT INTO videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", video.to_a)
   end
 
   return video
@@ -140,4 +173,58 @@ def search(query, client)
       end
     end
   end
+end
+
+def splice(a, b)
+  c = a[0]
+  a[0] = a[b % a.size]
+  a[b % a.size] = c
+  return a
+end
+
+def decrypt_signature(a)
+  a = a.split("")
+
+  a.delete_at(0..1)
+  a = splice(a, 2)
+  a = splice(a, 51)
+  a = splice(a, 9)
+  a.delete_at(0..1)
+  a.reverse!
+  a = splice(a, 15)
+  a.delete_at(0..2)
+
+  return a.join("")
+end
+
+def rank_videos(db, n)
+  top = [] of {Float64, String}
+
+  db.query("SELECT id, wilson_score, published FROM videos WHERE views > 5000 ORDER BY published DESC LIMIT 10000") do |rs|
+    rs.each do
+      id = rs.read(String)
+      wilson_score = rs.read(Float64)
+      published = rs.read(Time)
+
+      # Exponential decay, older videos tend to rank lower
+      temperature = wilson_score * Math.exp(-0.000005*((Time.now - published).total_minutes))
+      top << {temperature, id}
+    end
+  end
+
+  top.sort!
+
+  # Make hottest come first
+  top.reverse!
+  top = top.map { |a, b| b }
+
+  # Return top
+  return top[0..n - 1]
+end
+
+def make_client(url, context)
+  client = HTTP::Client.new(url, context)
+  client.read_timeout = 10.seconds
+  client.connect_timeout = 10.seconds
+  return client
 end

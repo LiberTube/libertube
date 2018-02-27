@@ -1,1 +1,5 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/8efa4c329173c847f0ecc882ec88f698
+#!/bin/bash
+
+createdb invidious
+createuser kemal
+psql invidious < videos.sql

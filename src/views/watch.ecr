@@ -1,31 +1,19 @@
 <% content_for "header" do %>
-<link rel="stylesheet" href="/css/video-js.css">
-<script src="/js/video.js"></script>
-<script src="/js/videojs.hotkeys.min.js"></script>
+<link rel="stylesheet" href="http://vjs.zencdn.net/6.6.3/video-js.css">
+<script src="http://vjs.zencdn.net/6.6.3/video.js"></script>
+<script src="//cdn.sc.gl/videojs-hotkeys/latest/videojs.hotkeys.min.js"></script>
 <title><%= video.title %> - Invidious</title>
 <% end %>
 
-<% if listen == "true" %>
-<audio id="player" class="video-js" data-setup="{}" style="width:100%" controls>
-    <% adaptive_fmts.each do |fmt| %>
-        <% url = fmt["url"] %>
-        <% type = fmt["type"].to_s.split(";")[0] %>
-        <% if type.starts_with?("audio") %>
-    <source src="<%= url %>" type="<%= type %>">
-        <% end %>
-    <% end %>
-</audio>
+<% if listen %>
+<%= render "src/views/player/audio.ecr" %>
 <% else %>
-<video id="player" class="video-js" data-setup="{}" style="width:100%" controls>
-    <% fmt_stream.each do |fmt| %>
-    <source src="<%= fmt["url"] %>" type="<%= fmt["type"].split(";")[0] %>">
-    <% end %>
-</video>
+<%= render "src/views/player/video.ecr" %>
 <% end %>
 
 <script>
 var options = {
-    poster: "<%= player_response["videoDetails"]["thumbnail"]["thumbnails"][-1]["url"] %>",
+    poster: "<%= player_response["videoDetails"]["thumbnail"]["thumbnails"][-1]["url"]? %>",
     aspectRatio: "16:9",
     preload: "auto",
     playbackRates: [0.5, 1, 1.5, 2]
@@ -34,16 +22,51 @@ var player = videojs('player', options, function() {
     this.hotkeys({
     volumeStep: 0.1,
     seekStep: 5,
-    enableModifiersForNumbers: false
+    enableModifiersForNumbers: false,
+    enableVolumeScroll: false,
+    customKeys: {
+        play: {
+            key: function(e) {
+            // Toggle play with K Key
+            return (e.which === 75);
+            },
+            handler: function(player, options, e) {
+            // Example
+            if (player.paused()) {
+                player.play();
+            } else {
+                player.pause();
+            }
+            }
+        },
+        backward: {
+            key: function(e) {
+                // Go backward 5 seconds
+                return (e.which === 74);
+            },
+            handler: function(player, options, e) {
+                player.currentTime(player.currentTime() - 5);
+            }
+        },
+        forward: {
+            key: function(e) {
+                // Go forward 5 seconds
+                return (e.which === 76);
+            },
+            handler: function(player, options, e) {
+                player.currentTime(player.currentTime() + 5);
+            }
+        }
+    }
   });
 });
 </script>
 
 <h1>
     <%= video.info["title"] %> 
-    <% if listen == "true" %>
+    <% if listen %>
     <a class="link" href="/watch?<%= env.params.query %>">
-        <i class="fa fa-video-camera" aria-hidden="true"></i>
+        <i class="fa fa-video" aria-hidden="true"></i>
     </a>
     <% else %>
     <a class="link" href="/watch?<%= env.params.query %>&listen=true">
@@ -68,16 +91,19 @@ var player = videojs('player', options, function() {
                 <h3><%= video.info["author"] %></h3>
             </a>
         </p>
-        <%= description %>
+        <div style="margin-right:1em;">
+            <%= video.description %>
+        </div>
     </div>
 
     <div class="pure-u-1 pure-u-md-1-5">
     <% rvs.each do |rv| %>
         <% if rv.has_key?("id") %>
         <a class="link" href="/watch?v=<%= rv["id"] %>">
-            <img style="width:100%" alt="thumbnail" src="<%= rv["iurlmq"] %>">
+            <img style="width:100%;" alt="thumbnail" src="<%= rv["iurlmq"] %>">
+            <p style="width:100%"><%= rv["title"] %></p>
+            <p><b style="width: 100%"><%= rv["author"] %></b></p>
         </a>
-        <p><a class="link" href="/watch?v=<%= rv["id"] %>"><%= rv["title"] %></a></p>
         <% end %>
     <% end %>
     </div>
