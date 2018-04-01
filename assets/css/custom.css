@@ -1,9 +1,19 @@
-a.link {
-    color: #333;
-    text-decoration: none;
+a {
+  color: #333;
+  text-decoration: none;
 }
 
-a:hover.link,
-a:active.link {
-    color: #167ac6;
+a:hover,
+a:active {
+  color: #167ac6;
+}
+
+.h-box {
+  padding-left: 1em;
+  padding-right: 1em;
+}
+
+.v-box {
+  padding-top: 1em;
+  padding-bottom: 1em;
 }

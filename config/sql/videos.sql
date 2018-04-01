@@ -1,5 +1,7 @@
 -- Table: public.videos
 
+-- DROP TABLE public.videos;
+
 CREATE TABLE public.videos
 (
     id text COLLATE pg_catalog."default" NOT NULL,
@@ -12,6 +14,7 @@ CREATE TABLE public.videos
     wilson_score double precision,
     published timestamp with time zone,
     description text COLLATE pg_catalog."default",
+    language text COLLATE pg_catalog."default",
     CONSTRAINT videos_pkey PRIMARY KEY (id)
 )
 WITH (
@@ -22,6 +25,8 @@ TABLESPACE pg_default;
 GRANT ALL ON TABLE public.videos TO kemal;
 
 -- Index: id_idx
+
+-- DROP INDEX public.id_idx;
 
 CREATE UNIQUE INDEX id_idx
     ON public.videos USING btree

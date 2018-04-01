@@ -1,9 +1,5 @@
-<audio id="player" class="video-js" data-setup="{}" style="width:100%;" controls>
-    <% adaptive_fmts.each do |fmt| %>
-        <% url = fmt["url"]? %>
-        <% type = fmt["type"]? ? fmt["type"].to_s.split(";")[0] : "" %>
-        <% if type.starts_with?("audio") %>
-        <source src="<%= url %>" type="<%= type %>">
-        <% end %>
+<audio poster="<%= thumbnail %>" title="<%= HTML.escape(video.title) %>" id="player" class="video-js" data-setup="{}" style="width:100%;" controls>
+    <% audio_streams.each_with_index do |fmt, i| %>
+        <source src="<%= fmt["url"] %>" type='<%= fmt["type"] %>' label="<%= fmt["bitrate"] %>k" selected="<%= i == 0 ? true : false %>">
     <% end %>
 </audio>
