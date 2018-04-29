@@ -5,6 +5,7 @@
 <script src="https://vjs.zencdn.net/6.6.3/video.js"></script>
 <script src="https://cdn.sc.gl/videojs-hotkeys/latest/videojs.hotkeys.min.js"></script>
 <script src="https://unpkg.com/silvermine-videojs-quality-selector/dist/js/silvermine-videojs-quality-selector.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/videojs-offset/dist/videojs-offset.min.js"></script>
 <title><%= video.title %> - Invidious</title>
 <% end %>
 
@@ -18,7 +19,6 @@
 
 <script>
 var options = {
-    aspectRatio: "16:9",
     preload: "auto",
     playbackRates: [0.5, 1, 1.5, 2],
     controlBar: {
@@ -74,6 +74,11 @@ var player = videojs('player', options, function() {
     }
   });
 });
+player.offset({
+  start: <%= video_start %>,
+  end: <%= video_end %>,
+  restart_beginning: true
+});
 
 function toggle(target) {
     body = target.parentNode.parentNode.children[1];
@@ -96,6 +101,18 @@ function toggle_comments(target) {
         body.style.display = '';
     }
 };
+
+<% if !listen %>
+var currentSources = player.currentSources();
+for ( var i = 0; i < currentSources.length; i++ ) {
+    if (player.canPlayType(currentSources[i]["type"].split(";")[0]) === "") {
+        currentSources.splice(i);
+        i--;
+    }
+}
+
+player.src(currentSources);
+<% end %>
 </script>
 
 <div class="h-box">
@@ -122,11 +139,21 @@ function toggle_comments(target) {
             <p id="Wilson">Wilson Score : <%= video.wilson_score.round(4) %></p>
             <p id="Rating">Rating : <%= rating.round(4) %> / 5</p>
             <p id="Engagement">Engagement : <%= engagement.round(2) %>%</p>
+            <% if ad_slots %>
+            <p id="Slots">Ad Slots : <%= ad_slots %></p>
+            <% end %>
+            <% if engage_types %>
+            <p id="Engage">Engage Types : <%= engage_types %></p>
+            <% end %>
+            <% if ad_tag %>
+            <p id="Category">Ad Category : <%= ad_category %></p>
+            <p id="Tags">Ad Tags(?) : <%= k2 %></p>
+            <% end %>
         </div>
     </div>
 
     <div class="pure-u-1 pure-u-md-3-5">
-        <div style="overflow-wrap:break-word; word-wrap:break-word;" class="h-box">
+        <div class="h-box">
             <p>
                 <a href="https://youtube.com/channel/<%= video.info["ucid"] %>">
                     <h3><%= video.info["author"] %></h3>
@@ -150,19 +177,19 @@ function toggle_comments(target) {
             <p>
                 <b>Shared <%= video.published.to_s("%B %-d, %Y") %></b>
             </p>
-            <div style="overflow-wrap:break-word; word-wrap:break-word;">
+            <div>
                 <%= video.description %>
             </div>
             <hr style="margin-left:1em; margin-right:1em;">
         <% if reddit_thread  && !reddit_html.empty? %>
-            <div>
+            <div id="Comments">
                 <div>
                     <h3>
                         <a href="javascript:void(0)" onclick="toggle_comments(this)">[ - ]</a> 
-                        <%= reddit_thread.data.title %>
+                        <%= reddit_thread.title %>
                     </h3>
                     <b>
-                        <a target="_blank" href="https://reddit.com<%= reddit_thread.data.permalink %>">View more comments on Reddit</a>
+                        <a target="_blank" href="https://reddit.com<%= reddit_thread.permalink %>">View more comments on Reddit</a>
                     </b>
                 </div>
                 <div>
@@ -175,7 +202,7 @@ function toggle_comments(target) {
     </div>
 
     <div class="pure-u-1 pure-u-md-1-5">
-        <div style="overflow-wrap:break-word; word-wrap:break-word;" class="h-box">
+        <div class="h-box">
         <% rvs.each do |rv| %>
             <% if rv.has_key?("id") %>
             <a href="/watch?v=<%= rv["id"] %>">
