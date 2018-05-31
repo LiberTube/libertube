@@ -25,15 +25,15 @@ require "./helpers"
 
 CONFIG = Config.from_yaml(File.read("config/config.yml"))
 
-threads = CONFIG.threads
+crawl_threads = CONFIG.crawl_threads
 channel_threads = CONFIG.channel_threads
 video_threads = CONFIG.video_threads
 
 Kemal.config.extra_options do |parser|
   parser.banner = "Usage: invidious [arguments]"
-  parser.on("-t THREADS", "--youtube-threads=THREADS", "Number of threads for crawling (default: #{threads})") do |number|
+  parser.on("-t THREADS", "--crawl-threads=THREADS", "Number of threads for crawling (default: #{crawl_threads})") do |number|
     begin
-      threads = number.to_i
+      crawl_threads = number.to_i
     rescue ex
       puts "THREADS must be integer"
       exit
@@ -73,7 +73,7 @@ YT_URL     = URI.parse("https://www.youtube.com")
 REDDIT_URL = URI.parse("https://api.reddit.com")
 LOGIN_URL  = URI.parse("https://accounts.google.com")
 
-threads.times do
+crawl_threads.times do
   spawn do
     ids = Deque(String).new
     random = Random.new
@@ -242,17 +242,25 @@ get "/watch" do |env|
     next env.redirect "/"
   end
 
-  video_start = env.params.query["start"]?.try &.to_i
+  if env.params.query["start"]?
+    video_start = decode_time(env.params.query["start"])
+  end
+
+  if env.params.query["t"]?
+    video_start = decode_time(env.params.query["t"])
+  end
   video_start ||= 0
 
-  video_end = env.params.query["end"]?.try &.to_i
+  if env.params.query["end"]?
+    video_end = decode_time(env.params.query["end"])
+  end
   video_end ||= -1
 
-  listen = false
   if env.params.query["listen"]? && env.params.query["listen"] == "true"
     listen = true
     env.params.query.delete_all("listen")
   end
+  listen ||= false
 
   authorized = env.get? "authorized"
   if authorized
@@ -260,7 +268,6 @@ get "/watch" do |env|
 
     subscriptions = PG_DB.query_one?("SELECT subscriptions FROM users WHERE id = $1", sid, as: Array(String))
   end
-
   subscriptions ||= [] of String
 
   client = make_client(YT_URL)
@@ -277,6 +284,9 @@ get "/watch" do |env|
       fmt_stream << HTTP::Params.parse(string)
     end
   end
+
+  fmt_stream.each { |s| s.add("label", "#{s["quality"]} - #{s["type"].split(";")[0].split("/")[1]}") }
+  fmt_stream = fmt_stream.uniq { |s| s["label"] }
 
   adaptive_fmts = [] of HTTP::Params
   if video.info.has_key?("adaptive_fmts")
@@ -295,16 +305,10 @@ get "/watch" do |env|
     end
   end
 
-  fmt_stream.each { |s| s.add("label", "#{s["quality"]} - #{s["type"].split(";")[0].split("/")[1]}") }
-  fmt_stream = fmt_stream.uniq { |s| s["label"] }
-
-  video_streams = adaptive_fmts.compact_map { |s| s["type"].starts_with?("video") ? s : nil }
-  video_streams = video_streams.uniq { |s| s["size"] }
-
   audio_streams = adaptive_fmts.compact_map { |s| s["type"].starts_with?("audio") ? s : nil }
   audio_streams.sort_by! { |s| s["bitrate"].to_i }.reverse!
-  audio_streams.each do |fmt|
-    fmt["bitrate"] = (fmt["bitrate"].to_f64/1000).to_i.to_s
+  audio_streams.each do |stream|
+    stream["bitrate"] = (stream["bitrate"].to_f64/1000).to_i.to_s
   end
 
   rvs = [] of Hash(String, String)
@@ -565,7 +569,7 @@ post "/login" do |env|
 
     env.redirect referer
   rescue ex
-    error_message = "Login failed"
+    error_message = "Login failed. This may be because two-factor authentication is not enabled on your account."
     next templated "error"
   end
 end
@@ -723,6 +727,11 @@ get "/feed/subscriptions" do |env|
     videos = PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid IN (#{args}) \
     ORDER BY published DESC LIMIT $1 OFFSET $2", [limit, offset] + user.subscriptions, as: ChannelVideo)
 
+    notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email, as: Array(String))
+
+    notifications = videos.select { |v| notifications.includes? v.id }
+    videos = videos - notifications
+
     if !limit
       videos = videos[0..max_results]
     end
@@ -737,8 +746,8 @@ get "/feed/subscriptions" do |env|
 end
 
 # Function that is useful if you have multiple channels that don't have
-# the "bell dinged". Request parameters are fairly self-explanatory,
-# receive_all_updates = true and receive_post_updates = true will "ding" all
+# the bell dinged. Request parameters are fairly self-explanatory,
+# receive_all_updates = true and receive_post_updates = true will ding all
 # channels. Calling /modify_notifications without any arguments will
 # request all notifications from all channels.
 # /modify_notifications?receive_all_updates=false&receive_no_updates=false
@@ -809,9 +818,7 @@ get "/subscription_ajax" do |env|
 
     client = make_client(YT_URL)
     subs = client.get("/subscription_manager?disable_polymer=1", headers)
-
     headers["Cookie"] += "; " + subs.cookies.add_request_headers(headers)["Cookie"]
-
     match = subs.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
     if match
       session_token = match["session_token"]

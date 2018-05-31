@@ -15,7 +15,7 @@ end
 
 class Config
   YAML.mapping({
-    threads:         Int32,
+    crawl_threads:   Int32,
     channel_threads: Int32,
     video_threads:   Int32,
     db:              NamedTuple(
@@ -294,12 +294,12 @@ end
 
 def decrypt_signature(a)
   a = a.split("")
-
+  
   a.reverse!
-  a = splice(a, 17)
-  a = splice(a, 14)
+  a = splice(a, 50)
   a.delete_at(0..1)
   a.reverse!
+  a.delete_at(0..2)
 
   return a.join("")
 end
@@ -485,7 +485,7 @@ def add_alt_links(html)
       END_HTML
     elsif url.host == "youtu.be"
       alt_link = <<-END_HTML
-      <a href="/watch?v=#{url.full_path.lchop("/")}">
+      <a href="/watch?v=#{url.path.try &.lchop("/")}&#{url.query}">
         <i class="fa fa-link" aria-hidden="true"></i>
       </a>
       END_HTML
@@ -585,7 +585,8 @@ def fetch_channel(id, client, db)
       ON CONFLICT (id) DO NOTHING", video_array)
   end
 
-  author = rss.xpath_node("//feed/author/name").not_nil!.content
+  author = rss.xpath_node("//feed/author/name").try &.content
+  author ||= ""
 
   channel = InvidiousChannel.new(id, author, Time.now)
 
@@ -602,7 +603,7 @@ def get_user(sid, client, headers, db)
       args = arg_array(user_array)
 
       db.exec("INSERT INTO users VALUES (#{args}) \
-      ON CONFLICT (email) DO UPDATE SET id = $1, updated = $2, notifications = $3, subscriptions = $4", user_array)
+      ON CONFLICT (email) DO UPDATE SET id = $1, updated = $2, subscriptions = $4", user_array)
     end
   else
     user = fetch_user(sid, client, headers)
@@ -621,11 +622,13 @@ def fetch_user(sid, client, headers)
   feed = XML.parse_html(feed.body)
 
   channels = [] of String
-  feed.xpath_nodes(%q(//a[@class="subscription-title yt-uix-sessionlink"]/@href)).each do |channel|
-    channel_id = channel.content.lstrip("/channel/").not_nil!
-    get_channel(channel_id, client, PG_DB)
+  feed.xpath_nodes(%q(//ul[@id="guide-channels"]/li/a)).each do |channel|
+    if !["Popular on YouTube", "Music", "Sports", "Gaming"].includes? channel["title"]
+      channel_id = channel["href"].lstrip("/channel/")
+      get_channel(channel_id, client, PG_DB)
 
-    channels << channel_id
+      channels << channel_id
+    end
   end
 
   email = feed.xpath_node(%q(//a[@class="yt-masthead-picker-header yt-masthead-picker-active-account"]))
@@ -637,4 +640,26 @@ def fetch_user(sid, client, headers)
 
   user = User.new(sid, Time.now, [] of String, channels, email)
   return user
+end
+
+def decode_time(string)
+  time = string.try &.to_f?
+
+  if !time
+    hours = /(?<hours>\d+)h/.match(string).try &.["hours"].try &.to_i
+    hours ||= 0
+
+    minutes = /(?<minutes>\d+)m/.match(string).try &.["minutes"].try &.to_i
+    minutes ||= 0
+
+    seconds = /(?<seconds>\d+)s/.match(string).try &.["seconds"].try &.to_i
+    seconds ||= 0
+
+    millis = /(?<millis>\d+)ms/.match(string).try &.["millis"].try &.to_i
+    millis ||= 0
+
+    time = hours * 3600 + minutes * 60 + seconds + millis / 1000
+  end
+
+  return time
 end
