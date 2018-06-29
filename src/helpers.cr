@@ -13,6 +13,10 @@ macro templated(filename)
   render "src/views/#{{{filename}}}.ecr", "src/views/layout.ecr"
 end
 
+macro rendered(filename)
+  render "src/views/#{{{filename}}}.ecr"
+end
+
 class Config
   YAML.mapping({
     crawl_threads:   Int32,
@@ -76,6 +80,8 @@ class Video
     published:    Time,
     description:  String,
     language:     String?,
+    author:       String,
+    ucid:         String,
   })
 end
 
@@ -179,14 +185,14 @@ def elapsed_text(elapsed)
 end
 
 def fetch_video(id, client)
-  info = client.get("/get_video_info?video_id=#{id}&el=detailpage&ps=default&eurl=&gl=US&hl=en").body
-  html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}").body
+  info = client.get("/get_video_info?video_id=#{id}&el=detailpage&ps=default&eurl=&gl=US&hl=en&disable_polymer=1").body
+  html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&disable_polymer=1").body
 
   html = XML.parse_html(html)
   info = HTTP::Params.parse(info)
 
   if info["reason"]?
-    info = client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en").body
+    info = client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en&disable_polymer=1").body
     info = HTTP::Params.parse(info)
     if info["reason"]?
       raise info["reason"]
@@ -194,8 +200,9 @@ def fetch_video(id, client)
   end
 
   title = info["title"]
-
   views = info["view_count"].to_i64
+  author = info["author"]
+  ucid = info["ucid"]
 
   likes = html.xpath_node(%q(//button[@title="I like this"]/span))
   likes = likes.try &.content.delete(",").try &.to_i
@@ -217,14 +224,10 @@ def fetch_video(id, client)
     raise "Could not find date published"
   end
 
-  published = published.lchop("Published ")
-  published = published.lchop("Started streaming ")
-  published = published.lchop("Streamed live ")
-  published = published.lchop("Uploaded ")
-  published = published.lchop("on ")
-  published = published.lchop("Scheduled for ")
+  published = published.split(" ")
+  published = published[-3..-1].join(" ")
   if !published.includes?("ago")
-    published = Time.parse(published, "%b %-d, %Y")
+    published = Time.parse(published, "%b %-d, %Y", Time::Location.local)
   else
     # Time matches format "20 hours ago", "40 minutes ago"...
     delta = published.split(" ")[0].to_i
@@ -238,7 +241,7 @@ def fetch_video(id, client)
     end
   end
 
-  video = Video.new(id, info, Time.now, title, views, likes, dislikes, wilson_score, published, description, nil)
+  video = Video.new(id, info, Time.now, title, views, likes, dislikes, wilson_score, published, description, nil, author, ucid)
 
   return video
 end
@@ -270,7 +273,7 @@ def get_video(id, client, db, refresh = true)
 end
 
 def search(query, client)
-  html = client.get("https://www.youtube.com/results?q=#{query}&sp=EgIQAVAU").body
+  html = client.get("https://www.youtube.com/results?q=#{query}&sp=EgIQAVAU&disable_polymer=1").body
 
   html = XML.parse_html(html)
 
@@ -294,12 +297,12 @@ end
 
 def decrypt_signature(a)
   a = a.split("")
-  
+
+  a = splice(a, 3)
+  a = splice(a, 28)
+  a.delete_at(0..0)
   a.reverse!
-  a = splice(a, 50)
-  a.delete_at(0..1)
-  a.reverse!
-  a.delete_at(0..2)
+  a = splice(a, 22)
 
   return a.join("")
 end
@@ -477,7 +480,7 @@ def add_alt_links(html)
     anchor = anchor.xpath_node("//a").not_nil!
     url = URI.parse(HTML.unescape(anchor["href"]))
 
-    if ["www.youtube.com", "m.youtube.com"].includes?(url.host) && url.path == "/watch" || url.path == "/redirect"
+    if ["www.youtube.com", "m.youtube.com"].includes?(url.host)
       alt_link = <<-END_HTML
       <a href="#{url.full_path}">
         <i class="fa fa-link" aria-hidden="true"></i>
@@ -537,12 +540,12 @@ def login_req(login_form, f_req)
   return HTTP::Params.encode(data)
 end
 
-def get_channel(id, client, db)
+def get_channel(id, client, db, refresh = true, pull_videos = true)
   if db.query_one?("SELECT EXISTS (SELECT true FROM channels WHERE id = $1)", id, as: Bool)
     channel = db.query_one("SELECT * FROM channels WHERE id = $1", id, as: InvidiousChannel)
 
-    if Time.now - channel.updated > 1.minute
-      channel = fetch_channel(id, client, db)
+    if refresh && Time.now - channel.updated > 10.minutes
+      channel = fetch_channel(id, client, db, pull_videos)
       channel_array = channel.to_a
       args = arg_array(channel_array)
 
@@ -550,7 +553,7 @@ def get_channel(id, client, db)
       ON CONFLICT (id) DO UPDATE SET updated = $3", channel_array)
     end
   else
-    channel = fetch_channel(id, client, db)
+    channel = fetch_channel(id, client, db, pull_videos)
     args = arg_array(channel.to_a)
     db.exec("INSERT INTO channels VALUES (#{args})", channel.to_a)
   end
@@ -558,37 +561,114 @@ def get_channel(id, client, db)
   return channel
 end
 
-def fetch_channel(id, client, db)
-  rss = client.get("/feeds/videos.xml?channel_id=#{id}").body
+def fetch_channel(ucid, client, db, pull_videos = true)
+  rss = client.get("/feeds/videos.xml?channel_id=#{ucid}").body
   rss = XML.parse_html(rss)
 
-  db.exec("DELETE FROM channel_videos * WHERE ucid = $1", id)
+  author = rss.xpath_node(%q(//feed/title))
+  if !author
+    raise "Deleted or invalid channel"
+  end
+  author = author.content
 
-  rss.xpath_nodes("//feed/entry").each do |entry|
-    video_id = entry.xpath_node("videoid").not_nil!.content
-    title = entry.xpath_node("title").not_nil!.content
-    published = Time.parse(entry.xpath_node("published").not_nil!.content, "%FT%X%z")
-    updated = Time.parse(entry.xpath_node("updated").not_nil!.content, "%FT%X%z")
-    author = entry.xpath_node("author/name").not_nil!.content
-    ucid = entry.xpath_node("channelid").not_nil!.content
+  if !pull_videos
+    rss.xpath_nodes("//feed/entry").each do |entry|
+      video_id = entry.xpath_node("videoid").not_nil!.content
+      title = entry.xpath_node("title").not_nil!.content
+      published = Time.parse(entry.xpath_node("published").not_nil!.content, "%FT%X%z", Time::Location.local)
+      updated = Time.parse(entry.xpath_node("updated").not_nil!.content, "%FT%X%z", Time::Location.local)
+      author = entry.xpath_node("author/name").not_nil!.content
+      ucid = entry.xpath_node("channelid").not_nil!.content
 
-    video = ChannelVideo.new(video_id, title, published, updated, ucid, author)
+      video = ChannelVideo.new(video_id, title, published, Time.now, ucid, author)
 
-    video_array = video.to_a
-    args = arg_array(video_array)
+      db.exec("UPDATE users SET notifications = notifications || $1 \
+      WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, Time.now, ucid)
 
-    db.exec("UPDATE users SET notifications = notifications || $1 \
-    WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video_id, published, ucid)
-
-    # TODO: Update record on conflict
-    db.exec("INSERT INTO channel_videos VALUES (#{args})\
+      video_array = video.to_a
+      args = arg_array(video_array)
+      db.exec("INSERT INTO channel_videos VALUES (#{args})\
       ON CONFLICT (id) DO NOTHING", video_array)
+    end
+  else
+    videos = [] of ChannelVideo
+    page = 1
+
+    loop do
+      url = produce_videos_url(ucid, page)
+      response = client.get(url)
+
+      json = JSON.parse(response.body)
+      content_html = json["content_html"].as_s
+      if content_html.empty?
+        # If we don't get anything, move on
+        break
+      end
+      document = XML.parse_html(content_html)
+
+      document.xpath_nodes(%q(//li[contains(@class, "channels-content-item")])).each do |item|
+        root = item.xpath_node(%q(div/div/div[@class="yt-lockup-content"]))
+        if !root
+          raise "could not find root"
+        end
+
+        anchor = root.xpath_node(%q(h3[contains(@class,"yt-lockup-title")]/a))
+        if !anchor
+          raise "could not find anchor"
+        end
+        title = anchor.content.strip
+        video_id = anchor["href"].lchop("/watch?v=")
+
+        published = root.xpath_node(%q(div[@class="yt-lockup-meta"]/ul/li[2]))
+        if !published
+          # This happens on Youtube red videos, here we just skip them
+          next
+        end
+        published = published.content.split(" ")
+        span = published[0].to_i
+        case published[1]
+        when .includes? "second"
+          span = span.seconds
+        when .includes? "minute"
+          span = span.minutes
+        when .includes? "hour"
+          span = span.hours
+        when .includes? "day"
+          span = span.days
+        when .includes? "week"
+          span = span.weeks
+        when .includes? "month"
+          span = span.months
+        when .includes? "year"
+          span = span.years
+        else
+          raise "Unrecognized time: #{published[1]}"
+        end
+
+        published = Time.now - span
+
+        videos << ChannelVideo.new(video_id, title, published, Time.now, ucid, author)
+      end
+
+      if document.xpath_nodes(%q(//li[contains(@class, "channels-content-item")])).size < 30
+        break
+      end
+
+      page += 1
+    end
+
+    db.exec("DELETE FROM channel_videos * WHERE ucid = $1", ucid)
+    videos.each do |video|
+      db.exec("UPDATE users SET notifications = notifications || $1 \
+      WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, ucid)
+
+      video_array = video.to_a
+      args = arg_array(video_array)
+      db.exec("INSERT INTO channel_videos VALUES (#{args})", video_array)
+    end
   end
 
-  author = rss.xpath_node("//feed/author/name").try &.content
-  author ||= ""
-
-  channel = InvidiousChannel.new(id, author, Time.now)
+  channel = InvidiousChannel.new(ucid, author, Time.now)
 
   return channel
 end
@@ -597,8 +677,8 @@ def get_user(sid, client, headers, db)
   if db.query_one?("SELECT EXISTS (SELECT true FROM users WHERE id = $1)", sid, as: Bool)
     user = db.query_one("SELECT * FROM users WHERE id = $1", sid, as: User)
 
-    if Time.now - user.updated > 1.minutes
-      user = fetch_user(sid, client, headers)
+    if Time.now - user.updated > 1.minute
+      user = fetch_user(sid, client, headers, db)
       user_array = user.to_a
       args = arg_array(user_array)
 
@@ -606,7 +686,7 @@ def get_user(sid, client, headers, db)
       ON CONFLICT (email) DO UPDATE SET id = $1, updated = $2, subscriptions = $4", user_array)
     end
   else
-    user = fetch_user(sid, client, headers)
+    user = fetch_user(sid, client, headers, db)
     user_array = user.to_a
     args = arg_array(user.to_a)
 
@@ -617,7 +697,7 @@ def get_user(sid, client, headers, db)
   return user
 end
 
-def fetch_user(sid, client, headers)
+def fetch_user(sid, client, headers, db)
   feed = client.get("/subscription_manager?disable_polymer=1", headers)
   feed = XML.parse_html(feed.body)
 
@@ -625,9 +705,13 @@ def fetch_user(sid, client, headers)
   feed.xpath_nodes(%q(//ul[@id="guide-channels"]/li/a)).each do |channel|
     if !["Popular on YouTube", "Music", "Sports", "Gaming"].includes? channel["title"]
       channel_id = channel["href"].lstrip("/channel/")
-      get_channel(channel_id, client, PG_DB)
 
-      channels << channel_id
+      begin
+        channel = get_channel(channel_id, client, db, false, false)
+        channels << channel.id
+      rescue ex
+        next
+      end
     end
   end
 
@@ -662,4 +746,112 @@ def decode_time(string)
   end
 
   return time
+end
+
+def produce_playlist_url(ucid, index)
+  ucid = ucid.lchop("UC")
+  ucid = "VLUU" + ucid
+
+  continuation = write_var_int(index)
+  continuation.unshift(0x08_u8)
+  slice = continuation.to_unsafe.to_slice(continuation.size)
+
+  continuation = Base64.urlsafe_encode(slice, false)
+  continuation = "PT:" + continuation
+  continuation = continuation.bytes
+  continuation.unshift(0x7a_u8, continuation.size.to_u8)
+
+  slice = continuation.to_unsafe.to_slice(continuation.size)
+  continuation = Base64.urlsafe_encode(slice)
+  continuation = URI.escape(continuation)
+  continuation = continuation.bytes
+  continuation.unshift(continuation.size.to_u8)
+
+  continuation.unshift(ucid.size.to_u8)
+  continuation = ucid.bytes + continuation
+  continuation.unshift(0x12.to_u8, ucid.size.to_u8)
+  continuation.unshift(0xe2_u8, 0xa9_u8, 0x85_u8, 0xb2_u8, 2_u8, continuation.size.to_u8)
+
+  slice = continuation.to_unsafe.to_slice(continuation.size)
+  continuation = Base64.urlsafe_encode(slice)
+  continuation = URI.escape(continuation)
+
+  url = "/browse_ajax?action_continuation=1&continuation=#{continuation}"
+
+  return url
+end
+
+def produce_videos_url(ucid, page)
+  page = "#{page}"
+
+  meta = "\x12\x06videos \x00\x30\x01\x38\x01\x60\x01\x6a\x00\x7a"
+  meta += page.size.to_u8.unsafe_chr
+  meta += page
+  meta += "\xb8\x01\x00"
+
+  meta = Base64.urlsafe_encode(meta)
+  meta = URI.escape(meta)
+
+  continuation = "\x12"
+  continuation += ucid.size.to_u8.unsafe_chr
+  continuation += ucid
+  continuation += "\x1a"
+  continuation += meta.size.to_u8.unsafe_chr
+  continuation += meta
+
+  continuation = continuation.size.to_u8.unsafe_chr + continuation
+  continuation = "\xe2\xa9\x85\xb2\x02" + continuation
+
+  continuation = Base64.urlsafe_encode(continuation)
+  continuation = URI.escape(continuation)
+
+  url = "/browse_ajax?continuation=#{continuation}"
+
+  return url
+end
+
+def read_var_int(bytes)
+  numRead = 0
+  result = 0
+
+  read = bytes[numRead]
+
+  if bytes.size == 1
+    result = bytes[0].to_i32
+  else
+    while ((read & 0b10000000) != 0)
+      read = bytes[numRead].to_u64
+      value = (read & 0b01111111)
+      result |= (value << (7 * numRead))
+
+      numRead += 1
+      if numRead > 5
+        raise "VarInt is too big"
+      end
+    end
+  end
+
+  return result
+end
+
+def write_var_int(value : Int)
+  bytes = [] of UInt8
+  value = value.to_u32
+
+  if value == 0
+    bytes = [0_u8]
+  else
+    while value != 0
+      temp = (value & 0b01111111).to_u8
+      value = value >> 7
+
+      if value != 0
+        temp |= 0b10000000
+      end
+
+      bytes << temp
+    end
+  end
+
+  return bytes
 end

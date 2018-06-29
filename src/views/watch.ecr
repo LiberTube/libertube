@@ -10,11 +10,17 @@
 <% end %>
 
 <div class="h-box">
-    <% if listen %>
-    <%= render "src/views/player/audio.ecr" %>
-    <% else %>
-    <%= render "src/views/player/video.ecr" %>
-    <% end %>
+    <video style="width:100%" playsinline poster="<%= thumbnail %>" title="<%= HTML.escape(video.title) %>" id="player" class="video-js vjs-16-9" data-setup="{}" controls>
+        <% if listen %>
+            <% audio_streams.each_with_index do |fmt, i| %>
+                <source src="<%= fmt["url"] %>" type='<%= fmt["type"] %>' label="<%= fmt["bitrate"] %>k" selected="<%= i == 0 ? true : false %>">
+            <% end %>
+        <% else %>
+            <% fmt_stream.each_with_index do |fmt, i| %>
+                <source src="<%= fmt["url"] %>" type='<%= fmt["type"] %>' label="<%= fmt["label"] %>" selected="<%= i == 0 ? true : false %>">
+            <% end %>    
+        <% end %>
+    </video>
 </div>
 
 <script>
@@ -117,7 +123,7 @@ player.src(currentSources);
 
 <div class="h-box">
 <h1>
-    <%= video.info["title"] %> 
+    <%= video.title %> 
     <% if listen %>
     <a href="/watch?<%= env.params.query %>">
         <i class="fa fa-video" aria-hidden="true"></i>
@@ -155,28 +161,28 @@ player.src(currentSources);
     <div class="pure-u-1 pure-u-md-3-5">
         <div class="h-box">
             <p>
-                <a href="https://youtube.com/channel/<%= video.info["ucid"] %>">
-                    <h3><%= video.info["author"] %></h3>
+                <a href="/channel/<%= video.ucid %>">
+                    <h3><%= video.author %></h3>
                 </a>
             </p>
         <% if authorized %>
-            <% if subscriptions.includes? video.info["ucid"] %>
+            <% if subscriptions.includes? video.ucid %>
             <p>
-                <a href="/subscription_ajax?action_remove_subscriptions=1&c=<%= video.info["ucid"] %>">
-                    <b>Unsubscribe from <%= video.info["author"] %></b>
+                <a href="/subscription_ajax?action_remove_subscriptions=1&c=<%= video.ucid %>">
+                    <b>Unsubscribe from <%= video.author %></b>
                 </a>
             </p>
             <% else %>
             <p>
-                <a href="/subscription_ajax?action_create_subscription_to_channel=1&c=<%= video.info["ucid"] %>">
-                    <b>Subscribe to <%= video.info["author"] %></b>
+                <a href="/subscription_ajax?action_create_subscription_to_channel=1&c=<%= video.ucid %>">
+                    <b>Subscribe to <%= video.author %></b>
                 </a>
             </p>
             <% end %>
         <% else %>
             <p>
                 <a href="/login">
-                    <b>Login to subscribe to <%= video.info["author"] %></b>
+                    <b>Login to subscribe to <%= video.author %></b>
                 </a>
             </p>
         <% end %>
