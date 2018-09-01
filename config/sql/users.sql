@@ -2,9 +2,9 @@
 
 -- DROP TABLE public.users;
 
-CREATE TABLE public.users
+CREATE TABLE public.users 
 (
-    id text COLLATE pg_catalog."default" NOT NULL,
+    id text[] COLLATE pg_catalog."default" NOT NULL,
     updated timestamp with time zone,
     notifications text[] COLLATE pg_catalog."default",
     subscriptions text[] COLLATE pg_catalog."default",
@@ -13,8 +13,7 @@ CREATE TABLE public.users
     password text COLLATE pg_catalog."default",
     token text COLLATE pg_catalog."default",
     watched text[] COLLATE pg_catalog."default",
-    CONSTRAINT users_email_key UNIQUE (email),
-    CONSTRAINT users_id_key UNIQUE (id)
+    CONSTRAINT users_email_key UNIQUE (email)
 )
 WITH (
     OIDS = FALSE

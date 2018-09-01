@@ -26,7 +26,7 @@ function update_value(element) {
             <div class="pure-control-group">
                 <label for="speed">Default speed: </label>
                 <select name="speed" id="speed">
-                <% [2.0, 1.5, 1.0, 0.5].each do |option| %>
+                <% {2.0, 1.5, 1.0, 0.5}.each do |option| %>
                     <option <% if user.preferences.speed == option %> selected <% end %>><%= option %></option>
                 <% end %>
                 </select>
@@ -35,7 +35,7 @@ function update_value(element) {
             <div class="pure-control-group">
                 <label for="quality">Preferred video quality: </label>
                 <select name="quality" id="quality">
-                <% ["hd720", "medium", "small"].each do |option| %>
+                <% {"hd720", "medium", "small"}.each do |option| %>
                     <option <% if user.preferences.quality == option %> selected <% end %>><%= option %></option>
                 <% end %>
                 </select>
@@ -48,15 +48,54 @@ function update_value(element) {
             </div>
 
             <div class="pure-control-group">
-                <label for="comments">Pull comments from: </label>
-                <select name="comments" id="comments">
-                <% ["youtube", "reddit"].each do |option| %>
-                    <option <% if user.preferences.comments == option %> selected <% end %>><%= option %></option>
+                <label for="comments_0">Default comments: </label>
+                <select name="comments_0" id="comments_0">
+                <% {"", "youtube", "reddit"}.each do |option| %>
+                    <option <% if user.preferences.comments[0] == option %> selected <% end %>><%= option %></option>
                 <% end %>
                 </select>
             </div>
 
+            <div class="pure-control-group">
+                <label for="comments_1">Fallback comments: </label>
+                <select name="comments_1" id="comments_1">
+                <% {"", "youtube", "reddit"}.each do |option| %>
+                    <option <% if user.preferences.comments[1] == option %> selected <% end %>><%= option %></option>
+                <% end %>
+                </select>
+            </div>
+
+            <div class="pure-control-group">
+                <label for="captions_0">Default captions: </label>
+                <select class="pure-u-1-5" name="captions_0" id="captions_0">
+                <% CAPTION_LANGUAGES.each do |option| %>
+                    <option <% if user.preferences.captions[0] == option %> selected <% end %>><%= option %></option>
+                <% end %>
+                </select>
+            </div>
+
+            <div class="pure-control-group">
+                <label for="captions_fallback">Fallback captions: </label>
+                <select class="pure-u-1-5" name="captions_1" id="captions_1">
+                <% CAPTION_LANGUAGES.each do |option| %>
+                    <option <% if user.preferences.captions[1] == option %> selected <% end %>><%= option %></option>
+                <% end %>
+                </select>
+
+                <select class="pure-u-1-5" name="captions_2" id="captions_2">
+                <% CAPTION_LANGUAGES.each do |option| %>
+                    <option <% if user.preferences.captions[2] == option %> selected <% end %>><%= option %></option>
+                <% end %>
+                </select>
+            </div>
+
+            <div class="pure-control-group">
+                <label for="related_videos">Show related videos? </label>
+                <input name="related_videos" id="related_videos" type="checkbox" <% if user.preferences.related_videos %>checked<% end %>>
+            </div>
+
             <legend>Visual preferences</legend>
+
             <div class="pure-control-group">
                 <label for="dark_mode">Dark mode: </label>
                 <input name="dark_mode" id="dark_mode" type="checkbox" <% if user.preferences.dark_mode %>checked<% end %>>
@@ -68,6 +107,7 @@ function update_value(element) {
             </div>
 
             <legend>Subscription preferences</legend>
+
             <div class="pure-control-group">
                 <label for="redirect_feed">Redirect homepage to feed: </label>
                 <input name="redirect_feed" id="redirect_feed" type="checkbox" <% if user.preferences.redirect_feed %>checked<% end %>>
@@ -103,16 +143,17 @@ function update_value(element) {
             </div>
 
             <legend>Data preferences</legend>
+
             <div class="pure-control-group">
-                <label>
-                    <a href="/clear_watch_history">Clear watch history</a>
-                </label>
+                <a href="/clear_watch_history?referer=<%= referer %>">Clear watch history</a>
             </div>
             
             <div class="pure-control-group">
-                <label>
-                    <a href="/data_control">Import/Export data</a>
-                </label>
+                <a href="/data_control?referer=<%= referer %>">Import/Export data</a>
+            </div>
+
+            <div class="pure-control-group">
+                <a href="/subscription_manager">Manage subscriptions</a>
             </div>
 
             <div class="pure-controls">

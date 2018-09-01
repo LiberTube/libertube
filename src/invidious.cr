@@ -23,6 +23,7 @@ require "pg"
 require "xml"
 require "yaml"
 require "zip"
+require "./invidious/helpers/*"
 require "./invidious/*"
 
 CONFIG   = Config.from_yaml(File.read("config/config.yml"))
@@ -73,159 +74,34 @@ PG_URL = URI.new(
 
 PG_DB      = DB.open PG_URL
 YT_URL     = URI.parse("https://www.youtube.com")
-REDDIT_URL = URI.parse("https://api.reddit.com")
+REDDIT_URL = URI.parse("https://www.reddit.com")
 LOGIN_URL  = URI.parse("https://accounts.google.com")
 
 crawl_threads.times do
   spawn do
-    ids = Deque(String).new
-    random = Random.new
-
-    client = make_client(YT_URL)
-    search(random.base64(3), client) do |id|
-      ids << id
-    end
-
-    loop do
-      client = make_client(YT_URL)
-      if ids.empty?
-        search(random.base64(3), client) do |id|
-          ids << id
-        end
-      end
-
-      begin
-        id = ids[0]
-        video = get_video(id, PG_DB)
-      rescue ex
-        STDOUT << id << " : " << ex.message << "\n"
-        next
-      ensure
-        ids.delete(id)
-      end
-
-      rvs = [] of Hash(String, String)
-      if video.info.has_key?("rvs")
-        video.info["rvs"].split(",").each do |rv|
-          rvs << HTTP::Params.parse(rv).to_h
-        end
-      end
-
-      rvs.each do |rv|
-        if rv.has_key?("id") && !PG_DB.query_one?("SELECT EXISTS (SELECT true FROM videos WHERE id = $1)", rv["id"], as: Bool)
-          ids.delete(id)
-          ids << rv["id"]
-          if ids.size == 150
-            ids.shift
-          end
-        end
-      end
-
-      Fiber.yield
-    end
+    crawl_videos(PG_DB)
   end
 end
 
-channel_threads.times do |i|
-  spawn do
-    loop do
-      query = "SELECT id FROM channels ORDER BY updated \
-      LIMIT (SELECT count(*)/$2 FROM channels) \
-      OFFSET (SELECT count(*)*$1/$2 FROM channels)"
-      PG_DB.query(query, i, channel_threads) do |rs|
-        rs.each do
-          client = make_client(YT_URL)
-
-          begin
-            id = rs.read(String)
-            channel = fetch_channel(id, client, PG_DB, false)
-            PG_DB.exec("UPDATE channels SET updated = $1 WHERE id = $2", Time.now, id)
-          rescue ex
-            STDOUT << id << " : " << ex.message << "\n"
-            next
-          end
-        end
-      end
-
-      Fiber.yield
-    end
-  end
-end
+refresh_channels(PG_DB, channel_threads, CONFIG.full_refresh)
 
 video_threads.times do |i|
   spawn do
-    loop do
-      query = "SELECT id FROM videos ORDER BY updated \
-      LIMIT (SELECT count(*)/$2 FROM videos) \
-      OFFSET (SELECT count(*)*$1/$2 FROM videos)"
-      PG_DB.query(query, i, video_threads) do |rs|
-        rs.each do
-          begin
-            id = rs.read(String)
-            video = get_video(id, PG_DB)
-          rescue ex
-            STDOUT << id << " : " << ex.message << "\n"
-            next
-          end
-        end
-      end
-
-      Fiber.yield
-    end
+    refresh_videos(PG_DB)
   end
 end
 
 top_videos = [] of Video
 spawn do
-  if CONFIG.dl_api_key
-    DetectLanguage.configure do |config|
-      config.api_key = CONFIG.dl_api_key.not_nil!
-    end
-    filter = true
-  end
-
-  filter ||= false
-
-  loop do
-    begin
-      top = rank_videos(PG_DB, 40, filter, YT_URL)
-    rescue ex
-      next
-    end
-
-    if top.size > 0
-      args = arg_array(top)
-    else
-      next
-    end
-
-    videos = [] of Video
-
-    top.each do |id|
-      begin
-        videos << get_video(id, PG_DB)
-      rescue ex
-        next
-      end
-    end
-
+  pull_top_videos(CONFIG, PG_DB) do |videos|
     top_videos = videos
-    Fiber.yield
   end
 end
 
-# Refresh decrypt function
 decrypt_function = [] of {name: String, value: Int32}
 spawn do
-  loop do
-    client = make_client(YT_URL)
-
-    begin
-      decrypt_function = update_decrypt_function(client)
-    rescue ex
-    end
-
-    Fiber.yield
+  update_decrypt_function do |function|
+    decrypt_function = function
   end
 end
 
@@ -238,10 +114,11 @@ before_all do |env|
 
     # Invidious users only have SID
     if !env.request.cookies.has_key? "SSID"
-      user = PG_DB.query_one?("SELECT * FROM users WHERE id = $1", sid, as: User)
+      user = PG_DB.query_one?("SELECT * FROM users WHERE $1 = ANY(id)", sid, as: User)
 
       if user
         env.set "user", user
+        env.set "sid", sid
       end
     else
       begin
@@ -249,10 +126,24 @@ before_all do |env|
         user = get_user(sid, client, headers, PG_DB, false)
 
         env.set "user", user
+        env.set "sid", sid
       rescue ex
       end
     end
   end
+
+  current_page = env.request.path
+  if env.request.query
+    query = HTTP::Params.parse(env.request.query.not_nil!)
+
+    if query["referer"]?
+      query["referer"] = get_referer(env, "/")
+    end
+
+    current_page += "?#{query}"
+  end
+
+  env.set "current_page", URI.escape(current_page)
 end
 
 get "/" do |env|
@@ -267,9 +158,47 @@ get "/" do |env|
   templated "index"
 end
 
+# Videos
+
+get "/:id" do |env|
+  id = env.params.url["id"]
+
+  if md = id.match(/[a-zA-Z0-9_-]{11}/)
+    params = [] of String
+    env.params.query.each do |k, v|
+      params << "#{k}=#{v}"
+    end
+    params = params.join("&")
+
+    url = "/watch?v=#{id}"
+    if !params.empty?
+      url += "&#{params}"
+    end
+
+    env.redirect url
+  else
+    env.response.status_code = 404
+  end
+end
+
 get "/watch" do |env|
+  if env.params.query.to_s.includes?("%20") || env.params.query.to_s.includes?("+")
+    url = "/watch?" + env.params.query.to_s.gsub("%20", "").delete("+")
+    next env.redirect url
+  end
+
   if env.params.query["v"]?
     id = env.params.query["v"]
+
+    if id.size > 11
+      url = "/watch?v=#{id[0, 11]}"
+      env.params.query.delete_all("v")
+      if env.params.query.size > 0
+        url += "&#{env.params.query}"
+      end
+
+      next env.redirect url
+    end
   else
     next env.redirect "/"
   end
@@ -282,43 +211,15 @@ get "/watch" do |env|
     end
 
     preferences = user.preferences
-    subscriptions = user.subscriptions.as(Array(String))
+    subscriptions = user.subscriptions
   end
   subscriptions ||= [] of String
 
-  autoplay = env.params.query["autoplay"]?.try &.to_i?
-  video_loop = env.params.query["loop"]?.try &.to_i?
+  params = process_video_params(env.params.query, preferences)
 
-  if preferences
-    autoplay ||= preferences.autoplay.to_unsafe
-    video_loop ||= preferences.video_loop.to_unsafe
-  end
-
-  autoplay ||= 0
-  video_loop ||= 0
-
-  autoplay = autoplay == 1
-  video_loop = video_loop == 1
-
-  if env.params.query["start"]?
-    video_start = decode_time(env.params.query["start"])
-  end
-
-  if env.params.query["t"]?
-    video_start = decode_time(env.params.query["t"])
-  end
-  video_start ||= 0
-
-  if env.params.query["end"]?
-    video_end = decode_time(env.params.query["end"])
-  end
-  video_end ||= -1
-
-  if env.params.query["listen"]? && env.params.query["listen"] == "true"
-    listen = true
+  if params[:listen]
     env.params.query.delete_all("listen")
   end
-  listen ||= false
 
   begin
     video = get_video(id, PG_DB)
@@ -328,1038 +229,98 @@ get "/watch" do |env|
     next templated "error"
   end
 
-  fmt_stream = [] of HTTP::Params
-  video.info["url_encoded_fmt_stream_map"].split(",") do |string|
-    if !string.empty?
-      fmt_stream << HTTP::Params.parse(string)
-    end
-  end
+  fmt_stream = video.fmt_stream(decrypt_function)
+  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+  video_streams = video.video_streams(adaptive_fmts)
+  audio_streams = video.audio_streams(adaptive_fmts)
 
-  fmt_stream.each { |s| s.add("label", "#{s["quality"]} - #{s["type"].split(";")[0].split("/")[1]}") }
-  fmt_stream = fmt_stream.uniq { |s| s["label"] }
+  captions = video.captions
 
-  adaptive_fmts = [] of HTTP::Params
-  if video.info.has_key?("adaptive_fmts")
-    video.info["adaptive_fmts"].split(",") do |string|
-      adaptive_fmts << HTTP::Params.parse(string)
-    end
-  end
+  preferred_captions = captions.select { |caption|
+    params[:preferred_captions].includes?(caption.name.simpleText) ||
+      params[:preferred_captions].includes?(caption.languageCode.split("-")[0])
+  }
+  preferred_captions.sort_by! { |caption|
+    (params[:preferred_captions].index(caption.name.simpleText) ||
+      params[:preferred_captions].index(caption.languageCode.split("-")[0])).not_nil!
+  }
+  captions = captions - preferred_captions
 
-  if adaptive_fmts[0]? && adaptive_fmts[0]["s"]?
-    adaptive_fmts.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
+  aspect_ratio = "16:9"
 
-    fmt_stream.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
-  end
+  video.description = fill_links(video.description, "https", "www.youtube.com")
+  video.description = add_alt_links(video.description)
+  description = video.short_description
 
-  audio_streams = adaptive_fmts.compact_map { |s| s["type"].starts_with?("audio") ? s : nil }
-  audio_streams.sort_by! { |s| s["bitrate"].to_i }.reverse!
-  audio_streams.each do |stream|
-    stream["bitrate"] = (stream["bitrate"].to_f64/1000).to_i.to_s
-  end
-
-  player_response = JSON.parse(video.info["player_response"])
-  if player_response["captions"]?
-    captions = player_response["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]?.try &.as_a
-  end
-  captions ||= [] of JSON::Any
+  host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
+  host_params = env.request.query_params
+  host_params.delete_all("v")
 
   if video.info["hlsvp"]?
     hlsvp = video.info["hlsvp"]
+    hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", host_url)
+  end
 
-    if Kemal.config.ssl || CONFIG.https_only
-      scheme = "https://"
-    else
-      scheme = "http://"
+  # TODO: Find highest resolution thumbnail automatically
+  thumbnail = "https://i.ytimg.com/vi/#{video.id}/mqdefault.jpg"
+
+  if params[:raw]
+    url = fmt_stream[0]["url"]
+
+    fmt_stream.each do |fmt|
+      if fmt["label"].split(" - ")[0] == params[:quality]
+        url = fmt["url"]
+      end
     end
-    host = env.request.headers["Host"]
-    url = "#{scheme}#{host}"
 
-    hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", url)
+    next env.redirect url
   end
 
   rvs = [] of Hash(String, String)
-  if video.info.has_key?("rvs")
-    video.info["rvs"].split(",").each do |rv|
-      rvs << HTTP::Params.parse(rv).to_h
-    end
+  video.info["rvs"]?.try &.split(",").each do |rv|
+    rvs << HTTP::Params.parse(rv).to_h
   end
 
+  # rating = (video.likes.to_f/(video.likes.to_f + video.dislikes.to_f) * 4 + 1)
   rating = video.info["avg_rating"].to_f64
 
   engagement = ((video.dislikes.to_f + video.likes.to_f)/video.views * 100)
 
-  if video.likes > 0 || video.dislikes > 0
-    calculated_rating = (video.likes.to_f/(video.likes.to_f + video.dislikes.to_f) * 4 + 1)
+  playability_status = video.player_response["playabilityStatus"]?
+  if playability_status && playability_status["status"] == "LIVE_STREAM_OFFLINE"
+    reason = playability_status["reason"]?.try &.as_s
   end
-  calculated_rating ||= 0.0
-
-  if video.info["ad_slots"]?
-    ad_slots = video.info["ad_slots"].split(",")
-    ad_slots = ad_slots.join(", ")
-  end
-
-  if video.info["enabled_engage_types"]?
-    engage_types = video.info["enabled_engage_types"].split(",")
-    engage_types = engage_types.join(", ")
-  end
-
-  if video.info["ad_tag"]?
-    ad_tag = URI.parse(video.info["ad_tag"])
-    ad_query = HTTP::Params.parse(ad_tag.query.not_nil!)
-
-    ad_category = URI.unescape(ad_query["iu"])
-    ad_category = ad_category.lstrip("/4061/").split(".")[-1]
-
-    ad_query = HTTP::Params.parse(ad_query["scp"])
-
-    k2 = URI.unescape(ad_query["k2"]).split(",")
-    k2 = k2.join(", ")
-  end
-
-  video.description = fill_links(video.description, "https", "www.youtube.com")
-  video.description = add_alt_links(video.description)
-
-  description = video.description.gsub("<br>", " ")
-  description = description.gsub("<br/>", " ")
-  description = XML.parse_html(description).content[0..200].gsub('"', "&quot;").gsub("\n", " ").strip(" ")
-  if description.empty?
-    description = " "
-  end
-
-  if Kemal.config.ssl || CONFIG.https_only
-    scheme = "https://"
-  else
-    scheme = "http://"
-  end
-  host = env.request.headers["Host"]
-  host_url = "#{scheme}#{host}"
-  host_params = env.request.query_params
-  host_params.delete_all("v")
-
-  thumbnail = "https://i.ytimg.com/vi/#{id}/mqdefault.jpg"
+  reason ||= ""
 
   templated "watch"
 end
 
-get "/api/v1/captions/:id" do |env|
-  id = env.params.url["id"]
-
-  client = make_client(YT_URL)
-  begin
-    video = get_video(id, PG_DB)
-  rescue ex
-    halt env, status_code: 403
-  end
-
-  player_response = JSON.parse(video.info["player_response"])
-  if !player_response["captions"]?
-    env.response.content_type = "application/json"
-    next {
-      "captions" => [] of String,
-    }.to_json
-  end
-
-  tracks = player_response["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]?.try &.as_a
-  tracks ||= [] of JSON::Any
-
-  label = env.params.query["label"]?
-  if !label
-    env.response.content_type = "application/json"
-
-    response = JSON.build do |json|
-      json.object do
-        json.field "captions" do
-          json.array do
-            tracks.each do |caption|
-              json.object do
-                json.field "label", caption["name"]["simpleText"]
-                json.field "languageCode", caption["languageCode"]
-              end
-            end
-          end
-        end
-      end
-    end
-
-    next response
-  end
-
-  track = tracks.select { |tracks| tracks["name"]["simpleText"] == label }
-
-  env.response.content_type = "text/vtt"
-  if track.empty?
-    halt env, status_code: 403
-  else
-    track = track[0]
-  end
-
-  track_xml = client.get(track["baseUrl"].as_s).body
-  track_xml = XML.parse(track_xml)
-
-  webvtt = <<-END_VTT
-  WEBVTT
-  Kind: captions
-  Language: #{track["languageCode"]}
-
-
-  END_VTT
-
-  track_xml.xpath_nodes("//transcript/text").each do |node|
-    start_time = node["start"].to_f.seconds
-    duration = node["dur"]?.try &.to_f.seconds
-    duration ||= start_time
-    end_time = start_time + duration
-
-    start_time = "#{start_time.hours.to_s.rjust(2, '0')}:#{start_time.minutes.to_s.rjust(2, '0')}:#{start_time.seconds.to_s.rjust(2, '0')}.#{start_time.milliseconds.to_s.rjust(3, '0')}"
-    end_time = "#{end_time.hours.to_s.rjust(2, '0')}:#{end_time.minutes.to_s.rjust(2, '0')}:#{end_time.seconds.to_s.rjust(2, '0')}.#{end_time.milliseconds.to_s.rjust(3, '0')}"
-
-    text = HTML.unescape(node.content)
-    if md = text.match(/(?<name>.*) : (?<text>.*)/)
-      text = "<v #{md["name"]}>#{md["text"]}</v>"
-    end
-
-    webvtt = webvtt + <<-END_CUE
-    #{start_time} --> #{end_time}
-    #{text}
-
-
-    END_CUE
-  end
-
-  webvtt
-end
-
-get "/api/v1/comments/:id" do |env|
-  id = env.params.url["id"]
-
-  source = env.params.query["source"]?
-  source ||= "youtube"
-
-  format = env.params.query["format"]?
-  format ||= "json"
-
-  if source == "youtube"
-    client = make_client(YT_URL)
-    headers = HTTP::Headers.new
-    html = client.get("/watch?v=#{id}&disable_polymer=1")
-
-    headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
-    headers["content-type"] = "application/x-www-form-urlencoded"
-
-    headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
-    headers["x-spf-previous"] = "https://www.youtube.com/watch?v=#{id}"
-    headers["x-spf-referer"] = "https://www.youtube.com/watch?v=#{id}"
-
-    headers["x-youtube-client-name"] = "1"
-    headers["x-youtube-client-version"] = "2.20180719"
-
-    body = html.body
-    session_token = body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-    ctoken = body.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
-    if !ctoken
-      env.response.content_type = "application/json"
-      next {"comments" => [] of String}.to_json
-    end
-    ctoken = ctoken["ctoken"]
-    itct = body.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
-
-    if env.params.query["continuation"]?
-      continuation = env.params.query["continuation"]
-      ctoken = continuation
-    else
-      continuation = ctoken
-    end
-
-    post_req = {
-      "session_token" => session_token,
-    }
-    post_req = HTTP::Params.encode(post_req)
-
-    response = client.post("/comment_service_ajax?action_get_comments=1&pbj=1&ctoken=#{ctoken}&continuation=#{continuation}&itct=#{itct}", headers, post_req).body
-    response = JSON.parse(response)
-
-    env.response.content_type = "application/json"
-
-    if !response["response"]["continuationContents"]?
-      halt env, status_code: 401
-    end
-
-    response = response["response"]["continuationContents"]
-    if response["commentRepliesContinuation"]?
-      body = response["commentRepliesContinuation"]
-    else
-      body = response["itemSectionContinuation"]
-    end
-    contents = body["contents"]?
-    if !contents
-      if format == "json"
-        next {"comments" => [] of String}.to_json
-      else
-        next {"content_html" => ""}.to_json
-      end
-    end
-
-    comments = JSON.build do |json|
-      json.object do
-        if body["header"]?
-          comment_count = body["header"]["commentsHeaderRenderer"]["countText"]["simpleText"].as_s.delete("Comments,").to_i
-          json.field "commentCount", comment_count
-        end
-
-        json.field "comments" do
-          json.array do
-            contents.as_a.each do |item|
-              json.object do
-                if !response["commentRepliesContinuation"]?
-                  item = item["commentThreadRenderer"]
-                end
-
-                if item["replies"]?
-                  item_replies = item["replies"]["commentRepliesRenderer"]
-                end
-
-                if !response["commentRepliesContinuation"]?
-                  item_comment = item["comment"]["commentRenderer"]
-                else
-                  item_comment = item["commentRenderer"]
-                end
-
-                content_text = item_comment["contentText"]["simpleText"]?.try &.as_s.rchop('\ufeff')
-                content_text ||= item_comment["contentText"]["runs"].as_a.map { |comment| comment["text"] }
-                  .join("").rchop('\ufeff')
-
-                json.field "author", item_comment["authorText"]["simpleText"]
-                json.field "authorThumbnails" do
-                  json.array do
-                    item_comment["authorThumbnail"]["thumbnails"].as_a.each do |thumbnail|
-                      json.object do
-                        json.field "url", thumbnail["url"]
-                        json.field "width", thumbnail["width"]
-                        json.field "height", thumbnail["height"]
-                      end
-                    end
-                  end
-                end
-                json.field "authorId", item_comment["authorEndpoint"]["browseEndpoint"]["browseId"]
-                json.field "authorUrl", item_comment["authorEndpoint"]["browseEndpoint"]["canonicalBaseUrl"]
-                json.field "content", content_text
-                json.field "published", item_comment["publishedTimeText"]["runs"][0]["text"]
-                json.field "likeCount", item_comment["likeCount"]
-                json.field "commentId", item_comment["commentId"]
-
-                if item_replies && !response["commentRepliesContinuation"]?
-                  reply_count = item_replies["moreText"]["simpleText"].as_s.match(/View all (?<count>\d+) replies/)
-                    .try &.["count"].to_i?
-                  reply_count ||= 1
-
-                  continuation = item_replies["continuations"].as_a[0]["nextContinuationData"]["continuation"].as_s
-
-                  json.field "replies" do
-                    json.object do
-                      json.field "replyCount", reply_count
-                      json.field "continuation", continuation
-                    end
-                  end
-                end
-              end
-            end
-          end
-        end
-
-        if body["continuations"]?
-          continuation = body["continuations"][0]["nextContinuationData"]["continuation"]
-          json.field "continuation", continuation
-        end
-      end
-    end
-
-    if format == "json"
-      next comments
-    else
-      comments = JSON.parse(comments)
-      content_html = template_youtube_comments(comments)
-
-      {"content_html" => content_html}.to_json
-    end
-  elsif source == "reddit"
-    client = make_client(REDDIT_URL)
-    headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.1.0 (by /u/omarroth)"}
-    begin
-      comments, reddit_thread = get_reddit_comments(id, client, headers)
-      content_html = template_reddit_comments(comments)
-
-      content_html = fill_links(content_html, "https", "www.reddit.com")
-      content_html = add_alt_links(content_html)
-    rescue ex
-      reddit_thread = nil
-      content_html = ""
-    end
-
-    if !reddit_thread
-      halt env, status_code: 404
-    end
-
-    {"title"        => reddit_thread.title,
-     "permalink"    => reddit_thread.permalink,
-     "content_html" => content_html}.to_json
-  end
-end
-
-get "/api/v1/videos/:id" do |env|
-  id = env.params.url["id"]
-
-  begin
-    video = get_video(id, PG_DB)
-  rescue ex
-    halt env, status_code: 403
-  end
-
-  adaptive_fmts = [] of HTTP::Params
-  if video.info.has_key?("adaptive_fmts")
-    video.info["adaptive_fmts"].split(",") do |string|
-      adaptive_fmts << HTTP::Params.parse(string)
-    end
-  end
-
-  fmt_stream = [] of HTTP::Params
-  video.info["url_encoded_fmt_stream_map"].split(",") do |string|
-    if !string.empty?
-      fmt_stream << HTTP::Params.parse(string)
-    end
-  end
-
-  if adaptive_fmts[0]? && adaptive_fmts[0]["s"]?
-    adaptive_fmts.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
-
-    fmt_stream.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
-  end
-
-  player_response = JSON.parse(video.info["player_response"])
-  if player_response["captions"]?
-    captions = player_response["captions"]["playerCaptionsTracklistRenderer"]["captionTracks"]?.try &.as_a
-  end
-  captions ||= [] of JSON::Any
-
-  env.response.content_type = "application/json"
-  video_info = JSON.build do |json|
-    json.object do
-      json.field "title", video.title
-      json.field "videoId", video.id
-      json.field "videoThumbnails" do
-        json.object do
-          qualities = [{name: "default", url: "default", width: 120, height: 90},
-                       {name: "high", url: "hqdefault", width: 480, height: 360},
-                       {name: "medium", url: "mqdefault", width: 320, height: 180},
-          ]
-          qualities.each do |quality|
-            json.field quality[:name] do
-              json.object do
-                json.field "url", "https://i.ytimg.com/vi/#{id}/#{quality["url"]}.jpg"
-                json.field "width", quality[:width]
-                json.field "height", quality[:height]
-              end
-            end
-          end
-        end
-      end
-
-      description = video.description.gsub("<br>", "\n")
-      description = description.gsub("<br/>", "\n")
-      description = XML.parse_html(description)
-
-      json.field "description", description.content
-      json.field "descriptionHtml", video.description
-      json.field "published", video.published.epoch
-      json.field "keywords" do
-        json.array do
-          video.info["keywords"].split(",").each { |keyword| json.string keyword }
-        end
-      end
-
-      json.field "viewCount", video.views
-      json.field "likeCount", video.likes
-      json.field "dislikeCount", video.dislikes
-
-      json.field "isFamilyFriendly", video.is_family_friendly
-      json.field "allowedRegions", video.allowed_regions
-      json.field "genre", video.genre
-
-      json.field "author", video.author
-      json.field "authorId", video.ucid
-      json.field "authorUrl", "/channel/#{video.ucid}"
-
-      json.field "lengthSeconds", video.info["length_seconds"].to_i
-      if video.info["allow_ratings"]?
-        json.field "allowRatings", video.info["allow_ratings"] == "1"
-      else
-        json.field "allowRatings", false
-      end
-      json.field "rating", video.info["avg_rating"].to_f32
-
-      if video.info["is_listed"]?
-        json.field "isListed", video.info["is_listed"] == "1"
-      end
-
-      fmt_list = video.info["fmt_list"].split(",").map { |fmt| fmt.split("/")[1] }
-      fmt_list = Hash.zip(fmt_list.map { |fmt| fmt[0] }, fmt_list.map { |fmt| fmt[1] })
-
-      json.field "adaptiveFormats" do
-        json.array do
-          adaptive_fmts.each_with_index do |adaptive_fmt, i|
-            json.object do
-              json.field "index", adaptive_fmt["index"]
-              json.field "bitrate", adaptive_fmt["bitrate"]
-              json.field "init", adaptive_fmt["init"]
-              json.field "url", adaptive_fmt["url"]
-              json.field "itag", adaptive_fmt["itag"]
-              json.field "type", adaptive_fmt["type"]
-              json.field "clen", adaptive_fmt["clen"]
-              json.field "lmt", adaptive_fmt["lmt"]
-              json.field "projectionType", adaptive_fmt["projection_type"]
-
-              fmt_info = itag_to_metadata(adaptive_fmt["itag"])
-              json.field "container", fmt_info["ext"]
-              json.field "encoding", fmt_info["vcodec"]? || fmt_info["acodec"]
-
-              if fmt_info["fps"]?
-                json.field "fps", fmt_info["fps"]
-              end
-
-              if fmt_info["height"]?
-                json.field "qualityLabel", "#{fmt_info["height"]}p"
-                json.field "resolution", "#{fmt_info["height"]}p"
-
-                if fmt_info["width"]?
-                  json.field "size", "#{fmt_info["width"]}x#{fmt_info["height"]}"
-                end
-              end
-            end
-          end
-        end
-      end
-
-      json.field "formatStreams" do
-        json.array do
-          fmt_stream.each do |fmt|
-            json.object do
-              json.field "url", fmt["url"]
-              json.field "itag", fmt["itag"]
-              json.field "type", fmt["type"]
-              json.field "quality", fmt["quality"]
-
-              fmt_info = itag_to_metadata(fmt["itag"])
-              json.field "container", fmt_info["ext"]
-              json.field "encoding", fmt_info["vcodec"]? || fmt_info["acodec"]
-
-              if fmt_info["fps"]?
-                json.field "fps", fmt_info["fps"]
-              end
-
-              if fmt_info["height"]?
-                json.field "qualityLabel", "#{fmt_info["height"]}p"
-                json.field "resolution", "#{fmt_info["height"]}p"
-
-                if fmt_info["width"]?
-                  json.field "size", "#{fmt_info["width"]}x#{fmt_info["height"]}"
-                end
-              end
-            end
-          end
-        end
-      end
-
-      json.field "captions" do
-        json.array do
-          captions.each do |caption|
-            json.object do
-              json.field "label", caption["name"]["simpleText"]
-              json.field "languageCode", caption["languageCode"]
-            end
-          end
-        end
-      end
-
-      json.field "recommendedVideos" do
-        json.array do
-          video.info["rvs"].split(",").each do |rv|
-            rv = HTTP::Params.parse(rv)
-
-            if rv["id"]?
-              json.object do
-                json.field "videoId", rv["id"]
-                json.field "title", rv["title"]
-                json.field "videoThumbnails" do
-                  json.object do
-                    qualities = [{name: "default", url: "default", width: 120, height: 90},
-                                 {name: "high", url: "hqdefault", width: 480, height: 360},
-                                 {name: "medium", url: "mqdefault", width: 320, height: 180},
-                    ]
-                    qualities.each do |quality|
-                      json.field quality[:name] do
-                        json.object do
-                          json.field "url", "https://i.ytimg.com/vi/#{rv["id"]}/#{quality["url"]}.jpg"
-                          json.field "width", quality[:width]
-                          json.field "height", quality[:height]
-                        end
-                      end
-                    end
-                  end
-                end
-                json.field "author", rv["author"]
-                json.field "lengthSeconds", rv["length_seconds"]
-                json.field "viewCountText", rv["short_view_count_text"].rchop(" views")
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  video_info
-end
-
-get "/api/v1/trending" do |env|
-  client = make_client(YT_URL)
-  trending = client.get("/feed/trending?disable_polymer=1").body
-
-  trending = XML.parse_html(trending)
-  videos = JSON.build do |json|
-    json.array do
-      trending.xpath_nodes(%q(//ul/li[@class="expanded-shelf-content-item-wrapper"])).each do |node|
-        length_seconds = node.xpath_node(%q(.//span[@class="video-time"])).not_nil!.content
-        minutes, seconds = length_seconds.split(":")
-        length_seconds = minutes.to_i * 60 + seconds.to_i
-
-        video = node.xpath_node(%q(.//h3/a)).not_nil!
-        title = video.content
-        id = video["href"].lchop("/watch?v=")
-
-        channel = node.xpath_node(%q(.//div[contains(@class, "yt-lockup-byline")]/a)).not_nil!
-        author = channel.content
-        author_url = channel["href"]
-
-        published, view_count = node.xpath_nodes(%q(.//ul[@class="yt-lockup-meta-info"]/li))
-        view_count = view_count.content.rchop(" views")
-        if view_count = "No"
-          view_count = 0
-        else
-          view_count = view_count.delete(",").to_i
-        end
-
-        descriptionHtml = node.xpath_node(%q(.//div[contains(@class, "yt-lockup-description")]))
-        if !descriptionHtml
-          description = ""
-          descriptionHtml = ""
-        else
-          descriptionHtml = descriptionHtml.to_s
-          description = descriptionHtml.gsub("<br>", "\n")
-          description = description.gsub("<br/>", "\n")
-          description = XML.parse_html(description).content.strip("\n ")
-        end
-
-        published = published.content.split(" ")[-3..-1].join(" ")
-        published = decode_date(published)
-
-        json.object do
-          json.field "title", title
-          json.field "videoId", id
-          json.field "videoThumbnails" do
-            json.object do
-              qualities = [{name: "default", url: "default", width: 120, height: 90},
-                           {name: "high", url: "hqdefault", width: 480, height: 360},
-                           {name: "medium", url: "mqdefault", width: 320, height: 180},
-              ]
-              qualities.each do |quality|
-                json.field quality[:name] do
-                  json.object do
-                    json.field "url", "https://i.ytimg.com/vi/#{id}/#{quality["url"]}.jpg"
-                    json.field "width", quality[:width]
-                    json.field "height", quality[:height]
-                  end
-                end
-              end
-            end
-          end
-
-          json.field "lengthSeconds", length_seconds
-          json.field "viewCount", view_count
-          json.field "author", author
-          json.field "authorUrl", author_url
-          json.field "published", published.epoch
-          json.field "description", description
-          json.field "descriptionHtml", descriptionHtml
-        end
-      end
-    end
-  end
-
-  env.response.content_type = "application/json"
-  videos
-end
-
-get "/api/v1/top" do |env|
-  videos = JSON.build do |json|
-    json.array do
-      top_videos.each do |video|
-        json.object do
-          json.field "title", video.title
-          json.field "videoId", video.id
-          json.field "videoThumbnails" do
-            json.object do
-              qualities = [{name: "default", url: "default", width: 120, height: 90},
-                           {name: "high", url: "hqdefault", width: 480, height: 360},
-                           {name: "medium", url: "mqdefault", width: 320, height: 180},
-              ]
-              qualities.each do |quality|
-                json.field quality[:name] do
-                  json.object do
-                    json.field "url", "https://i.ytimg.com/vi/#{video.id}/#{quality["url"]}.jpg"
-                    json.field "width", quality[:width]
-                    json.field "height", quality[:height]
-                  end
-                end
-              end
-            end
-          end
-
-          json.field "lengthSeconds", video.info["length_seconds"].to_i
-          json.field "viewCount", video.views
-
-          json.field "author", video.author
-          json.field "authorUrl", "/channel/#{video.ucid}"
-          json.field "published", video.published.epoch
-
-          description = video.description.gsub("<br>", "\n")
-          description = description.gsub("<br/>", "\n")
-          description = XML.parse_html(description)
-          json.field "description", description.content
-          json.field "descriptionHtml", video.description
-        end
-      end
-    end
-  end
-
-  env.response.content_type = "application/json"
-  videos
-end
-
-get "/api/v1/channels/:ucid" do |env|
-  ucid = env.params.url["ucid"]
-
-  client = make_client(YT_URL)
-  channel = get_channel(ucid, client, PG_DB, pull_all_videos: false)
-
-  # TODO: Integrate this into `get_channel` function
-  # We can't get everything from RSS feed, so we get it from the channel page
-  channel_html = client.get("/channel/#{ucid}/about?disable_polymer=1").body
-  channel_html = XML.parse_html(channel_html)
-  banner = channel_html.xpath_node(%q(//div[@id="gh-banner"]/style)).not_nil!.content
-  banner = "https:" + banner.match(/background-image: url\((?<url>[^)]+)\)/).not_nil!["url"]
-
-  author_url = channel_html.xpath_node(%q(//a[@class="channel-header-profile-image-container spf-link"])).not_nil!["href"]
-  author_thumbnail = channel_html.xpath_node(%q(//img[@class="channel-header-profile-image"])).not_nil!["src"]
-  description = channel_html.xpath_node(%q(//meta[@itemprop="description"])).not_nil!["content"]
-
-  paid = channel_html.xpath_node(%q(//meta[@itemprop="paid"])).not_nil!["content"] == "True"
-  is_family_friendly = channel_html.xpath_node(%q(//meta[@itemprop="isFamilyFriendly"])).not_nil!["content"] == "True"
-  allowed_regions = channel_html.xpath_node(%q(//meta[@itemprop="regionsAllowed"])).not_nil!["content"].split(",")
-
-  sub_count, total_views, joined = channel_html.xpath_nodes(%q(//span[@class="about-stat"]))
-  sub_count = sub_count.content.rchop(" subscribers").delete(",").to_i64
-  total_views = total_views.content.rchop(" views").lchop(" • ").delete(",").to_i64
-  joined = Time.parse(joined.content.lchop("Joined "), "%b %-d, %Y", Time::Location.local)
-
-  latest_videos = PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid = $1 ORDER BY published DESC LIMIT 15",
-    channel.id, as: ChannelVideo)
-
-  channel_info = JSON.build do |json|
-    json.object do
-      json.field "author", channel.author
-      json.field "authorId", channel.id
-      json.field "authorUrl", author_url
-
-      json.field "authorBanners" do
-        json.array do
-          qualities = [{width: 2560, height: 424},
-                       {width: 2120, height: 351},
-                       {width: 1060, height: 175}]
-          qualities.each do |quality|
-            json.object do
-              json.field "url", banner.gsub("=w1060", "=w#{quality[:width]}")
-              json.field "width", quality[:width]
-              json.field "height", quality[:height]
-            end
-          end
-
-          json.object do
-            json.field "url", banner.rchop("=w1060-fcrop64=1,00005a57ffffa5a8-nd-c0xffffffff-rj-k-no")
-            json.field "width", 512
-            json.field "height", 288
-          end
-        end
-      end
-
-      json.field "authorThumbnails" do
-        json.array do
-          qualities = [32, 48, 76, 100, 512]
-
-          qualities.each do |quality|
-            json.object do
-              json.field "url", author_thumbnail.gsub("/s100-", "/s#{quality}-")
-              json.field "width", quality
-              json.field "height", quality
-            end
-          end
-        end
-      end
-
-      json.field "subCount", sub_count
-      json.field "totalViews", total_views
-      json.field "joined", joined.epoch
-      json.field "paid", paid
-
-      json.field "isFamilyFriendly", is_family_friendly
-      json.field "description", description
-      json.field "allowedRegions", allowed_regions
-
-      json.field "latestVideos" do
-        json.array do
-          latest_videos.each do |video|
-            json.object do
-              json.field "title", video.title
-              json.field "videoId", video.id
-              json.field "published", video.published.epoch
-
-              json.field "videoThumbnails" do
-                json.object do
-                  qualities = [{name: "default", url: "default", width: 120, height: 90},
-                               {name: "high", url: "hqdefault", width: 480, height: 360},
-                               {name: "medium", url: "mqdefault", width: 320, height: 180},
-                  ]
-                  qualities.each do |quality|
-                    json.field quality[:name] do
-                      json.object do
-                        json.field "url", "https://i.ytimg.com/vi/#{video.id}/#{quality["url"]}.jpg"
-                        json.field "width", quality[:width]
-                        json.field "height", quality[:height]
-                      end
-                    end
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  env.response.content_type = "application/json"
-  channel_info
-end
-
-get "/api/v1/channels/:ucid/videos" do |env|
-  ucid = env.params.url["ucid"]
-  page = env.params.query["page"]?.try &.to_i?
-  page ||= 1
-
-  url = produce_videos_url(ucid, page)
-  client = make_client(YT_URL)
-  response = client.get(url)
-
-  json = JSON.parse(response.body)
-  if !json["content_html"]? || json["content_html"].as_s.empty?
-    env.response.content_type = "application/json"
-    next {"error" => "No videos or nonexistent channel"}.to_json
-  end
-
-  content_html = json["content_html"].as_s
-  if content_html.empty?
-    env.response.content_type = "application/json"
-    next Hash(String, String).new.to_json
-  end
-  document = XML.parse_html(content_html)
-
-  videos = JSON.build do |json|
-    json.array do
-      document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")])).each do |item|
-        anchor = item.xpath_node(%q(.//h3[contains(@class,"yt-lockup-title")]/a)).not_nil!
-        title = anchor.content.strip
-        video_id = anchor["href"].lchop("/watch?v=")
-
-        published = item.xpath_node(%q(.//div[contains(@class,"yt-lockup-meta")]/ul/li[1]))
-        if !published
-          next
-        end
-        published = published.content
-        if published.ends_with? "watching"
-          next
-        end
-        published = decode_date(published)
-
-        view_count = item.xpath_node(%q(.//div[contains(@class,"yt-lockup-meta")]/ul/li[2])).not_nil!
-        view_count = view_count.content.rchop(" views")
-        if view_count = "No"
-          view_count = 0
-        else
-          view_count = view_count.delete(",").to_i
-        end
-
-        descriptionHtml = item.xpath_node(%q(.//div[contains(@class, "yt-lockup-description")]))
-        if !descriptionHtml
-          description = ""
-          descriptionHtml = ""
-        else
-          descriptionHtml = descriptionHtml.to_s
-          description = descriptionHtml.gsub("<br>", "\n")
-          description = description.gsub("<br/>", "\n")
-          description = XML.parse_html(description).content.strip("\n ")
-        end
-
-        length_seconds = item.xpath_node(%q(.//span[@class="video-time"]/span)).not_nil!.content
-        length_seconds = length_seconds.split(":").map { |a| a.to_i }
-        length_seconds = [0] * (3 - length_seconds.size) + length_seconds
-        length_seconds = Time::Span.new(length_seconds[0], length_seconds[1], length_seconds[2])
-
-        json.object do
-          json.field "title", title
-          json.field "videoId", video_id
-
-          json.field "videoThumbnails" do
-            json.object do
-              qualities = [{name: "default", url: "default", width: 120, height: 90},
-                           {name: "high", url: "hqdefault", width: 480, height: 360},
-                           {name: "medium", url: "mqdefault", width: 320, height: 180},
-              ]
-              qualities.each do |quality|
-                json.field quality[:name] do
-                  json.object do
-                    json.field "url", "https://i.ytimg.com/vi/#{video_id}/#{quality["url"]}.jpg"
-                    json.field "width", quality[:width]
-                    json.field "height", quality[:height]
-                  end
-                end
-              end
-            end
-          end
-
-          json.field "description", description
-          json.field "descriptionHtml", descriptionHtml
-
-          json.field "viewCount", view_count
-          json.field "published", published.epoch
-          json.field "lengthSeconds", length_seconds.total_seconds.to_i
-        end
-      end
-    end
-  end
-
-  env.response.content_type = "application/json"
-  videos
-end
-
-        if !published
-          next
-        end
-        published = published.content
-        published = decode_date(published)
-
-        length_seconds = item.xpath_node(%q(.//span[@class="video-time"]/span)).not_nil!.content
-        length_seconds = length_seconds.split(":").map { |a| a.to_i }
-        length_seconds = [0] * (3 - length_seconds.size) + length_seconds
-        length_seconds = Time::Span.new(length_seconds[0], length_seconds[1], length_seconds[2])
-
-        json.object do
-          json.field "title", title
-          json.field "videoId", video_id
-
-          json.field "videoThumbnails" do
-            json.object do
-              qualities = [{name: "default", url: "default", width: 120, height: 90},
-                           {name: "high", url: "hqdefault", width: 480, height: 360},
-                           {name: "medium", url: "mqdefault", width: 320, height: 180},
-              ]
-              qualities.each do |quality|
-                json.field quality[:name] do
-                  json.object do
-                    json.field "url", "https://i.ytimg.com/vi/#{video_id}/#{quality["url"]}.jpg"
-                    json.field "width", quality[:width]
-                    json.field "height", quality[:height]
-                  end
-                end
-              end
-            end
-          end
-
-          json.field "description", description
-          json.field "descriptionHtml", descriptionHtml
-
-          json.field "viewCount", view_count
-          json.field "published", published.epoch
-          json.field "lengthSeconds", length_seconds.total_seconds.to_i
-        end
-      end
-    end
-  end
-
-  env.response.content_type = "application/json"
-  videos
-end
-
 get "/embed/:id" do |env|
-  if env.params.url["id"]?
-    id = env.params.url["id"]
-  else
-    next env.redirect "/"
+  id = env.params.url["id"]
+
+  if id.includes?("%20") || id.includes?("+") || env.params.query.to_s.includes?("%20") || env.params.query.to_s.includes?("+")
+    id = env.params.url["id"].gsub("%20", "").delete("+")
+
+    url = "/embed/#{id}"
+
+    if env.params.query.size > 0
+      url += "?#{env.params.query.to_s.gsub("%20", "").delete("+")}"
+    end
+
+    next env.redirect url
   end
 
-  if env.params.query["start"]?
-    video_start = decode_time(env.params.query["start"])
+  if id.size > 11
+    url = "/embed/#{id[0, 11]}"
+
+    if env.params.query.size > 0
+      url += "?#{env.params.query}"
+    end
+
+    next env.redirect url
   end
 
-  if env.params.query["t"]?
-    video_start = decode_time(env.params.query["t"])
-  end
-  video_start ||= 0
-
-  if env.params.query["end"]?
-    video_end = decode_time(env.params.query["end"])
-  end
-  video_end ||= -1
-
-  if env.params.query["listen"]? && env.params.query["listen"] == "true"
-    listen = true
-    env.params.query.delete_all("listen")
-  end
-  listen ||= false
-
-  raw = env.params.query["raw"]?.try &.to_i?
-  raw ||= 0
-  raw = raw == 1
-
-  quality = env.params.query["quality"]?
-  quality ||= "hd720"
-
-  autoplay = env.params.query["autoplay"]?.try &.to_i?
-  autoplay ||= 0
-  autoplay = autoplay == 1
-
-  controls = env.params.query["controls"]?.try &.to_i?
-  controls ||= 1
-  controls = controls == 1
-
-  video_loop = env.params.query["loop"]?.try &.to_i?
-  video_loop ||= 0
-  video_loop = video_loop == 1
+  params = process_video_params(env.params.query, nil)
 
   begin
     video = get_video(id, PG_DB)
@@ -1368,58 +329,46 @@ get "/embed/:id" do |env|
     next templated "error"
   end
 
+  fmt_stream = video.fmt_stream(decrypt_function)
+  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+  video_streams = video.video_streams(adaptive_fmts)
+  audio_streams = video.audio_streams(adaptive_fmts)
+
+  captions = video.captions
+
+  preferred_captions = captions.select { |caption|
+    params[:preferred_captions].includes?(caption.name.simpleText) ||
+      params[:preferred_captions].includes?(caption.languageCode.split("-")[0])
+  }
+  preferred_captions.sort_by! { |caption|
+    (params[:preferred_captions].index(caption.name.simpleText) ||
+      params[:preferred_captions].index(caption.languageCode.split("-")[0])).not_nil!
+  }
+  captions = captions - preferred_captions
+
+  aspect_ratio = nil
+
+  video.description = fill_links(video.description, "https", "www.youtube.com")
+  video.description = add_alt_links(video.description)
+  description = video.short_description
+
+  host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
+  host_params = env.request.query_params
+  host_params.delete_all("v")
+
   if video.info["hlsvp"]?
     hlsvp = video.info["hlsvp"]
-
-    if Kemal.config.ssl || CONFIG.https_only
-      scheme = "https://"
-    else
-      scheme = "http://"
-    end
-    host = env.request.headers["Host"]
-    url = "#{scheme}#{host}"
-
-    hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", url)
+    hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", host_url)
   end
 
-  fmt_stream = [] of HTTP::Params
-  video.info["url_encoded_fmt_stream_map"].split(",") do |string|
-    if !string.empty?
-      fmt_stream << HTTP::Params.parse(string)
-    end
-  end
+  # TODO: Find highest resolution thumbnail automatically
+  thumbnail = "https://i.ytimg.com/vi/#{video.id}/mqdefault.jpg"
 
-  fmt_stream.each { |s| s.add("label", "#{s["quality"]} - #{s["type"].split(";")[0].split("/")[1]}") }
-  fmt_stream = fmt_stream.uniq { |s| s["label"] }
-
-  adaptive_fmts = [] of HTTP::Params
-  if video.info.has_key?("adaptive_fmts")
-    video.info["adaptive_fmts"].split(",") do |string|
-      adaptive_fmts << HTTP::Params.parse(string)
-    end
-  end
-
-  if adaptive_fmts[0]? && adaptive_fmts[0]["s"]?
-    adaptive_fmts.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
-
-    fmt_stream.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
-  end
-
-  audio_streams = adaptive_fmts.compact_map { |s| s["type"].starts_with?("audio") ? s : nil }
-  audio_streams.sort_by! { |s| s["bitrate"].to_i }.reverse!
-  audio_streams.each do |stream|
-    stream["bitrate"] = (stream["bitrate"].to_f64/1000).to_i.to_s
-  end
-
-  if raw
+  if params[:raw]
     url = fmt_stream[0]["url"]
 
     fmt_stream.each do |fmt|
-      if fmt["label"].split(" - ")[0] == quality
+      if fmt["label"].split(" - ")[0] == params[:quality]
         url = fmt["url"]
       end
     end
@@ -1427,86 +376,90 @@ get "/embed/:id" do |env|
     next env.redirect url
   end
 
-  video.description = fill_links(video.description, "https", "www.youtube.com")
-  video.description = add_alt_links(video.description)
-
-  description = video.description.gsub("<br>", " ")
-  description = description.gsub("<br/>", " ")
-  description = XML.parse_html(description).content[0..200].gsub('"', "&quot;").gsub("\n", " ").strip(" ")
-  if description.empty?
-    description = " "
-  end
-
-  if Kemal.config.ssl || CONFIG.https_only
-    scheme = "https://"
-  else
-    scheme = "http://"
-  end
-  host = env.request.headers["Host"]
-  host_url = "#{scheme}#{host}"
-  host_params = env.request.query_params
-  host_params.delete_all("v")
-
-  thumbnail = "https://i.ytimg.com/vi/#{id}/mqdefault.jpg"
-
   rendered "embed"
 end
 
-get "/results" do |env|
-  search_query = env.params.query["search_query"]?
-  if search_query
-    env.redirect "/search?q=#{URI.escape(search_query)}"
-  else
-    env.redirect "/"
-  end
-end
-
-get "/search" do |env|
-  if env.params.query["q"]?
-    query = env.params.query["q"]
-  else
+# Playlists
+get "/playlist" do |env|
+  plid = env.params.query["list"]?
+  if !plid
     next env.redirect "/"
   end
 
   page = env.params.query["page"]?.try &.to_i?
   page ||= 1
 
-  client = make_client(YT_URL)
-  html = client.get("/results?q=#{URI.escape(query)}&page=#{page}&sp=EgIQAVAU").body
-  html = XML.parse_html(html)
+  if plid
+    begin
+      videos = extract_playlist(plid, page)
+    rescue ex
+      error_message = ex.message
+      next templated "error"
+    end
+    playlist = fetch_playlist(plid)
+  else
+    next env.redirect "/"
+  end
 
-  videos = [] of ChannelVideo
+  templated "playlist"
+end
 
-  html.xpath_nodes(%q(//ol[@class="item-section"]/li)).each do |item|
-    root = item.xpath_node(%q(div[contains(@class,"yt-lockup-video")]/div))
-    if root
-      id = root.xpath_node(%q(div[contains(@class,"yt-lockup-thumbnail")]/a/@href))
-      if id
-        id = id.content.lchop("/watch?v=")
-      end
-      id ||= ""
+# Search
 
-      title = root.xpath_node(%q(div[@class="yt-lockup-content"]/h3/a))
-      if title
-        title = title.content
-      end
-      title ||= ""
+get "/results" do |env|
+  query = env.params.query["search_query"]?
+  query ||= env.params.query["q"]?
+  query ||= ""
 
-      author = root.xpath_node(%q(div[@class="yt-lockup-content"]/div/a))
-      if author
-        ucid = author["href"].rpartition("/")[-1]
-        author = author.content
-      end
-      author ||= ""
-      ucid ||= ""
+  page = env.params.query["page"]?.try &.to_i?
+  page ||= 1
 
-      video = ChannelVideo.new(id, title, Time.now, Time.now, ucid, author)
-      videos << video
+  if query
+    env.redirect "/search?q=#{URI.escape(query)}&page=#{page}"
+  else
+    env.redirect "/"
+  end
+end
+
+get "/search" do |env|
+  query = env.params.query["search_query"]?
+  query ||= env.params.query["q"]?
+  query ||= ""
+
+  page = env.params.query["page"]?.try &.to_i?
+  page ||= 1
+
+  sort = "relevance"
+  date = ""
+  duration = ""
+  features = [] of String
+
+  operators = query.split(" ").select { |a| a.match(/\w+:[\w,]+/) }
+  operators.each do |operator|
+    key, value = operator.split(":")
+
+    case key
+    when "sort"
+      sort = value
+    when "date"
+      date = value
+    when "duration"
+      duration = value
+    when "features"
+      features = value.split(",")
     end
   end
 
+  search_query = (query.split(" ") - operators).join(" ")
+
+  search_params = build_search_params(sort: sort, date: date, content_type: "video",
+    duration: duration, features: features)
+  count, videos = search(search_query, page, search_params).as(Tuple)
+
   templated "search"
 end
+
+# Users
 
 get "/login" do |env|
   user = env.get? "user"
@@ -1514,8 +467,7 @@ get "/login" do |env|
     next env.redirect "/feed/subscriptions"
   end
 
-  referer = env.request.headers["referer"]?
-  referer ||= "/feed/subscriptions"
+  referer = get_referer(env, "/feed/subscriptions")
 
   account_type = env.params.query["type"]?
   account_type ||= "invidious"
@@ -1527,21 +479,12 @@ get "/login" do |env|
   tfa = env.params.query["tfa"]?
   tfa ||= false
 
-  if referer.ends_with? "/login"
-    referer = "/feed/subscriptions"
-  end
-
-  if referer.size > 64
-    referer = "/feed/subscriptions"
-  end
-
   templated "login"
 end
 
 # See https://github.com/rg3/youtube-dl/blob/master/youtube_dl/extractor/youtube.py#L79
 post "/login" do |env|
-  referer = env.params.query["referer"]?
-  referer ||= "/feed/subscriptions"
+  referer = get_referer(env, "/feed/subscriptions")
 
   email = env.params.body["email"]?
   password = env.params.body["password"]?
@@ -1635,7 +578,7 @@ post "/login" do |env|
           end
 
           if !tfa_code
-            next env.redirect "/login?tfa=true&type=google"
+            next env.redirect "/login?tfa=true&type=google&referer=#{URI.escape(referer)}"
           end
 
           tl = challenge_results[1][2]
@@ -1747,8 +690,8 @@ post "/login" do |env|
       end
 
       if Crypto::Bcrypt::Password.new(user.password.not_nil!) == password
-        sid = Base64.encode(Random::Secure.random_bytes(50))
-        PG_DB.exec("UPDATE users SET id = $1 WHERE email = $2", sid, email)
+        sid = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
+        PG_DB.exec("UPDATE users SET id = id || $1 WHERE email = $2", [sid], email)
 
         if Kemal.config.ssl || CONFIG.https_only
           secure = true
@@ -1769,7 +712,7 @@ post "/login" do |env|
         next templated "error"
       end
 
-      sid = Base64.encode(Random::Secure.random_bytes(50))
+      sid = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
       user = create_user(sid, email, password)
       user_array = user.to_a
 
@@ -1793,26 +736,26 @@ post "/login" do |env|
 end
 
 get "/signout" do |env|
-  referer = env.request.headers["referer"]?
-  referer ||= "/"
+  referer = get_referer(env)
 
   env.request.cookies.each do |cookie|
     cookie.expires = Time.new(1990, 1, 1)
   end
 
+  if env.get? "user"
+    user = env.get("user").as(User)
+    sid = env.get("sid").as(String)
+    PG_DB.exec("UPDATE users SET id = array_remove(id, $1) WHERE email = $2", sid, user.email)
+  end
+
   env.request.cookies.add_response_headers(env.response.headers)
-  env.redirect referer
+  env.redirect URI.unescape(referer)
 end
 
 get "/preferences" do |env|
   user = env.get? "user"
 
-  referer = env.request.headers["referer"]?
-  referer ||= "/preferences"
-
-  if referer.size > 64
-    referer = "/preferences"
-  end
+  referer = get_referer(env)
 
   if user
     user = user.as(User)
@@ -1825,8 +768,7 @@ end
 post "/preferences" do |env|
   user = env.get? "user"
 
-  referer = env.params.query["referer"]?
-  referer ||= "/preferences"
+  referer = get_referer(env)
 
   if user
     user = user.as(User)
@@ -1848,8 +790,18 @@ post "/preferences" do |env|
     volume = env.params.body["volume"]?.try &.as(String).to_i?
     volume ||= 100
 
-    comments = env.params.body["comments"]?
-    comments ||= "youtube"
+    comments_0 = env.params.body["comments_0"]?.try &.as(String) || "youtube"
+    comments_1 = env.params.body["comments_1"]?.try &.as(String) || ""
+    comments = [comments_0, comments_1]
+
+    captions_0 = env.params.body["captions_0"]?.try &.as(String) || ""
+    captions_1 = env.params.body["captions_1"]?.try &.as(String) || ""
+    captions_2 = env.params.body["captions_2"]?.try &.as(String) || ""
+    captions = [captions_0, captions_1, captions_2]
+
+    related_videos = env.params.body["related_videos"]?.try &.as(String)
+    related_videos ||= "off"
+    related_videos = related_videos == "on"
 
     redirect_feed = env.params.body["redirect_feed"]?.try &.as(String)
     redirect_feed ||= "off"
@@ -1888,6 +840,8 @@ post "/preferences" do |env|
       "quality"            => quality,
       "volume"             => volume,
       "comments"           => comments,
+      "captions"           => captions,
+      "related_videos"     => related_videos,
       "redirect_feed"      => redirect_feed,
       "dark_mode"          => dark_mode,
       "thin_mode"          => thin_mode,
@@ -1904,9 +858,391 @@ post "/preferences" do |env|
   env.redirect referer
 end
 
-# Get subscriptions for authorized user
+get "/toggle_theme" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env)
+
+  if user
+    user = user.as(User)
+    preferences = user.preferences
+
+    if preferences.dark_mode
+      preferences.dark_mode = false
+    else
+      preferences.dark_mode = true
+    end
+
+    PG_DB.exec("UPDATE users SET preferences = $1 WHERE email = $2", preferences.to_json, user.email)
+  end
+
+  env.redirect referer
+end
+
+# /modify_notifications
+# will "ding" all subscriptions.
+# /modify_notifications?receive_all_updates=false&receive_no_updates=false
+# will "unding" all subscriptions.
+get "/modify_notifications" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env)
+
+  if user
+    user = user.as(User)
+
+    channel_req = {} of String => String
+
+    channel_req["receive_all_updates"] = env.params.query["receive_all_updates"]? || "true"
+    channel_req["receive_no_updates"] = env.params.query["receive_no_updates"]? || ""
+    channel_req["receive_post_updates"] = env.params.query["receive_post_updates"]? || "true"
+
+    channel_req.reject! { |k, v| v != "true" && v != "false" }
+
+    headers = HTTP::Headers.new
+    headers["Cookie"] = env.request.headers["Cookie"]
+
+    client = make_client(YT_URL)
+    subs = client.get("/subscription_manager?disable_polymer=1", headers)
+    headers["Cookie"] += "; " + subs.cookies.add_request_headers(headers)["Cookie"]
+    match = subs.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+    if match
+      session_token = match["session_token"]
+    else
+      next env.redirect referer
+    end
+
+    channel_req["session_token"] = session_token
+
+    headers["content-type"] = "application/x-www-form-urlencoded"
+    subs = XML.parse_html(subs.body)
+    subs.xpath_nodes(%q(//a[@class="subscription-title yt-uix-sessionlink"]/@href)).each do |channel|
+      channel_id = channel.content.lstrip("/channel/").not_nil!
+
+      channel_req["channel_id"] = channel_id
+
+      client.post("/subscription_ajax?action_update_subscription_preferences=1", headers,
+        HTTP::Params.encode(channel_req)).body
+    end
+  end
+
+  env.redirect referer
+end
+
+get "/subscription_manager" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env, "/")
+
+  if !user
+    next env.redirect referer
+  end
+
+  user = user.as(User)
+
+  if !user.password
+    # Refresh account
+    headers = HTTP::Headers.new
+    headers["Cookie"] = env.request.headers["Cookie"]
+
+    client = make_client(YT_URL)
+    user = get_user(user.id[0], client, headers, PG_DB)
+  end
+
+  action_takeout = env.params.query["action_takeout"]?.try &.to_i?
+  action_takeout ||= 0
+  action_takeout = action_takeout == 1
+
+  format = env.params.query["format"]?
+  format ||= "rss"
+
+  client = make_client(YT_URL)
+
+  subscriptions = [] of InvidiousChannel
+  user.subscriptions.each do |ucid|
+    begin
+      subscriptions << get_channel(ucid, client, PG_DB, false)
+    rescue ex
+      next
+    end
+  end
+  subscriptions.sort_by! { |channel| channel.author.downcase }
+
+  if action_takeout
+    host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
+
+    if format == "json"
+      env.response.content_type = "application/json"
+      env.response.headers["content-disposition"] = "attachment"
+      next {
+        "subscriptions" => user.subscriptions,
+        "watch_history" => user.watched,
+        "preferences"   => user.preferences,
+      }.to_json
+    else
+      env.response.content_type = "application/xml"
+      env.response.headers["content-disposition"] = "attachment"
+      export = XML.build do |xml|
+        xml.element("opml", version: "1.1") do
+          xml.element("body") do
+            if format == "newpipe"
+              title = "YouTube Subscriptions"
+            else
+              title = "Invidious Subscriptions"
+            end
+
+            xml.element("outline", text: title, title: title) do
+              subscriptions.each do |channel|
+                if format == "newpipe"
+                  xmlUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=#{channel.id}"
+                else
+                  xmlUrl = "#{host_url}/feed/channel/#{channel.id}"
+                end
+
+                xml.element("outline", text: channel.author, title: channel.author,
+                  "type": "rss", xmlUrl: xmlUrl)
+              end
+            end
+          end
+        end
+      end
+
+      next export.gsub(%(<?xml version="1.0"?>\n), "")
+    end
+  end
+
+  templated "subscription_manager"
+end
+
+get "/data_control" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env)
+
+  if user
+    user = user.as(User)
+
+    templated "data_control"
+  else
+    env.redirect referer
+  end
+end
+
+post "/data_control" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env)
+
+  if user
+    user = user.as(User)
+
+    HTTP::FormData.parse(env.request) do |part|
+      body = part.body.gets_to_end
+      if body.empty?
+        next
+      end
+
+      case part.name
+      when "import_invidious"
+        body = JSON.parse(body)
+        body["subscriptions"].as_a.each do |ucid|
+          ucid = ucid.as_s
+          if !user.subscriptions.includes? ucid
+            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", ucid, user.id)
+
+            begin
+              client = make_client(YT_URL)
+              get_channel(ucid, client, PG_DB, false, false)
+            rescue ex
+              next
+            end
+          end
+        end
+
+        body["watch_history"].as_a.each do |id|
+          id = id.as_s
+          if !user.watched.includes? id
+            PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE email = $2", id, user.email)
+          end
+        end
+
+        PG_DB.exec("UPDATE users SET preferences = $1 WHERE email = $2", body["preferences"].to_json, user.email)
+      when "import_youtube"
+        subscriptions = XML.parse(body)
+        subscriptions.xpath_nodes(%q(//outline[@type="rss"])).each do |channel|
+          ucid = channel["xmlUrl"].match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
+
+          if !user.subscriptions.includes? ucid
+            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+
+            begin
+              client = make_client(YT_URL)
+              get_channel(ucid, client, PG_DB, false, false)
+            rescue ex
+              next
+            end
+          end
+        end
+      when "import_freetube"
+        body.scan(/"channelId":"(?<channel_id>[a-zA-Z0-9_-]{24})"/).each do |md|
+          ucid = md["channel_id"]
+
+          if !user.subscriptions.includes? ucid
+            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+
+            begin
+              client = make_client(YT_URL)
+              get_channel(ucid, client, PG_DB, false, false)
+            rescue ex
+              next
+            end
+          end
+        end
+      when "import_newpipe_subscriptions"
+        body = JSON.parse(body)
+        body["subscriptions"].as_a.each do |channel|
+          ucid = channel["url"].as_s.match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
+
+          if !user.subscriptions.includes? ucid
+            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+
+            begin
+              client = make_client(YT_URL)
+              get_channel(ucid, client, PG_DB, false, false)
+            rescue ex
+              next
+            end
+          end
+        end
+      when "import_newpipe"
+        Zip::Reader.open(body) do |file|
+          file.each_entry do |entry|
+            if entry.filename == "newpipe.db"
+              # We do this because the SQLite driver cannot parse a database from an IO
+              # Currently: channel URLs can **only** be subscriptions, and
+              # video URLs can **only** be watch history, so this works okay for now.
+
+              db = entry.io.gets_to_end
+              db.scan(/youtube\.com\/watch\?v\=(?<id>[a-zA-Z0-9_-]{11})/) do |md|
+                if !user.watched.includes? md["id"]
+                  PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE email = $2", md["id"], user.email)
+                end
+              end
+
+              db.scan(/youtube\.com\/channel\/(?<ucid>[a-zA-Z0-9_-]{22})/) do |md|
+                ucid = md["ucid"]
+                if !user.subscriptions.includes? ucid
+                  PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+
+                  begin
+                    client = make_client(YT_URL)
+                    get_channel(ucid, client, PG_DB, false, false)
+                  rescue ex
+                    next
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  env.redirect referer
+end
+
+get "/subscription_ajax" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env)
+
+  if user
+    user = user.as(User)
+
+    if env.params.query["action_create_subscription_to_channel"]?
+      action = "action_create_subscription_to_channel"
+    elsif env.params.query["action_remove_subscriptions"]?
+      action = "action_remove_subscriptions"
+    else
+      next env.redirect referer
+    end
+
+    channel_id = env.params.query["c"]?
+    channel_id ||= ""
+
+    if !user.password
+      headers = HTTP::Headers.new
+      headers["Cookie"] = env.request.headers["Cookie"]
+
+      client = make_client(YT_URL)
+      subs = client.get("/subscription_manager?disable_polymer=1", headers)
+      headers["Cookie"] += "; " + subs.cookies.add_request_headers(headers)["Cookie"]
+      match = subs.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+      if match
+        session_token = match["session_token"]
+      else
+        next env.redirect referer
+      end
+
+      headers["content-type"] = "application/x-www-form-urlencoded"
+
+      post_req = {
+        "session_token" => session_token,
+      }
+      post_req = HTTP::Params.encode(post_req)
+      post_url = "/subscription_ajax?#{action}=1&c=#{channel_id}"
+
+      # Update user
+      if client.post(post_url, headers, post_req).status_code == 200
+        sid = user.id
+
+        case action
+        when .starts_with? "action_create"
+          PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", channel_id, sid)
+        when .starts_with? "action_remove"
+          PG_DB.exec("UPDATE users SET subscriptions = array_remove(subscriptions,$1) WHERE id = $2", channel_id, sid)
+        end
+      end
+    else
+      sid = user.id
+
+      case action
+      when .starts_with? "action_create"
+        if !user.subscriptions.includes? channel_id
+          PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", channel_id, sid)
+
+          client = make_client(YT_URL)
+          get_channel(channel_id, client, PG_DB, false, false)
+        end
+      when .starts_with? "action_remove"
+        PG_DB.exec("UPDATE users SET subscriptions = array_remove(subscriptions,$1) WHERE id = $2", channel_id, sid)
+      end
+    end
+  end
+
+  env.redirect referer
+end
+
+get "/clear_watch_history" do |env|
+  user = env.get? "user"
+
+  referer = get_referer(env)
+
+  if user
+    user = user.as(User)
+
+    PG_DB.exec("UPDATE users SET watched = '{}' WHERE email = $1", user.email)
+  end
+
+  env.redirect referer
+end
+
+# Feeds
+
 get "/feed/subscriptions" do |env|
   user = env.get? "user"
+  referer = get_referer(env)
 
   if user
     user = user.as(User)
@@ -1918,7 +1254,7 @@ get "/feed/subscriptions" do |env|
 
     if !user.password
       client = make_client(YT_URL)
-      user = get_user(user.id, client, headers, PG_DB)
+      user = get_user(user.id[0], client, headers, PG_DB)
     end
 
     max_results = preferences.max_results
@@ -1941,21 +1277,21 @@ get "/feed/subscriptions" do |env|
     if preferences.notifications_only && !notifications.empty?
       args = arg_array(notifications)
 
-      videos = PG_DB.query_all("SELECT * FROM channel_videos WHERE id IN (#{args})
+      notifications = PG_DB.query_all("SELECT * FROM channel_videos WHERE id IN (#{args})
       ORDER BY published DESC", notifications, as: ChannelVideo)
-      notifications = [] of ChannelVideo
+      videos = [] of ChannelVideo
 
-      videos.sort_by! { |video| video.published }.reverse!
+      notifications.sort_by! { |video| video.published }.reverse!
 
       case preferences.sort
       when "alphabetically"
-        videos.sort_by! { |video| video.title }
+        notifications.sort_by! { |video| video.title }
       when "alphabetically - reverse"
-        videos.sort_by! { |video| video.title }.reverse!
+        notifications.sort_by! { |video| video.title }.reverse!
       when "channel name"
-        videos.sort_by! { |video| video.author }
+        notifications.sort_by! { |video| video.author }
       when "channel name - reverse"
-        videos.sort_by! { |video| video.author }.reverse!
+        notifications.sort_by! { |video| video.author }.reverse!
       end
     else
       if preferences.latest_only
@@ -2026,107 +1362,89 @@ get "/feed/subscriptions" do |env|
 
     templated "subscriptions"
   else
-    env.redirect "/"
+    env.redirect referer
   end
 end
 
 get "/feed/channel/:ucid" do |env|
   ucid = env.params.url["ucid"]
 
-  url = produce_videos_url(ucid)
   client = make_client(YT_URL)
+
+  if !ucid.match(/UC[a-zA-Z0-9_-]{22}/)
+    rss = client.get("/feeds/videos.xml?user=#{ucid}")
+    rss = XML.parse_html(rss.body)
+
+    ucid = rss.xpath_node("//feed/channelid")
+    if !ucid
+      error_message = "User does not exist."
+      halt env, status_code: 404, response: error_message
+    end
+
+    ucid = ucid.content
+    next env.redirect "/feed/channel/#{ucid}"
+  end
+
+  url = produce_videos_url(ucid)
   response = client.get(url)
-
-  channel = get_channel(ucid, client, PG_DB, pull_all_videos: false)
-
   json = JSON.parse(response.body)
-  if !json["content_html"]? || json["content_html"].as_s.empty?
-    error_message = "This channel does not exist or has no videos."
-    next templated "error"
+
+  if json["content_html"].as_s.empty?
+    if response.status_code == 500
+      error_message = "This channel does not exist."
+      halt env, status_code: 404, response: error_message
+    else
+      next ""
+    end
   end
 
   content_html = json["content_html"].as_s
-  if content_html.empty?
-    halt env, status_code: 403
-  end
   document = XML.parse_html(content_html)
 
-  if Kemal.config.ssl || CONFIG.https_only
-    scheme = "https://"
-  else
-    scheme = "http://"
-  end
-  host = env.request.headers["Host"]
+  channel = get_channel(ucid, client, PG_DB, pull_all_videos: false)
+
+  host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
   path = env.request.path
 
   feed = XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
       "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom") do
-      xml.element("link", rel: "self", href: "#{scheme}#{host}#{path}")
+      xml.element("link", rel: "self", href: "#{host_url}#{path}")
       xml.element("id") { xml.text "yt:channel:#{ucid}" }
       xml.element("yt:channelId") { xml.text ucid }
       xml.element("title") { xml.text channel.author }
-      xml.element("link", rel: "alternate", href: "#{scheme}#{host}/channel/#{ucid}")
+      xml.element("link", rel: "alternate", href: "#{host_url}/channel/#{ucid}")
 
       xml.element("author") do
         xml.element("name") { xml.text channel.author }
-        xml.element("uri") { xml.text "#{scheme}#{host}/channel/#{ucid}" }
+        xml.element("uri") { xml.text "#{host_url}/channel/#{ucid}" }
       end
 
-      document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")])).each do |item|
-        anchor = item.xpath_node(%q(.//h3[contains(@class,"yt-lockup-title")]/a)).not_nil!
-        title = anchor.content.strip
-        video_id = anchor["href"].lchop("/watch?v=")
-
-        view_count = item.xpath_node(%q(.//div[@class="yt-lockup-meta"]/ul/li[2])).not_nil!
-        view_count = view_count.content.rchop(" views")
-        if view_count = "No"
-          view_count = 0
-        else
-          view_count = view_count.delete(",").to_i
-        end
-
-        descriptionHtml = item.xpath_node(%q(.//div[contains(@class, "yt-lockup-description")]))
-        if !descriptionHtml
-          description = ""
-          descriptionHtml = ""
-        else
-          descriptionHtml = descriptionHtml.to_s
-          description = descriptionHtml.gsub("<br>", "\n")
-          description = description.gsub("<br/>", "\n")
-          description = XML.parse_html(description).content.strip("\n ")
-        end
-
-        published = item.xpath_node(%q(.//div[@class="yt-lockup-meta"]/ul/li[1]))
-        if !published
-          next
-        end
-        published = published.content
-        published = decode_date(published)
-
+      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+      extract_videos(nodeset, ucid).each do |video|
         xml.element("entry") do
-          xml.element("id") { xml.text "yt:video:#{video_id}" }
-          xml.element("yt:videoId") { xml.text video_id }
+          xml.element("id") { xml.text "yt:video:#{video.id}" }
+          xml.element("yt:videoId") { xml.text video.id }
           xml.element("yt:channelId") { xml.text ucid }
-          xml.element("title") { xml.text title }
-          xml.element("link", rel: "alternate", href: "#{scheme}#{host}/watch?v=#{video_id}")
+          xml.element("title") { xml.text video.title }
+          xml.element("link", rel: "alternate", href: "#{host_url}/watch?v=#{video.id}")
 
           xml.element("author") do
             xml.element("name") { xml.text channel.author }
-            xml.element("uri") { xml.text "#{scheme}#{host}/channel/#{ucid}" }
+            xml.element("uri") { xml.text "#{host_url}/channel/#{ucid}" }
           end
 
-          xml.element("published") { xml.text published.to_s("%Y-%m-%dT%H:%M:%S%:z") }
+          xml.element("published") { xml.text video.published.to_s("%Y-%m-%dT%H:%M:%S%:z") }
 
           xml.element("media:group") do
-            xml.element("media:title") { xml.text title }
-            xml.element("media:thumbnail", url: "https://i.ytimg.com/vi/#{video_id}/hqdefault.jpg",
-              width: "480", height: "360")
-            xml.element("media:description") { xml.text description }
+            xml.element("media:title") { xml.text video.title }
+            xml.element("media:thumbnail", url: "https://i.ytimg.com/vi/#{video.id}/mqdefault.jpg",
+              width: "320", height: "180")
+            xml.element("media:description") { xml.text video.description }
           end
 
           xml.element("media:community") do
-            xml.element("media:statistics", views: view_count)
+            xml.element("media:statistics", views: video.views)
           end
         end
       end
@@ -2141,12 +1459,12 @@ get "/feed/private" do |env|
   token = env.params.query["token"]?
 
   if !token
-    halt env, status_code: 401
+    halt env, status_code: 403
   end
 
-  user = PG_DB.query_one?("SELECT * FROM users WHERE token = $1", token, as: User)
+  user = PG_DB.query_one?("SELECT * FROM users WHERE token = $1", token.strip, as: User)
   if !user
-    halt env, status_code: 401
+    halt env, status_code: 403
   end
 
   max_results = env.params.query["max_results"]?.try &.to_i?
@@ -2192,25 +1510,19 @@ get "/feed/private" do |env|
     videos.sort_by! { |video| video.author }.reverse!
   end
 
-  if Kemal.config.ssl || CONFIG.https_only
-    scheme = "https://"
-  else
-    scheme = "http://"
-  end
-
   if !limit
     videos = videos[0..max_results]
   end
 
-  host = env.request.headers["Host"]
+  host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
   path = env.request.path
   query = env.request.query.not_nil!
 
   feed = XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("feed", xmlns: "http://www.w3.org/2005/Atom", "xmlns:media": "http://search.yahoo.com/mrss/",
       "xml:lang": "en-US") do
-      xml.element("link", "type": "text/html", rel: "alternate", href: "#{scheme}#{host}/feed/subscriptions")
-      xml.element("link", "type": "application/atom+xml", rel: "self", href: "#{scheme}#{host}#{path}?#{query}")
+      xml.element("link", "type": "text/html", rel: "alternate", href: "#{host_url}/feed/subscriptions")
+      xml.element("link", "type": "application/atom+xml", rel: "self", href: "#{host_url}#{path}?#{query}")
       xml.element("title") { xml.text "Invidious Private Feed for #{user.email}" }
 
       videos.each do |video|
@@ -2219,11 +1531,11 @@ get "/feed/private" do |env|
           xml.element("yt:videoId") { xml.text video.id }
           xml.element("yt:channelId") { xml.text video.ucid }
           xml.element("title") { xml.text video.title }
-          xml.element("link", rel: "alternate", href: "#{scheme}#{host}/watch?v=#{video.id}")
+          xml.element("link", rel: "alternate", href: "#{host_url}/watch?v=#{video.id}")
 
           xml.element("author") do
             xml.element("name") { xml.text video.author }
-            xml.element("uri") { xml.text "#{scheme}#{host}/channel/#{video.ucid}" }
+            xml.element("uri") { xml.text "#{host_url}/channel/#{video.ucid}" }
           end
 
           xml.element("published") { xml.text video.published.to_s("%Y-%m-%dT%H:%M:%S%:z") }
@@ -2231,8 +1543,8 @@ get "/feed/private" do |env|
 
           xml.element("media:group") do
             xml.element("media:title") { xml.text video.title }
-            xml.element("media:thumbnail", url: "https://i.ytimg.com/vi/#{video.id}/hqdefault.jpg",
-              width: "480", height: "360")
+            xml.element("media:thumbnail", url: "https://i.ytimg.com/vi/#{video.id}/mqdefault.jpg",
+              width: "320", height: "180")
           end
         end
       end
@@ -2243,358 +1555,7 @@ get "/feed/private" do |env|
   feed
 end
 
-# Function that is useful if you have multiple channels that don't have
-# the bell dinged. Request parameters are fairly self-explanatory,
-# receive_all_updates = true and receive_post_updates = true will ding all
-# channels. Calling /modify_notifications without any arguments will
-# request all notifications from all channels.
-# /modify_notifications?receive_all_updates=false&receive_no_updates=false
-# will "unding" all subscriptions.
-get "/modify_notifications" do |env|
-  user = env.get? "user"
-
-  referer = env.request.headers["referer"]?
-  referer ||= "/"
-
-  if user
-    user = user.as(User)
-
-    channel_req = {} of String => String
-
-    channel_req["receive_all_updates"] = env.params.query["receive_all_updates"]? || "true"
-    channel_req["receive_no_updates"] = env.params.query["receive_no_updates"]? || ""
-    channel_req["receive_post_updates"] = env.params.query["receive_post_updates"]? || "true"
-
-    channel_req.reject! { |k, v| v != "true" && v != "false" }
-
-    headers = HTTP::Headers.new
-    headers["Cookie"] = env.request.headers["Cookie"]
-
-    client = make_client(YT_URL)
-    subs = client.get("/subscription_manager?disable_polymer=1", headers)
-    headers["Cookie"] += "; " + subs.cookies.add_request_headers(headers)["Cookie"]
-    match = subs.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
-    if match
-      session_token = match["session_token"]
-    else
-      next env.redirect referer
-    end
-
-    channel_req["session_token"] = session_token
-
-    headers["content-type"] = "application/x-www-form-urlencoded"
-    subs = XML.parse_html(subs.body)
-    subs.xpath_nodes(%q(//a[@class="subscription-title yt-uix-sessionlink"]/@href)).each do |channel|
-      channel_id = channel.content.lstrip("/channel/").not_nil!
-
-      channel_req["channel_id"] = channel_id
-
-      client.post("/subscription_ajax?action_update_subscription_preferences=1", headers,
-        HTTP::Params.encode(channel_req)).body
-    end
-  end
-
-  env.redirect referer
-end
-
-get "/subscription_manager" do |env|
-  user = env.get? "user"
-
-  if !user
-    next env.redirect "/"
-  end
-
-  user = user.as(User)
-
-  if !user.password
-    # Refresh account
-    headers = HTTP::Headers.new
-    headers["Cookie"] = env.request.headers["Cookie"]
-
-    client = make_client(YT_URL)
-    user = get_user(user.id, client, headers, PG_DB)
-  end
-
-  action_takeout = env.params.query["action_takeout"]?.try &.to_i?
-  action_takeout ||= 0
-  action_takeout = action_takeout == 1
-
-  format = env.params.query["format"]?
-  format ||= "rss"
-
-  client = make_client(YT_URL)
-
-  subscriptions = [] of InvidiousChannel
-  user.subscriptions.each do |ucid|
-    begin
-      subscriptions << get_channel(ucid, client, PG_DB, false)
-    rescue ex
-      next
-    end
-  end
-  subscriptions.sort_by! { |channel| channel.author.downcase }
-
-  if action_takeout
-    if Kemal.config.ssl || CONFIG.https_only
-      scheme = "https://"
-    else
-      scheme = "http://"
-    end
-    host = env.request.headers["Host"]
-
-    url = "#{scheme}#{host}"
-
-    if format == "json"
-      env.response.content_type = "application/json"
-      env.response.headers["content-disposition"] = "attachment"
-      next {
-        "subscriptions" => user.subscriptions,
-        "watch_history" => user.watched,
-        "preferences"   => user.preferences,
-      }.to_json
-    else
-      env.response.content_type = "application/xml"
-      env.response.headers["content-disposition"] = "attachment"
-      export = XML.build do |xml|
-        xml.element("opml", version: "1.1") do
-          xml.element("body") do
-            if format == "newpipe"
-              title = "YouTube Subscriptions"
-            else
-              title = "Invidious Subscriptions"
-            end
-
-            xml.element("outline", text: title, title: title) do
-              subscriptions.each do |channel|
-                if format == "newpipe"
-                  xmlUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=#{channel.id}"
-                else
-                  xmlUrl = "#{url}/feed/channel/#{channel.id}"
-                end
-
-                xml.element("outline", text: channel.author, title: channel.author,
-                  "type": "rss", xmlUrl: xmlUrl)
-              end
-            end
-          end
-        end
-      end
-
-      next export.gsub(%(<?xml version="1.0"?>\n), "")
-    end
-  end
-
-  templated "subscription_manager"
-end
-
-get "/data_control" do |env|
-  user = env.get? "user"
-  referer = env.request.headers["referer"]?
-  referer ||= "/"
-
-  if user
-    user = user.as(User)
-
-    templated "data_control"
-  else
-    env.redirect referer
-  end
-end
-
-post "/data_control" do |env|
-  user = env.get? "user"
-  referer = env.request.headers["referer"]?
-  referer ||= "/"
-
-  if user
-    user = user.as(User)
-
-    HTTP::FormData.parse(env.request) do |part|
-      body = part.body.gets_to_end
-      if body.empty?
-        next
-      end
-
-      case part.name
-      when "import_invidious"
-        body = JSON.parse(body)
-        body["subscriptions"].as_a.each do |ucid|
-          ucid = ucid.as_s
-          if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", ucid, user.id)
-
-            begin
-              client = make_client(YT_URL)
-              get_channel(ucid, client, PG_DB, false, false)
-            rescue ex
-              next
-            end
-          end
-        end
-
-        body["watch_history"].as_a.each do |id|
-          id = id.as_s
-          if !user.watched.includes? id
-            PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE id = $2", id, user.id)
-          end
-        end
-
-        PG_DB.exec("UPDATE users SET preferences = $1 WHERE id = $2", body["preferences"].to_json, user.id)
-      when "import_youtube"
-        subscriptions = XML.parse(body)
-        subscriptions.xpath_nodes(%q(//outline[@type="rss"])).each do |channel|
-          ucid = channel["xmlUrl"].match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
-
-          if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", ucid, user.id)
-
-            begin
-              client = make_client(YT_URL)
-              get_channel(ucid, client, PG_DB, false, false)
-            rescue ex
-              next
-            end
-          end
-        end
-      when "import_newpipe_subscriptions"
-        body = JSON.parse(body)
-        body["subscriptions"].as_a.each do |channel|
-          ucid = channel["url"].as_s.match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
-
-          if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", ucid, user.id)
-
-            begin
-              client = make_client(YT_URL)
-              get_channel(ucid, client, PG_DB, false, false)
-            rescue ex
-              next
-            end
-          end
-        end
-      when "import_newpipe"
-        Zip::Reader.open(body) do |file|
-          file.each_entry do |entry|
-            if entry.filename == "newpipe.db"
-              # We do this because the SQLite driver cannot parse a database from an IO
-              # Currently: channel URLs can **only** be subscriptions, and
-              # video URLs can **only** be watch history, so this works okay for now.
-
-              db = entry.io.gets_to_end
-              db.scan(/youtube\.com\/watch\?v\=(?<id>[a-zA-Z0-9_-]{11})/) do |md|
-                if !user.watched.includes? md["id"]
-                  PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE id = $2", md["id"], user.id)
-                end
-              end
-
-              db.scan(/youtube\.com\/channel\/(?<ucid>[a-zA-Z0-9_-]{22})/) do |md|
-                ucid = md["ucid"]
-                if !user.subscriptions.includes? ucid
-                  PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", ucid, user.id)
-
-                  begin
-                    client = make_client(YT_URL)
-                    get_channel(ucid, client, PG_DB, false, false)
-                  rescue ex
-                    next
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  env.redirect referer
-end
-
-get "/subscription_ajax" do |env|
-  user = env.get? "user"
-  referer = env.request.headers["referer"]?
-  referer ||= "/"
-
-  if user
-    user = user.as(User)
-
-    if env.params.query["action_create_subscription_to_channel"]?
-      action = "action_create_subscription_to_channel"
-    elsif env.params.query["action_remove_subscriptions"]?
-      action = "action_remove_subscriptions"
-    else
-      next env.redirect referer
-    end
-
-    channel_id = env.params.query["c"]?
-    channel_id ||= ""
-
-    if !user.password
-      headers = HTTP::Headers.new
-      headers["Cookie"] = env.request.headers["Cookie"]
-
-      client = make_client(YT_URL)
-      subs = client.get("/subscription_manager?disable_polymer=1", headers)
-      headers["Cookie"] += "; " + subs.cookies.add_request_headers(headers)["Cookie"]
-      match = subs.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
-      if match
-        session_token = match["session_token"]
-      else
-        next env.redirect "/"
-      end
-
-      headers["content-type"] = "application/x-www-form-urlencoded"
-
-      post_req = {
-        "session_token" => session_token,
-      }
-      post_req = HTTP::Params.encode(post_req)
-      post_url = "/subscription_ajax?#{action}=1&c=#{channel_id}"
-
-      # Update user
-      if client.post(post_url, headers, post_req).status_code == 200
-        sid = user.id
-
-        case action
-        when .starts_with? "action_create"
-          PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", channel_id, sid)
-        when .starts_with? "action_remove"
-          PG_DB.exec("UPDATE users SET subscriptions = array_remove(subscriptions,$1) WHERE id = $2", channel_id, sid)
-        end
-      end
-    else
-      sid = user.id
-
-      case action
-      when .starts_with? "action_create"
-        if !user.subscriptions.includes? channel_id
-          PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", channel_id, sid)
-
-          client = make_client(YT_URL)
-          get_channel(channel_id, client, PG_DB, false, false)
-        end
-      when .starts_with? "action_remove"
-        PG_DB.exec("UPDATE users SET subscriptions = array_remove(subscriptions,$1) WHERE id = $2", channel_id, sid)
-      end
-    end
-  end
-
-  env.redirect referer
-end
-
-get "/clear_watch_history" do |env|
-  user = env.get? "user"
-  referer = env.request.headers["referer"]?
-  referer ||= "/"
-
-  if user
-    user = user.as(User)
-
-    PG_DB.exec("UPDATE users SET watched = '{}' WHERE id = $1", user.id)
-  end
-
-  env.redirect referer
-end
+# Channels
 
 get "/user/:user" do |env|
   user = env.params.url["user"]
@@ -2616,61 +1577,970 @@ get "/channel/:ucid" do |env|
 
   client = make_client(YT_URL)
 
-  if !ucid.starts_with? "UC"
-    rss = client.get("/feeds/videos.xml?user=#{ucid}").body
-    rss = XML.parse_html(rss)
+  if !ucid.match(/UC[a-zA-Z0-9_-]{22}/)
+    rss = client.get("/feeds/videos.xml?user=#{ucid}")
+    rss = XML.parse_html(rss.body)
 
     ucid = rss.xpath_node("//feed/channelid")
-    if ucid
-      ucid = ucid.content
-    else
-      error_message = "User does not exist"
+    if !ucid
+      error_message = "User does not exist."
       next templated "error"
     end
 
-    env.redirect "/channel/#{ucid}"
+    ucid = ucid.content
+    next env.redirect "/channel/#{ucid}"
   end
 
-  url = produce_playlist_url(ucid, (page - 1) * 100)
-  response = client.get(url)
-
-  json = JSON.parse(response.body)
-  if !json["content_html"]? || json["content_html"].as_s.empty?
-    error_message = "This channel does not exist or has no videos."
+  rss = client.get("/feeds/videos.xml?channel_id=#{ucid}")
+  if rss.status_code == 404
+    error_message = "This channel does not exist."
     next templated "error"
   end
 
-  if json["content_html"].as_s.strip(" \n").empty?
-    rss = client.get("/feeds/videos.xml?channel_id=#{ucid}").body
-    rss = XML.parse_html(rss)
-    author = rss.xpath_node("//feed/author/name").not_nil!.content
+  rss = XML.parse_html(rss.body)
+  author = rss.xpath_node("//feed/author/name").not_nil!.content
 
-    videos = [] of ChannelVideo
-
-    next templated "channel"
-  end
-
-  document = XML.parse_html(json["content_html"].as_s)
-  author = document.xpath_node(%q(//div[@class="pl-video-owner"]/a)).not_nil!.content
-
-  videos = [] of ChannelVideo
-  document.xpath_nodes(%q(//a[contains(@class,"pl-video-title-link")])).each do |item|
-    href = URI.parse(item["href"])
-    id = HTTP::Params.parse(href.query.not_nil!)["v"]
-    title = item.content
-
-    videos << ChannelVideo.new(id, title, Time.now, Time.now, ucid, author)
+  begin
+    videos = extract_playlist(ucid, page)
+    videos.each { |a| a.playlists.clear }
+  rescue ex
+    error_message = ex.message
+    next templated "error"
   end
 
   templated "channel"
 end
 
-get "/redirect" do |env|
-  if env.params.query["q"]?
-    env.redirect env.params.query["q"]
+get "/channel/:ucid/videos" do |env|
+  ucid = env.params.url["ucid"]
+  params = env.request.query
+
+  if !params || params.empty?
+    params = ""
   else
-    env.redirect "/"
+    params = "?#{params}"
   end
+
+  env.redirect "/channel/#{ucid}#{params}"
+end
+
+# API Endpoints
+
+get "/api/v1/captions/:id" do |env|
+  id = env.params.url["id"]
+
+  client = make_client(YT_URL)
+  begin
+    video = get_video(id, PG_DB)
+  rescue ex
+    halt env, status_code: 403
+  end
+
+  captions = video.captions
+
+  label = env.params.query["label"]?
+  if !label
+    env.response.content_type = "application/json"
+
+    response = JSON.build do |json|
+      json.object do
+        json.field "captions" do
+          json.array do
+            captions.each do |caption|
+              json.object do
+                json.field "label", caption.name.simpleText
+                json.field "languageCode", caption.languageCode
+              end
+            end
+          end
+        end
+      end
+    end
+
+    next response
+  end
+
+  caption = captions.select { |caption| caption.name.simpleText == label }
+
+  env.response.content_type = "text/vtt"
+  if caption.empty?
+    halt env, status_code: 403
+  else
+    caption = caption[0]
+  end
+
+  caption_xml = client.get(caption.baseUrl).body
+  caption_xml = XML.parse(caption_xml)
+
+  webvtt = <<-END_VTT
+  WEBVTT
+  Kind: captions
+  Language: #{caption.languageCode}
+
+
+  END_VTT
+
+  caption_nodes = caption_xml.xpath_nodes("//transcript/text")
+  caption_nodes.each_with_index do |node, i|
+    start_time = node["start"].to_f.seconds
+    duration = node["dur"]?.try &.to_f.seconds
+    duration ||= start_time
+
+    if caption_nodes.size > i + 1
+      end_time = caption_nodes[i + 1]["start"].to_f.seconds
+    else
+      end_time = start_time + duration
+    end
+
+    start_time = "#{start_time.hours.to_s.rjust(2, '0')}:#{start_time.minutes.to_s.rjust(2, '0')}:#{start_time.seconds.to_s.rjust(2, '0')}.#{start_time.milliseconds.to_s.rjust(3, '0')}"
+    end_time = "#{end_time.hours.to_s.rjust(2, '0')}:#{end_time.minutes.to_s.rjust(2, '0')}:#{end_time.seconds.to_s.rjust(2, '0')}.#{end_time.milliseconds.to_s.rjust(3, '0')}"
+
+    text = HTML.unescape(node.content)
+    text = text.gsub(/<font color="#[a-fA-F0-9]{6}">/, "")
+    text = text.gsub(/<\/font>/, "")
+    if md = text.match(/(?<name>.*) : (?<text>.*)/)
+      text = "<v #{md["name"]}>#{md["text"]}</v>"
+    end
+
+    webvtt = webvtt + <<-END_CUE
+    #{start_time} --> #{end_time}
+    #{text}
+
+
+    END_CUE
+  end
+
+  webvtt
+end
+
+get "/api/v1/comments/:id" do |env|
+  id = env.params.url["id"]
+
+  source = env.params.query["source"]?
+  source ||= "youtube"
+
+  format = env.params.query["format"]?
+  format ||= "json"
+
+  if source == "youtube"
+    client = make_client(YT_URL)
+    headers = HTTP::Headers.new
+    html = client.get("/watch?v=#{id}&disable_polymer=1")
+
+    headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
+    headers["content-type"] = "application/x-www-form-urlencoded"
+
+    headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
+    headers["x-spf-previous"] = "https://www.youtube.com/watch?v=#{id}"
+    headers["x-spf-referer"] = "https://www.youtube.com/watch?v=#{id}"
+
+    headers["x-youtube-client-name"] = "1"
+    headers["x-youtube-client-version"] = "2.20180719"
+
+    body = html.body
+    session_token = body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
+    ctoken = body.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
+    if !ctoken
+      env.response.content_type = "application/json"
+
+      if format == "json"
+        next {"comments" => [] of String}.to_json
+      else
+        next {"contentHtml" => "", "commentCount" => 0}.to_json
+      end
+    end
+    ctoken = ctoken["ctoken"]
+    itct = body.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
+
+    if env.params.query["continuation"]? && !env.params.query["continuation"].empty?
+      continuation = env.params.query["continuation"]
+      ctoken = continuation
+    else
+      continuation = ctoken
+    end
+
+    post_req = {
+      "session_token" => session_token,
+    }
+    post_req = HTTP::Params.encode(post_req)
+
+    response = client.post("/comment_service_ajax?action_get_comments=1&pbj=1&ctoken=#{ctoken}&continuation=#{continuation}&itct=#{itct}", headers, post_req).body
+    response = JSON.parse(response)
+
+    env.response.content_type = "application/json"
+
+    if !response["response"]["continuationContents"]?
+      halt env, status_code: 403
+    end
+
+    response = response["response"]["continuationContents"]
+    if response["commentRepliesContinuation"]?
+      body = response["commentRepliesContinuation"]
+    else
+      body = response["itemSectionContinuation"]
+    end
+    contents = body["contents"]?
+    if !contents
+      if format == "json"
+        next {"comments" => [] of String}.to_json
+      else
+        next {"contentHtml" => "", "commentCount" => 0}.to_json
+      end
+    end
+
+    comments = JSON.build do |json|
+      json.object do
+        if body["header"]?
+          comment_count = body["header"]["commentsHeaderRenderer"]["countText"]["simpleText"].as_s.delete("Comments,").to_i
+          json.field "commentCount", comment_count
+        end
+
+        json.field "comments" do
+          json.array do
+            contents.as_a.each do |node|
+              json.object do
+                if !response["commentRepliesContinuation"]?
+                  node = node["commentThreadRenderer"]
+                end
+
+                if node["replies"]?
+                  node_replies = node["replies"]["commentRepliesRenderer"]
+                end
+
+                if !response["commentRepliesContinuation"]?
+                  node_comment = node["comment"]["commentRenderer"]
+                else
+                  node_comment = node["commentRenderer"]
+                end
+
+                contentHtml = node_comment["contentText"]["simpleText"]?.try &.as_s.rchop('\ufeff')
+                contentHtml ||= node_comment["contentText"]["runs"].as_a.map do |run|
+                  text = run["text"].as_s
+
+                  if run["text"] == "\n"
+                    text = "<br>"
+                  end
+
+                  if run["bold"]?
+                    text = "<b>#{text}</b>"
+                  end
+
+                  if run["italics"]?
+                    text = "<i>#{text}</i>"
+                  end
+
+                  if run["navigationEndpoint"]?
+                    url = run["navigationEndpoint"]["urlEndpoint"]?.try &.["url"].as_s
+                    if url
+                      url = URI.parse(url)
+                      url = HTTP::Params.parse(url.query.not_nil!)["q"]
+                    else
+                      url = run["navigationEndpoint"]["commandMetadata"]?.try &.["webCommandMetadata"]["url"].as_s
+                    end
+
+                    text = %(<a href="#{url}">#{text}</a>)
+                  end
+
+                  text
+                end.join.rchop('\ufeff')
+
+                content, contentHtml = html_to_description(contentHtml)
+
+                author = node_comment["authorText"]?.try &.["simpleText"]
+                author ||= ""
+
+                json.field "author", author
+                json.field "authorThumbnails" do
+                  json.array do
+                    node_comment["authorThumbnail"]["thumbnails"].as_a.each do |thumbnail|
+                      json.object do
+                        json.field "url", thumbnail["url"]
+                        json.field "width", thumbnail["width"]
+                        json.field "height", thumbnail["height"]
+                      end
+                    end
+                  end
+                end
+
+                if node_comment["authorEndpoint"]?
+                  json.field "authorId", node_comment["authorEndpoint"]["browseEndpoint"]["browseId"]
+                  json.field "authorUrl", node_comment["authorEndpoint"]["browseEndpoint"]["canonicalBaseUrl"]
+                else
+                  json.field "authorId", ""
+                  json.field "authorUrl", ""
+                end
+
+                published = decode_date(node_comment["publishedTimeText"]["runs"][0]["text"].as_s.rchop(" (edited)"))
+
+                json.field "content", content
+                json.field "contentHtml", contentHtml
+                json.field "published", published.epoch
+                json.field "likeCount", node_comment["likeCount"]
+                json.field "commentId", node_comment["commentId"]
+
+                if node_replies && !response["commentRepliesContinuation"]?
+                  reply_count = node_replies["moreText"]["simpleText"].as_s.delete("View all reply replies,")
+                  if reply_count.empty?
+                    reply_count = 1
+                  else
+                    reply_count = reply_count.try &.to_i?
+                    reply_count ||= 1
+                  end
+
+                  continuation = node_replies["continuations"].as_a[0]["nextContinuationData"]["continuation"].as_s
+
+                  json.field "replies" do
+                    json.object do
+                      json.field "replyCount", reply_count
+                      json.field "continuation", continuation
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        if body["continuations"]?
+          continuation = body["continuations"][0]["nextContinuationData"]["continuation"]
+          json.field "continuation", continuation
+        end
+      end
+    end
+
+    if format == "json"
+      next comments
+    else
+      comments = JSON.parse(comments)
+      content_html = template_youtube_comments(comments)
+
+      response = JSON.build do |json|
+        json.object do
+          json.field "contentHtml", content_html
+
+          if comments["commentCount"]?
+            json.field "commentCount", comments["commentCount"]
+          else
+            json.field "commentCount", 0
+          end
+        end
+      end
+
+      next response
+    end
+  elsif source == "reddit"
+    client = make_client(REDDIT_URL)
+    headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.2.0 (by /u/omarroth)"}
+    begin
+      comments, reddit_thread = get_reddit_comments(id, client, headers)
+      content_html = template_reddit_comments(comments)
+
+      content_html = fill_links(content_html, "https", "www.reddit.com")
+      content_html = add_alt_links(content_html)
+    rescue ex
+      reddit_thread = nil
+      content_html = ""
+    end
+
+    if !reddit_thread
+      halt env, status_code: 404
+    end
+
+    env.response.content_type = "application/json"
+    next {"title"       => reddit_thread.title,
+          "permalink"   => reddit_thread.permalink,
+          "contentHtml" => content_html,
+    }.to_json
+  end
+end
+
+get "/api/v1/videos/:id" do |env|
+  id = env.params.url["id"]
+
+  begin
+    video = get_video(id, PG_DB)
+  rescue ex
+    env.response.content_type = "application/json"
+    response = {"error" => ex.message}.to_json
+    halt env, status_code: 500, response: response
+  end
+
+  fmt_stream = video.fmt_stream(decrypt_function)
+  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+
+  captions = video.captions
+
+  env.response.content_type = "application/json"
+  video_info = JSON.build do |json|
+    json.object do
+      json.field "title", video.title
+      json.field "videoId", video.id
+      json.field "videoThumbnails" do
+        generate_thumbnails(json, video.id)
+      end
+
+      description, video.description = html_to_description(video.description)
+
+      json.field "description", description
+      json.field "descriptionHtml", video.description
+      json.field "published", video.published.epoch
+      json.field "keywords" do
+        json.array do
+          video.info["keywords"].split(",").each { |keyword| json.string keyword }
+        end
+      end
+
+      json.field "viewCount", video.views
+      json.field "likeCount", video.likes
+      json.field "dislikeCount", video.dislikes
+
+      json.field "isFamilyFriendly", video.is_family_friendly
+      json.field "allowedRegions", video.allowed_regions
+      json.field "genre", video.genre
+
+      json.field "author", video.author
+      json.field "authorId", video.ucid
+      json.field "authorUrl", "/channel/#{video.ucid}"
+
+      json.field "lengthSeconds", video.info["length_seconds"].to_i
+      if video.info["allow_ratings"]?
+        json.field "allowRatings", video.info["allow_ratings"] == "1"
+      else
+        json.field "allowRatings", false
+      end
+      json.field "rating", video.info["avg_rating"].to_f32
+
+      if video.info["is_listed"]?
+        json.field "isListed", video.info["is_listed"] == "1"
+      end
+
+      if video.info["hlsvp"]?
+        host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
+        host_params = env.request.query_params
+        host_params.delete_all("v")
+
+        hlsvp = video.info["hlsvp"]
+        hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", host_url)
+
+        json.field "hlsUrl", hlsvp
+      end
+
+      json.field "adaptiveFormats" do
+        json.array do
+          adaptive_fmts.each do |fmt|
+            json.object do
+              json.field "index", fmt["index"]
+              json.field "bitrate", fmt["bitrate"]
+              json.field "init", fmt["init"]
+              json.field "url", fmt["url"]
+              json.field "itag", fmt["itag"]
+              json.field "type", fmt["type"]
+              json.field "clen", fmt["clen"]
+              json.field "lmt", fmt["lmt"]
+              json.field "projectionType", fmt["projection_type"]
+
+              fmt_info = itag_to_metadata?(fmt["itag"])
+              if fmt_info
+                fps = fmt_info["fps"]?.try &.to_i || fmt["fps"]?.try &.to_i || 30
+                json.field "fps", fps
+                json.field "container", fmt_info["ext"]
+                json.field "encoding", fmt_info["vcodec"]? || fmt_info["acodec"]
+
+                if fmt_info["height"]?
+                  json.field "resolution", "#{fmt_info["height"]}p"
+
+                  quality_label = "#{fmt_info["height"]}p"
+                  if fps > 30
+                    quality_label += "60"
+                  end
+                  json.field "qualityLabel", quality_label
+
+                  if fmt_info["width"]?
+                    json.field "size", "#{fmt_info["width"]}x#{fmt_info["height"]}"
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
+      json.field "formatStreams" do
+        json.array do
+          fmt_stream.each do |fmt|
+            json.object do
+              json.field "url", fmt["url"]
+              json.field "itag", fmt["itag"]
+              json.field "type", fmt["type"]
+              json.field "quality", fmt["quality"]
+
+              fmt_info = itag_to_metadata?(fmt["itag"])
+              if fmt_info
+                fps = fmt_info["fps"]?.try &.to_i || fmt["fps"]?.try &.to_i || 30
+                json.field "fps", fps
+                json.field "container", fmt_info["ext"]
+                json.field "encoding", fmt_info["vcodec"]? || fmt_info["acodec"]
+
+                if fmt_info["height"]?
+                  json.field "resolution", "#{fmt_info["height"]}p"
+
+                  quality_label = "#{fmt_info["height"]}p"
+                  if fps > 30
+                    quality_label += "60"
+                  end
+                  json.field "qualityLabel", quality_label
+
+                  if fmt_info["width"]?
+                    json.field "size", "#{fmt_info["width"]}x#{fmt_info["height"]}"
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
+      json.field "captions" do
+        json.array do
+          captions.each do |caption|
+            json.object do
+              json.field "label", caption.name.simpleText
+              json.field "languageCode", caption.languageCode
+            end
+          end
+        end
+      end
+
+      json.field "recommendedVideos" do
+        json.array do
+          video.info["rvs"]?.try &.split(",").each do |rv|
+            rv = HTTP::Params.parse(rv)
+
+            if rv["id"]?
+              json.object do
+                json.field "videoId", rv["id"]
+                json.field "title", rv["title"]
+                json.field "videoThumbnails" do
+                  generate_thumbnails(json, rv["id"])
+                end
+                json.field "author", rv["author"]
+                json.field "lengthSeconds", rv["length_seconds"].to_i
+                json.field "viewCountText", rv["short_view_count_text"]
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  video_info
+end
+
+get "/api/v1/trending" do |env|
+  client = make_client(YT_URL)
+  trending = client.get("/feed/trending?disable_polymer=1").body
+
+  trending = XML.parse_html(trending)
+  videos = JSON.build do |json|
+    json.array do
+      nodeset = trending.xpath_nodes(%q(//ul/li[@class="expanded-shelf-content-item-wrapper"]))
+      extract_videos(nodeset).each do |video|
+        json.object do
+          json.field "title", video.title
+          json.field "videoId", video.id
+          json.field "videoThumbnails" do
+            generate_thumbnails(json, video.id)
+          end
+
+          json.field "lengthSeconds", video.length_seconds
+          json.field "viewCount", video.views
+
+          json.field "author", video.author
+          json.field "authorUrl", "/channel/#{video.ucid}"
+
+          json.field "published", video.published.epoch
+          json.field "description", video.description
+          json.field "descriptionHtml", video.description_html
+        end
+      end
+    end
+  end
+
+  env.response.content_type = "application/json"
+  videos
+end
+
+get "/api/v1/top" do |env|
+  videos = JSON.build do |json|
+    json.array do
+      top_videos.each do |video|
+        json.object do
+          json.field "title", video.title
+          json.field "videoId", video.id
+          json.field "videoThumbnails" do
+            generate_thumbnails(json, video.id)
+          end
+
+          json.field "lengthSeconds", video.info["length_seconds"].to_i
+          json.field "viewCount", video.views
+
+          json.field "author", video.author
+          json.field "authorUrl", "/channel/#{video.ucid}"
+          json.field "published", video.published.epoch
+
+          description = video.description.gsub("<br>", "\n")
+          description = description.gsub("<br/>", "\n")
+          description = XML.parse_html(description)
+          json.field "description", description.content
+          json.field "descriptionHtml", video.description
+        end
+      end
+    end
+  end
+
+  env.response.content_type = "application/json"
+  videos
+end
+
+get "/api/v1/channels/:ucid" do |env|
+  ucid = env.params.url["ucid"]
+
+  client = make_client(YT_URL)
+  if !ucid.match(/UC[a-zA-Z0-9_-]{22}/)
+    rss = client.get("/feeds/videos.xml?user=#{ucid}")
+    rss = XML.parse_html(rss.body)
+
+    ucid = rss.xpath_node("//feed/channelid")
+    if !ucid
+      env.response.content_type = "application/json"
+      next {"error" => "User does not exist"}.to_json
+    end
+
+    ucid = ucid.content
+    url = "/api/v1/channels/#{ucid}"
+    next env.redirect url
+  end
+
+  url = produce_videos_url(ucid, 1)
+  response = client.get(url)
+
+  json = JSON.parse(response.body)
+  if json["content_html"]? && !json["content_html"].as_s.empty?
+    document = XML.parse_html(json["content_html"].as_s)
+    nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+
+    videos = extract_videos(nodeset, ucid)
+  else
+    videos = [] of SearchVideo
+  end
+
+  channel_html = client.get("/channel/#{ucid}/about?disable_polymer=1").body
+  channel_html = XML.parse_html(channel_html)
+  banner = channel_html.xpath_node(%q(//div[@id="gh-banner"]/style)).not_nil!.content
+  banner = "https:" + banner.match(/background-image: url\((?<url>[^)]+)\)/).not_nil!["url"]
+
+  author = channel_html.xpath_node(%q(//a[contains(@class, "branded-page-header-title-link")])).not_nil!.content
+  author_url = channel_html.xpath_node(%q(//a[@class="channel-header-profile-image-container spf-link"])).not_nil!["href"]
+  author_thumbnail = channel_html.xpath_node(%q(//img[@class="channel-header-profile-image"])).not_nil!["src"]
+  description = channel_html.xpath_node(%q(//meta[@itemprop="description"])).not_nil!["content"]
+
+  paid = channel_html.xpath_node(%q(//meta[@itemprop="paid"])).not_nil!["content"] == "True"
+  is_family_friendly = channel_html.xpath_node(%q(//meta[@itemprop="isFamilyFriendly"])).not_nil!["content"] == "True"
+  allowed_regions = channel_html.xpath_node(%q(//meta[@itemprop="regionsAllowed"])).not_nil!["content"].split(",")
+
+  anchor = channel_html.xpath_nodes(%q(//span[@class="about-stat"]))
+  if anchor[0].content.includes? "views"
+    sub_count = 0
+    total_views = anchor[0].content.delete("views •,").to_i64
+    joined = Time.parse(anchor[1].content.lchop("Joined "), "%b %-d, %Y", Time::Location.local)
+  else
+    sub_count = anchor[0].content.delete("subscribers").delete(",").to_i64
+    total_views = anchor[1].content.delete("views •,").to_i64
+    joined = Time.parse(anchor[2].content.lchop("Joined "), "%b %-d, %Y", Time::Location.local)
+  end
+
+  channel_info = JSON.build do |json|
+    json.object do
+      json.field "author", author
+      json.field "authorId", ucid
+      json.field "authorUrl", author_url
+
+      json.field "authorBanners" do
+        json.array do
+          qualities = [{width: 2560, height: 424},
+                       {width: 2120, height: 351},
+                       {width: 1060, height: 175}]
+          qualities.each do |quality|
+            json.object do
+              json.field "url", banner.gsub("=w1060", "=w#{quality[:width]}")
+              json.field "width", quality[:width]
+              json.field "height", quality[:height]
+            end
+          end
+
+          json.object do
+            json.field "url", banner.rchop("=w1060-fcrop64=1,00005a57ffffa5a8-nd-c0xffffffff-rj-k-no")
+            json.field "width", 512
+            json.field "height", 288
+          end
+        end
+      end
+
+      json.field "authorThumbnails" do
+        json.array do
+          qualities = [32, 48, 76, 100, 512]
+
+          qualities.each do |quality|
+            json.object do
+              json.field "url", author_thumbnail.gsub("/s100-", "/s#{quality}-")
+              json.field "width", quality
+              json.field "height", quality
+            end
+          end
+        end
+      end
+
+      json.field "subCount", sub_count
+      json.field "totalViews", total_views
+      json.field "joined", joined.epoch
+      json.field "paid", paid
+
+      json.field "isFamilyFriendly", is_family_friendly
+      json.field "description", description
+      json.field "allowedRegions", allowed_regions
+
+      json.field "latestVideos" do
+        json.array do
+          videos.each do |video|
+            json.object do
+              json.field "title", video.title
+              json.field "videoId", video.id
+
+              json.field "videoThumbnails" do
+                generate_thumbnails(json, video.id)
+              end
+
+              json.field "description", video.description
+              json.field "descriptionHtml", video.description_html
+
+              json.field "viewCount", video.views
+              json.field "published", video.published.epoch
+              json.field "lengthSeconds", video.length_seconds
+            end
+          end
+        end
+      end
+    end
+  end
+
+  env.response.content_type = "application/json"
+  channel_info
+end
+
+get "/api/v1/channels/:ucid/videos" do |env|
+  ucid = env.params.url["ucid"]
+  page = env.params.query["page"]?.try &.to_i?
+  page ||= 1
+
+  client = make_client(YT_URL)
+  if !ucid.match(/UC[a-zA-Z0-9_-]{22}/)
+    rss = client.get("/feeds/videos.xml?user=#{ucid}")
+    rss = XML.parse_html(rss.body)
+
+    ucid = rss.xpath_node("//feed/channelid")
+    if !ucid
+      env.response.content_type = "application/json"
+      next {"error" => "User does not exist"}.to_json
+    end
+
+    ucid = ucid.content
+    url = "/api/v1/channels/#{ucid}/videos"
+    if env.params.query
+      url += "?#{env.params.query}"
+    end
+    next env.redirect url
+  end
+
+  url = produce_videos_url(ucid, page)
+  response = client.get(url)
+
+  json = JSON.parse(response.body)
+  if !json["content_html"]?
+    env.response.content_type = "application/json"
+
+    if response.status_code == 500
+      response = {"Error" => "Channel does not exist"}.to_json
+      halt env, status_code: 404, response: response
+    else
+      next Array(String).new.to_json
+    end
+  end
+
+  content_html = json["content_html"].as_s
+  if content_html.empty?
+    env.response.content_type = "application/json"
+    next Hash(String, String).new.to_json
+  end
+  document = XML.parse_html(content_html)
+
+  videos = JSON.build do |json|
+    json.array do
+      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+      extract_videos(nodeset, ucid).each do |video|
+        json.object do
+          json.field "title", video.title
+          json.field "videoId", video.id
+
+          json.field "videoThumbnails" do
+            generate_thumbnails(json, video.id)
+          end
+
+          json.field "description", video.description
+          json.field "descriptionHtml", video.description_html
+
+          json.field "viewCount", video.views
+          json.field "published", video.published.epoch
+          json.field "lengthSeconds", video.length_seconds
+        end
+      end
+    end
+  end
+
+  env.response.content_type = "application/json"
+  videos
+end
+
+get "/api/v1/search" do |env|
+  query = env.params.query["q"]?
+  query ||= ""
+
+  page = env.params.query["page"]?.try &.to_i?
+  page ||= 1
+
+  sort_by = env.params.query["sort_by"]?.try &.downcase
+  sort_by ||= "relevance"
+
+  date = env.params.query["date"]?.try &.downcase
+  date ||= ""
+
+  duration = env.params.query["date"]?.try &.downcase
+  duration ||= ""
+
+  features = env.params.query["features"]?.try &.split(",").map { |feature| feature.downcase }
+  features ||= [] of String
+
+  # TODO: Support other content types
+  content_type = "video"
+
+  env.response.content_type = "application/json"
+
+  begin
+    search_params = build_search_params(sort_by, date, content_type, duration, features)
+  rescue ex
+    next JSON.build do |json|
+      json.object do
+        json.field "error", ex.message
+      end
+    end
+  end
+
+  response = JSON.build do |json|
+    json.array do
+      count, search_results = search(query, page, search_params).as(Tuple)
+      search_results.each do |video|
+        json.object do
+          json.field "title", video.title
+          json.field "videoId", video.id
+
+          json.field "author", video.author
+          json.field "authorUrl", "/channel/#{video.ucid}"
+
+          json.field "videoThumbnails" do
+            generate_thumbnails(json, video.id)
+          end
+
+          json.field "description", video.description
+          json.field "descriptionHtml", video.description_html
+
+          json.field "viewCount", video.views
+          json.field "published", video.published.epoch
+          json.field "lengthSeconds", video.length_seconds
+        end
+      end
+    end
+  end
+
+  response
+end
+
+get "/api/v1/playlists/:plid" do |env|
+  plid = env.params.url["plid"]
+
+  page = env.params.query["page"]?.try &.to_i?
+  page ||= 1
+
+  begin
+    videos = extract_playlist(plid, page)
+  rescue ex
+    env.response.content_type = "application/json"
+    response = {"error" => "Playlist is empty"}.to_json
+    halt env, status_code: 404, response: response
+  end
+
+  playlist = fetch_playlist(plid)
+
+  response = JSON.build do |json|
+    json.object do
+      json.field "title", playlist.title
+      json.field "id", playlist.id
+
+      json.field "author", playlist.author
+      json.field "authorId", playlist.ucid
+      json.field "authorUrl", "/channel/#{playlist.ucid}"
+
+      json.field "description", playlist.description
+      json.field "videoCount", playlist.video_count
+
+      json.field "viewCount", playlist.views
+      json.field "updated", playlist.updated.epoch
+
+      json.field "videos" do
+        json.array do
+          videos.each do |video|
+            json.object do
+              json.field "title", video.title
+              json.field "id", video.id
+
+              json.field "author", video.author
+              json.field "authorId", video.ucid
+              json.field "authorUrl", "/channel/#{video.ucid}"
+
+              json.field "videoThumbnails" do
+                generate_thumbnails(json, video.id)
+              end
+
+              json.field "index", video.index
+              json.field "lengthSeconds", video.length_seconds
+            end
+          end
+        end
+      end
+    end
+  end
+
+  env.response.content_type = "application/json"
+  response
+end
+
+get "/api/manifest/dash/id/videoplayback" do |env|
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.redirect "/videoplayback?#{env.params.query}"
+end
+
+get "/api/manifest/dash/id/videoplayback/*" do |env|
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.redirect env.request.path.lchop("/api/manifest/dash/id")
 end
 
 get "/api/manifest/dash/id/:id" do |env|
@@ -2695,12 +2565,7 @@ get "/api/manifest/dash/id/:id" do |env|
       url = url.rchop("</BaseURL>")
 
       if local
-        if Kemal.config.ssl || CONFIG.https_only
-          scheme = "https://"
-        end
-        scheme ||= "http://"
-
-        url = scheme + env.request.headers["Host"] + URI.parse(url).full_path
+        url = URI.parse(url).full_path.lchop("/")
       end
 
       "<BaseURL>#{url}</BaseURL>"
@@ -2709,88 +2574,58 @@ get "/api/manifest/dash/id/:id" do |env|
     next manifest
   end
 
-  adaptive_fmts = [] of HTTP::Params
-  if video.info.has_key?("adaptive_fmts")
-    video.info["adaptive_fmts"].split(",") do |string|
-      adaptive_fmts << HTTP::Params.parse(string)
-    end
-  else
-    halt env, status_code: 403
-  end
+  adaptive_fmts = video.adaptive_fmts(decrypt_function)
 
   if local
     adaptive_fmts.each do |fmt|
-      if Kemal.config.ssl || CONFIG.https_only
-        scheme = "https://"
-      end
-      scheme ||= "http://"
-
-      fmt["url"] = scheme + env.request.headers["Host"] + URI.parse(fmt["url"]).full_path
+      fmt["url"] = URI.parse(fmt["url"]).full_path.lchop("/")
     end
   end
 
-  if adaptive_fmts[0]? && adaptive_fmts[0]["s"]?
-    adaptive_fmts.each do |fmt|
-      fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
-    end
-  end
-
-  video_streams = adaptive_fmts.compact_map { |s| s["type"].starts_with?("video/mp4") ? s : nil }
-
-  audio_streams = adaptive_fmts.compact_map { |s| s["type"].starts_with?("audio/mp4") ? s : nil }
-  audio_streams.sort_by! { |s| s["bitrate"].to_i }.reverse!
-  audio_streams.each do |fmt|
-    fmt["bitrate"] = (fmt["bitrate"].to_f64/1000).to_i.to_s
-  end
+  video_streams = video.video_streams(adaptive_fmts).select { |stream| stream["type"].starts_with? "video/mp4" }
+  audio_streams = video.audio_streams(adaptive_fmts).select { |stream| stream["type"].starts_with? "audio/mp4" }
 
   manifest = XML.build(indent: "  ", encoding: "UTF-8") do |xml|
-    xml.element("MPD", "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance", "xmlns": "urn:mpeg:DASH:schema:MPD:2011",
-      "xmlns:yt": "http://youtube.com/yt/2012/10/10", "xsi:schemaLocation": "urn:mpeg:DASH:schema:MPD:2011 DASH-MPD.xsd",
-      minBufferTime: "PT1.5S", profiles: "urn:mpeg:dash:profile:isoff-main:2011", type: "static",
+    xml.element("MPD", "xmlns": "urn:mpeg:dash:schema:mpd:2011",
+      "profiles": "urn:mpeg:dash:profile:isoff-live:2011", minBufferTime: "PT1.5S", type: "static",
       mediaPresentationDuration: "PT#{video.info["length_seconds"]}S") do
       xml.element("Period") do
-        xml.element("AdaptationSet", id: 0, mimeType: "audio/mp4", subsegmentAlignment: true) do
-          xml.element("Role", schemeIdUri: "urn:mpeg:DASH:role:2011", value: "main")
+        xml.element("AdaptationSet", mimeType: "audio/mp4", startWithSAP: 1, subsegmentAlignment: true) do
           audio_streams.each do |fmt|
-            mimetype, codecs = fmt["type"].split(";")
-            codecs = codecs[9..-2]
+            mimetype = fmt["type"].split(";")[0]
+            codecs = fmt["type"].split("codecs=")[1].strip('"')
             fmt_type = mimetype.split("/")[0]
             bandwidth = fmt["bitrate"]
             itag = fmt["itag"]
             url = fmt["url"]
-            url = url.gsub("?", "/")
-            url = url.gsub("&", "/")
-            url = url.gsub("=", "/")
 
             xml.element("Representation", id: fmt["itag"], codecs: codecs, bandwidth: bandwidth) do
               xml.element("AudioChannelConfiguration", schemeIdUri: "urn:mpeg:dash:23003:3:audio_channel_configuration:2011",
                 value: "2")
               xml.element("BaseURL") { xml.text url }
-              xml.element("SegmentBase", indexRange: fmt["init"]) do
-                xml.element("Initialization", range: fmt["index"])
+              xml.element("SegmentBase", indexRange: fmt["index"]) do
+                xml.element("Initialization", range: fmt["init"])
               end
             end
           end
         end
 
-        xml.element("AdaptationSet", id: 1, mimeType: "video/mp4", subsegmentAlignment: true) do
-          xml.element("Role", schemeIdUri: "urn:mpeg:DASH:role:2011", value: "main")
+        xml.element("AdaptationSet", mimeType: "video/mp4", startWithSAP: 1, subsegmentAlignment: true,
+          scanType: "progressive") do
           video_streams.each do |fmt|
-            mimetype, codecs = fmt["type"].split(";")
-            codecs = codecs[9..-2]
+            mimetype = fmt["type"].split(";")
+            codecs = fmt["type"].split("codecs=")[1].strip('"')
             bandwidth = fmt["bitrate"]
             itag = fmt["itag"]
             url = fmt["url"]
-            url = url.gsub("?", "/")
-            url = url.gsub("&", "/")
-            url = url.gsub("=", "/")
             height, width = fmt["size"].split("x")
 
-            xml.element("Representation", id: itag, codecs: codecs, width: width, startWithSAP: "1", maxPlayoutRate: "1",
-              height: height, bandwidth: bandwidth, frameRate: fmt["fps"]) do
+            xml.element("Representation", id: itag, codecs: codecs, width: width, height: height,
+              startWithSAP: "1", maxPlayoutRate: "1",
+              bandwidth: bandwidth, frameRate: fmt["fps"]) do
               xml.element("BaseURL") { xml.text url }
-              xml.element("SegmentBase", indexRange: fmt["init"]) do
-                xml.element("Initialization", range: fmt["index"])
+              xml.element("SegmentBase", indexRange: fmt["index"]) do
+                xml.element("Initialization", range: fmt["init"])
               end
             end
           end
@@ -2804,34 +2639,20 @@ get "/api/manifest/dash/id/:id" do |env|
   manifest
 end
 
-options "/videoplayback*" do |env|
-  env.response.headers["Access-Control-Allow-Origin"] = "*"
-  env.response.headers["Access-Control-Allow-Methods"] = "GET"
-  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, range"
-end
-
 get "/api/manifest/hls_variant/*" do |env|
   client = make_client(YT_URL)
   manifest = client.get(env.request.path)
 
   if manifest.status_code != 200
-    halt env, status_code: 403
+    halt env, status_code: manifest.status_code
   end
-
-  manifest = manifest.body
-
-  if Kemal.config.ssl || CONFIG.https_only
-    scheme = "https://"
-  else
-    scheme = "http://"
-  end
-  host = env.request.headers["Host"]
-
-  url = "#{scheme}#{host}"
 
   env.response.content_type = "application/x-mpegURL"
   env.response.headers.add("Access-Control-Allow-Origin", "*")
-  manifest.gsub("https://www.youtube.com", url)
+
+  host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"])
+  manifest = manifest.body
+  manifest.gsub("https://www.youtube.com", host_url)
 end
 
 get "/api/manifest/hls_playlist/*" do |env|
@@ -2839,20 +2660,13 @@ get "/api/manifest/hls_playlist/*" do |env|
   manifest = client.get(env.request.path)
 
   if manifest.status_code != 200
-    halt env, status_code: 403
+    halt env, status_code: manifest.status_code
   end
 
-  if Kemal.config.ssl || CONFIG.https_only
-    scheme = "https://"
-  else
-    scheme = "http://"
-  end
-  host = env.request.headers["Host"]
+  host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"])
 
-  url = "#{scheme}#{host}"
-
-  manifest = manifest.body.gsub("https://www.youtube.com", url)
-  manifest = manifest.gsub(/https:\/\/r\d---.{11}\.c\.youtube\.com/, url)
+  manifest = manifest.body.gsub("https://www.youtube.com", host_url)
+  manifest = manifest.gsub(/https:\/\/r\d---.{11}\.c\.youtube\.com/, host_url)
   fvip = manifest.match(/hls_chunk_host\/r(?<fvip>\d)---/).not_nil!["fvip"]
   manifest = manifest.gsub("seg.ts", "seg.ts/fvip/#{fvip}")
 
@@ -2861,43 +2675,77 @@ get "/api/manifest/hls_playlist/*" do |env|
   manifest
 end
 
-get "/videoplayback*" do |env|
+options "/videoplayback" do |env|
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+end
+
+options "/videoplayback/*" do |env|
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+end
+
+options "/api/manifest/dash/id/videoplayback" do |env|
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+end
+
+options "/api/manifest/dash/id/videoplayback/*" do |env|
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+end
+
+get "/videoplayback/*" do |env|
   path = env.request.path
-  if path != "/videoplayback"
-    path = path.lchop("/videoplayback/")
-    path = path.rchop("/")
 
-    path = path.gsub(/mime\/\w+\/\w+/) do |mimetype|
-      mimetype = mimetype.split("/")
-      mimetype[0] + "/" + mimetype[1] + "%2F" + mimetype[2]
-    end
+  path = path.lchop("/videoplayback/")
+  path = path.rchop("/")
 
-    path = path.split("/")
-
-    raw_params = {} of String => Array(String)
-    path.each_slice(2) do |pair|
-      key, value = pair
-      value = URI.unescape(value)
-
-      if raw_params[key]?
-        raw_params[key] << value
-      else
-        raw_params[key] = [value]
-      end
-    end
-
-    query_params = HTTP::Params.new(raw_params)
-  else
-    query_params = env.params.query
+  path = path.gsub(/mime\/\w+\/\w+/) do |mimetype|
+    mimetype = mimetype.split("/")
+    mimetype[0] + "/" + mimetype[1] + "%2F" + mimetype[2]
   end
 
+  path = path.split("/")
+
+  raw_params = {} of String => Array(String)
+  path.each_slice(2) do |pair|
+    key, value = pair
+    value = URI.unescape(value)
+
+    if raw_params[key]?
+      raw_params[key] << value
+    else
+      raw_params[key] = [value]
+    end
+  end
+
+  query_params = HTTP::Params.new(raw_params)
+
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.redirect "/videoplayback?#{query_params}"
+end
+
+get "/videoplayback" do |env|
+  query_params = env.params.query
+
   fvip = query_params["fvip"]
-  mn = query_params["mn"].split(",")[0]
+  mn = query_params["mn"].split(",")[-1]
   host = "https://r#{fvip}---#{mn}.googlevideo.com"
   url = "/videoplayback?#{query_params.to_s}"
 
   client = make_client(URI.parse(host))
   response = client.head(url)
+
+  if response.headers["Location"]?
+    url = URI.parse(response.headers["Location"])
+    env.response.headers["Access-Control-Allow-Origin"] = "*"
+    next env.redirect url.full_path
+  end
 
   headers = env.request.headers
   headers.delete("Host")
@@ -2906,52 +2754,25 @@ get "/videoplayback*" do |env|
   headers.delete("Referer")
 
   client.get(url, headers) do |response|
-    if response.headers["Location"]?
-      url = URI.parse(response.headers["Location"])
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-      env.redirect url.full_path
-    else
-      env.response.status_code = response.status_code
+    env.response.status_code = response.status_code
 
-      response.headers.each do |key, value|
-        env.response.headers[key] = value
+    response.headers.each do |key, value|
+      env.response.headers[key] = value
+    end
+
+    env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+    begin
+      chunk_size = 4096
+      size = 1
+      while size > 0
+        size = IO.copy(response.body_io, env.response.output, chunk_size)
+        env.response.flush
+        Fiber.yield
       end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      begin
-        chunk_size = 4096
-        size = 1
-        while size > 0
-          size = IO.copy(response.body_io, env.response.output, chunk_size)
-          env.response.flush
-          Fiber.yield
-        end
-      rescue ex
-        break
-      end
+    rescue ex
+      break
     end
-  end
-end
-
-get "/:id" do |env|
-  id = env.params.url["id"]
-
-  if md = id.match(/[a-zA-Z0-9_-]{11}/)
-    params = [] of String
-    env.params.query.each do |k, v|
-      params << "#{k}=#{v}"
-    end
-    params = params.join("&")
-
-    url = "/watch?v=#{id}"
-    if !params.empty?
-      url += "&#{params}"
-    end
-
-    env.redirect url
-  else
-    env.response.status_code = 404
   end
 end
 
@@ -2979,10 +2800,6 @@ if Kemal.config.ssl
 
     server.bind_tcp "0.0.0.0", 80
     server.listen
-  end
-
-  before_all do |env|
-    env.response.headers.add("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
   end
 end
 

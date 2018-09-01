@@ -133,3 +133,66 @@ div {
     transform: rotate(360deg);
   }
 }
+
+/* Control Bar */
+.video-js .vjs-control-bar,
+.vjs-menu-button-popup .vjs-menu .vjs-menu-content {
+  background-color: rgba(35, 35, 35, 0.75);
+}
+
+.vjs-menu li.vjs-menu-item:focus,
+.vjs-menu li.vjs-menu-item:hover {
+  background-color: rgba(255, 255, 255, 0.75);
+  color: rgba(49, 49, 51, 0.75);
+}
+
+.vjs-menu li.vjs-selected,
+.vjs-menu li.vjs-selected:focus,
+.vjs-menu li.vjs-selected:hover {
+  background-color: rgba(0, 182, 240, 0.75);
+}
+
+/* Progress Bar */
+.video-js .vjs-slider {
+  background-color: rgba(15, 15, 15, 0.5);
+}
+
+.video-js .vjs-load-progress,
+.video-js .vjs-load-progress div {
+  background: rgba(87, 87, 88, 1);
+}
+
+.video-js .vjs-slider:hover,
+.video-js button:hover {
+  color: rgba(0, 182, 240, 1);
+}
+
+.video-js .vjs-play-progress {
+  background-color: rgba(0, 182, 240, 1);
+}
+
+/* ProgressBar marker */
+.vjs-marker {
+    background-color: rgba(255, 255, 255, 1);
+}
+
+/* Big "Play" Button */
+.video-js .vjs-big-play-button {
+  background-color: rgba(35, 35, 35, 0.5);
+}
+
+.video-js:hover .vjs-big-play-button {
+  background-color: rgba(35, 35, 35, 0.75);
+}
+
+.video-js .vjs-current-time,
+.video-js .vjs-time-divider,
+.video-js .vjs-duration {
+  display: block;
+}
+
+.video-js .vjs-time-divider {
+  min-width: 0px;
+  padding-left: 0px;
+  padding-right: 0px;
+}
