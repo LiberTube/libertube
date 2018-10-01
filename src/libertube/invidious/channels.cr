@@ -48,6 +48,13 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
   end
   author = author.content
 
+  # Auto-generated channels
+  # https://support.google.com/youtube/answer/2579942
+  if author.ends_with?(" - Topic") ||
+     {"Popular on YouTube", "Music", "Sports", "Gaming"}.includes? author
+    auto_generated = true
+  end
+
   if !pull_all_videos
     rss.xpath_nodes("//feed/entry").each do |entry|
       video_id = entry.xpath_node("videoid").not_nil!.content
@@ -69,64 +76,136 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
         updated = $4, ucid = $5, author = $6", video_array)
     end
   else
-    videos = [] of ChannelVideo
     page = 1
+    ids = [] of String
 
     loop do
-      url = produce_videos_url(ucid, page)
+      url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated)
       response = client.get(url)
-
       json = JSON.parse(response.body)
-      content_html = json["content_html"].as_s
-      if content_html.empty?
-        # If we don't get anything, move on
+
+      if json["content_html"]? && !json["content_html"].as_s.empty?
+        document = XML.parse_html(json["content_html"].as_s)
+        nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+      else
         break
       end
-      document = XML.parse_html(content_html)
 
-      document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")])).each do |item|
-        anchor = item.xpath_node(%q(.//h3[contains(@class,"yt-lockup-title")]/a))
-        if !anchor
-          raise "could not find anchor"
-        end
-
-        title = anchor.content.strip
-        video_id = anchor["href"].lchop("/watch?v=")
-
-        published = item.xpath_node(%q(.//div[@class="yt-lockup-meta"]/ul/li[1]))
-        if !published
-          # This happens on Youtube red videos, here we just skip them
-          next
-        end
-        published = published.content
-        published = decode_date(published)
-
-        videos << ChannelVideo.new(video_id, title, published, Time.now, ucid, author)
+      if auto_generated
+        videos = extract_videos(nodeset)
+      else
+        videos = extract_videos(nodeset, ucid)
+        videos.each { |video| video.ucid = ucid }
+        videos.each { |video| video.author = author }
       end
 
-      if document.xpath_nodes(%q(//li[contains(@class, "channels-content-item")])).size < 30
+      count = nodeset.size
+      videos = videos.map { |video| ChannelVideo.new(video.id, video.title, video.published, Time.now, video.ucid, video.author) }
+
+      videos.each do |video|
+        ids << video.id
+
+        # FIXME: Red videos don't provide published date, so the best we can do is ignore them
+        if Time.now - video.published > 1.minute
+          db.exec("UPDATE users SET notifications = notifications || $1 \
+          WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, video.ucid)
+
+          video_array = video.to_a
+          args = arg_array(video_array)
+          db.exec("INSERT INTO channel_videos VALUES (#{args}) ON CONFLICT (id) DO UPDATE SET title = $2, \
+          published = $3, updated = $4, ucid = $5, author = $6", video_array)
+        end
+      end
+
+      if count < 30
         break
       end
 
       page += 1
     end
 
-    video_ids = [] of String
-    videos.each do |video|
-      db.exec("UPDATE users SET notifications = notifications || $1 \
-        WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, ucid)
-      video_ids << video.id
-
-      video_array = video.to_a
-      args = arg_array(video_array)
-      db.exec("INSERT INTO channel_videos VALUES (#{args}) ON CONFLICT (id) DO NOTHING", video_array)
-    end
-
     # When a video is deleted from a channel, we find and remove it here
-    db.exec("DELETE FROM channel_videos * WHERE NOT id = ANY ('{#{video_ids.map { |a| %("#{a}") }.join(",")}}') AND ucid = $1", ucid)
+    db.exec("DELETE FROM channel_videos * WHERE NOT id = ANY ('{#{ids.map { |id| %("#{id}") }.join(",")}}') AND ucid = $1", ucid)
   end
 
   channel = InvidiousChannel.new(ucid, author, Time.now)
 
   return channel
+end
+
+def produce_channel_videos_url(ucid, page = 1, auto_generated = nil)
+  if auto_generated
+    seed = Time.epoch(1525757349)
+
+    until seed >= Time.now
+      seed += 1.month
+    end
+    timestamp = seed - (page - 1).months
+
+    page = "#{timestamp.epoch}"
+    switch = "\x36"
+  else
+    page = "#{page}"
+    switch = "\x00"
+  end
+
+  meta = "\x12\x06videos"
+  meta += "\x30\x02"
+  meta += "\x38\x01"
+  meta += "\x60\x01"
+  meta += "\x6a\x00"
+  meta += "\xb8\x01\x00"
+  meta += "\x20#{switch}"
+  meta += "\x7a"
+  meta += page.size.to_u8.unsafe_chr
+  meta += page
+
+  meta = Base64.urlsafe_encode(meta)
+  meta = URI.escape(meta)
+
+  continuation = "\x12"
+  continuation += ucid.size.to_u8.unsafe_chr
+  continuation += ucid
+  continuation += "\x1a"
+  continuation += meta.size.to_u8.unsafe_chr
+  continuation += meta
+
+  continuation = continuation.size.to_u8.unsafe_chr + continuation
+  continuation = "\xe2\xa9\x85\xb2\x02" + continuation
+
+  continuation = Base64.urlsafe_encode(continuation)
+  continuation = URI.escape(continuation)
+
+  url = "/browse_ajax?continuation=#{continuation}"
+
+  return url
+end
+
+def get_about_info(ucid)
+  client = make_client(YT_URL)
+
+  about = client.get("/user/#{ucid}/about?disable_polymer=1")
+  about = XML.parse_html(about.body)
+
+  if !about.xpath_node(%q(//span[@class="qualified-channel-title-text"]/a))
+    about = client.get("/channel/#{ucid}/about?disable_polymer=1")
+    about = XML.parse_html(about.body)
+  end
+
+  if !about.xpath_node(%q(//span[@class="qualified-channel-title-text"]/a))
+    raise "User does not exist."
+  end
+
+  author = about.xpath_node(%q(//span[@class="qualified-channel-title-text"]/a)).not_nil!.content
+  ucid = about.xpath_node(%q(//link[@rel="canonical"])).not_nil!["href"].split("/")[-1]
+
+  # Auto-generated channels
+  # https://support.google.com/youtube/answer/2579942
+  auto_generated = false
+  if about.xpath_node(%q(//ul[@class="about-custom-links"]/li/a[@title="Auto-generated by YouTube"])) ||
+     about.xpath_node(%q(//span[@class="qualified-channel-title-badge"]/span[@title="Auto-generated by YouTube"]))
+    auto_generated = true
+  end
+
+  return {author, ucid, auto_generated}
 end

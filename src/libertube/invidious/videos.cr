@@ -109,17 +109,43 @@ CAPTION_LANGUAGES = {
 }
 
 REGIONS        = {"AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"}
-BYPASS_REGIONS = {"CA", "DE", "FR", "JP", "RU", "UK"}
+BYPASS_REGIONS = {
+  "GB",
+  "DE",
+  "FR",
+  "IN",
+  "CN",
+  "RU",
+  "CA",
+  "JP",
+  "IT",
+  "TH",
+  "ES",
+  "AE",
+  "KR",
+  "IR",
+  "BR",
+  "PK",
+  "ID",
+  "BD",
+  "MX",
+  "PH",
+  "EG",
+  "VN",
+  "CD",
+  "TR",
+}
 
 VIDEO_THUMBNAILS = {
-  {name: "default", url: "default", height: 90, width: 120},
-  {name: "medium", url: "mqdefault", height: 180, width: 320},
-  {name: "high", url: "hqdefault", height: 360, width: 480},
-  {name: "sddefault", url: "sddefault", height: 480, width: 640},
-  {name: "maxresdefault", url: "maxresdefault", height: 1280, width: 720},
-  {name: "start", url: "1", height: 90, width: 120},
-  {name: "middle", url: "2", height: 90, width: 120},
-  {name: "end", url: "3", height: 90, width: 120},
+  {name: "maxres", host: "invidio.us", url: "maxres", height: 720, width: 1280},
+  {name: "maxresdefault", host: "i.ytimg.com", url: "maxresdefault", height: 720, width: 1280},
+  {name: "sddefault", host: "i.ytimg.com", url: "sddefault", height: 480, width: 640},
+  {name: "high", host: "i.ytimg.com", url: "hqdefault", height: 360, width: 480},
+  {name: "medium", host: "i.ytimg.com", url: "mqdefault", height: 180, width: 320},
+  {name: "default", host: "i.ytimg.com", url: "default", height: 90, width: 120},
+  {name: "start", host: "i.ytimg.com", url: "1", height: 90, width: 120},
+  {name: "middle", host: "i.ytimg.com", url: "2", height: 90, width: 120},
+  {name: "end", host: "i.ytimg.com", url: "3", height: 90, width: 120},
 }
 
 # See https://github.com/rg3/youtube-dl/blob/master/youtube_dl/extractor/youtube.py#L380-#L476
@@ -258,9 +284,81 @@ class Video
 
   def adaptive_fmts(decrypt_function)
     adaptive_fmts = [] of HTTP::Params
+
     if self.info.has_key?("adaptive_fmts")
       self.info["adaptive_fmts"].split(",") do |string|
         adaptive_fmts << HTTP::Params.parse(string)
+      end
+    elsif self.info.has_key?("dashmpd")
+      client = make_client(YT_URL)
+      response = client.get(self.info["dashmpd"])
+      document = XML.parse_html(response.body)
+
+      document.xpath_nodes(%q(//adaptationset)).each do |adaptation_set|
+        mime_type = adaptation_set["mimetype"]
+
+        document.xpath_nodes(%q(.//representation)).each do |representation|
+          codecs = representation["codecs"]
+          itag = representation["id"]
+          bandwidth = representation["bandwidth"]
+          url = representation.xpath_node(%q(.//baseurl)).not_nil!.content
+
+          clen = url.match(/clen\/(?<clen>\d+)/).try &.["clen"]
+          clen ||= "0"
+          lmt = url.match(/lmt\/(?<lmt>\d+)/).try &.["lmt"]
+          lmt ||= "#{((Time.now + 1.hour).epoch_f.to_f64 * 1000000).to_i64}"
+
+          segment_list = representation.xpath_node(%q(.//segmentlist)).not_nil!
+          init = segment_list.xpath_node(%q(.//initialization))
+
+          # TODO: Replace with sane defaults when byteranges are absent
+          if init && !init["sourceurl"].starts_with? "sq"
+            init = init["sourceurl"].lchop("range/")
+
+            index = segment_list.xpath_node(%q(.//segmenturl)).not_nil!["media"]
+            index = index.lchop("range/")
+            index = "#{init.split("-")[1].to_i + 1}-#{index.split("-")[0].to_i}"
+          else
+            init = "0-0"
+            index = "1-1"
+          end
+
+          params = {
+            "type"            => ["#{mime_type}; codecs=\"#{codecs}\""],
+            "url"             => [url],
+            "projection_type" => ["1"],
+            "index"           => [index],
+            "init"            => [init],
+            "xtags"           => [] of String,
+            "lmt"             => [lmt],
+            "clen"            => [clen],
+            "bitrate"         => [bandwidth],
+            "itag"            => [itag],
+          }
+
+          if mime_type == "video/mp4"
+            width = representation["width"]?
+            height = representation["height"]?
+            fps = representation["framerate"]?
+
+            metadata = itag_to_metadata?(itag)
+            if metadata
+              width ||= metadata["width"]?
+              height ||= metadata["height"]?
+              fps ||= metadata["fps"]?
+            end
+
+            if width && height
+              params["size"] = ["#{width}x#{height}"]
+            end
+
+            if width
+              params["quality_label"] = ["#{height}p"]
+            end
+          end
+
+          adaptive_fmts << HTTP::Params.new(params)
+        end
       end
     end
 
@@ -345,6 +443,11 @@ class Video
     allowed_regions:    Array(String),
     is_family_friendly: Bool,
     genre:              String,
+    genre_url:          String,
+    license:            {
+      type:    String,
+      default: "",
+    },
   })
 end
 
@@ -362,19 +465,21 @@ class CaptionName
   )
 end
 
-def get_video(id, db, refresh = true)
+def get_video(id, db, proxies = {} of String => Array({ip: String, port: Int32}), refresh = true)
   if db.query_one?("SELECT EXISTS (SELECT true FROM videos WHERE id = $1)", id, as: Bool)
     video = db.query_one("SELECT * FROM videos WHERE id = $1", id, as: Video)
 
-    # If record was last updated over an hour ago, refresh (expire param in response lasts for 6 hours)
-    if refresh && Time.now - video.updated > 1.hour
+    # If record was last updated over 10 minutes ago, refresh (expire param in response lasts for 6 hours)
+    if refresh && Time.now - video.updated > 10.minutes
       begin
-        video = fetch_video(id)
+        video = fetch_video(id, proxies)
         video_array = video.to_a
+
         args = arg_array(video_array[1..-1], 2)
 
         db.exec("UPDATE videos SET (info,updated,title,views,likes,dislikes,wilson_score,\
-          published,description,language,author,ucid, allowed_regions, is_family_friendly, genre)\
+          published,description,language,author,ucid, allowed_regions, is_family_friendly,\
+          genre, genre_url, license)\
           = (#{args}) WHERE id = $1", video_array)
       rescue ex
         db.exec("DELETE FROM videos * WHERE id = $1", id)
@@ -382,8 +487,9 @@ def get_video(id, db, refresh = true)
       end
     end
   else
-    video = fetch_video(id)
+    video = fetch_video(id, proxies)
     video_array = video.to_a
+
     args = arg_array(video_array)
 
     db.exec("INSERT INTO videos VALUES (#{args}) ON CONFLICT (id) DO NOTHING", video_array)
@@ -392,13 +498,13 @@ def get_video(id, db, refresh = true)
   return video
 end
 
-def fetch_video(id)
+def fetch_video(id, proxies)
   html_channel = Channel(XML::Node).new
   info_channel = Channel(HTTP::Params).new
 
   spawn do
     client = make_client(YT_URL)
-    html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&disable_polymer=1")
+    html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
     html = XML.parse_html(html.body)
 
     html_channel.send(html)
@@ -423,22 +529,24 @@ def fetch_video(id)
   if info["reason"]? && info["reason"].includes? "your country"
     bypass_channel = Channel({HTTP::Params | Nil, XML::Node | Nil}).new
 
-    BYPASS_REGIONS.each do |country_code|
+    proxies.each do |region, list|
       spawn do
         begin
-          proxies = get_proxies(country_code)
-
-          # Try not to overload single proxy
-          proxy = proxies[0, 5].sample(1)[0]
-          proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
-
-          client = HTTPClient.new(URI.parse("https://www.youtube.com"))
+          client = HTTPClient.new(YT_URL)
           client.read_timeout = 10.seconds
           client.connect_timeout = 10.seconds
+
+          proxy = list.sample(1)[0]
+          proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
           client.set_proxy(proxy)
 
           proxy_info = client.get("/get_video_info?video_id=#{id}&el=detailpage&ps=default&eurl=&gl=US&hl=en&disable_polymer=1")
           proxy_info = HTTP::Params.parse(proxy_info.body)
+
+          if proxy_info["reason"]?
+            proxy_info = client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en&disable_polymer=1")
+            proxy_info = HTTP::Params.parse(proxy_info.body)
+          end
 
           if !proxy_info["reason"]?
             proxy_html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
@@ -454,11 +562,12 @@ def fetch_video(id)
       end
     end
 
-    BYPASS_REGIONS.size.times do
+    proxies.size.times do
       response = bypass_channel.receive
       if response[0] || response[1]
         info = response[0].not_nil!
         html = response[1].not_nil!
+        break
       end
     end
   end
@@ -488,12 +597,32 @@ def fetch_video(id)
   published = html.xpath_node(%q(//meta[@itemprop="datePublished"])).not_nil!["content"]
   published = Time.parse(published, "%Y-%m-%d", Time::Location.local)
 
-  allowed_regions = html.xpath_node(%q(//meta[@itemprop="regionsAllowed"])).not_nil!["content"].split(",")
-  is_family_friendly = html.xpath_node(%q(//meta[@itemprop="isFamilyFriendly"])).not_nil!["content"] == "True"
+  allowed_regions = html.xpath_node(%q(//meta[@itemprop="regionsAllowed"])).try &.["content"].split(",")
+  allowed_regions ||= [] of String
+  is_family_friendly = html.xpath_node(%q(//meta[@itemprop="isFamilyFriendly"])).try &.["content"] == "True"
+  is_family_friendly ||= true
+
   genre = html.xpath_node(%q(//meta[@itemprop="genre"])).not_nil!["content"]
+  genre_url = html.xpath_node(%(//a[text()="#{genre}"])).try &.["href"]
+  case genre
+  when "Movies"
+    genre_url = "/channel/UClgRkhTL3_hImCAmdLfDE4g"
+  when "Education"
+    # Education channel is linked but does not exist
+    # genre_url = "/channel/UC3yA8nDwraeOfnYfBWun83g"
+    genre_url = ""
+  end
+  genre_url ||= ""
+
+  license = html.xpath_node(%q(//h4[contains(text(),"License")]/parent::*/ul/li))
+  if license
+    license = license.content
+  else
+    license ||= ""
+  end
 
   video = Video.new(id, info, Time.now, title, views, likes, dislikes, wilson_score, published, description,
-    nil, author, ucid, allowed_regions, is_family_friendly, genre)
+    nil, author, ucid, allowed_regions, is_family_friendly, genre, genre_url, license)
 
   return video
 end
@@ -581,7 +710,7 @@ def generate_thumbnails(json, id)
     VIDEO_THUMBNAILS.each do |thumbnail|
       json.object do
         json.field "quality", thumbnail[:name]
-        json.field "url", "https://i.ytimg.com/vi/#{id}/#{thumbnail["url"]}.jpg"
+        json.field "url", "https://#{thumbnail[:host]}/vi/#{id}/#{thumbnail["url"]}.jpg"
         json.field "width", thumbnail[:width]
         json.field "height", thumbnail[:height]
       end

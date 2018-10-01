@@ -20,6 +20,8 @@ CREATE TABLE public.videos
     allowed_regions text[] COLLATE pg_catalog."default",
     is_family_friendly boolean,
     genre text COLLATE pg_catalog."default",
+    genre_url text COLLATE pg_catalog."default",
+    license text COLLATE pg_catalog."default",
     CONSTRAINT videos_pkey PRIMARY KEY (id)
 )
 WITH (

@@ -17,12 +17,12 @@ class RedditComment
   end
 
   JSON.mapping({
-    author:    String,
-    body_html: String,
-    replies:   RedditThing | String,
-    score:     Int32,
-    depth:     Int32,
-    created:   {
+    author:      String,
+    body_html:   String,
+    replies:     RedditThing | String,
+    score:       Int32,
+    depth:       Int32,
+    created_utc: {
       type:      Time,
       converter: RedditComment::TimeConverter,
     },
@@ -100,10 +100,12 @@ def template_youtube_comments(comments)
       END_HTML
     end
 
+    author_thumbnail = "/ggpht#{URI.parse(child["authorThumbnails"][-1]["url"].as_s).full_path}"
+
     html += <<-END_HTML
     <div class="pure-g">
       <div class="pure-u-2-24">
-        <img style="width:90%; padding-right:1em; padding-top:1em;" src="#{child["authorThumbnails"][-1]["url"]}">
+        <img style="width:90%; padding-right:1em; padding-top:1em;" src="#{author_thumbnail}">
       </div>
       <div class="pure-u-22-24">
         <p>
@@ -157,7 +159,7 @@ def template_reddit_comments(root)
         <a href="javascript:void(0)" onclick="toggle(this)">[ - ]</a> 
         <i class="icon ion-ios-thumbs-up"></i> #{score} 
         <b><a href="https://www.reddit.com/user/#{author}">#{author}</a></b> 
-        - #{recode_date(child.created)} ago
+        - #{recode_date(child.created_utc)} ago
       </p>
       <div>
       #{body_html}
@@ -190,37 +192,19 @@ def template_reddit_comments(root)
   return html
 end
 
-def add_alt_links(html)
-  alt_links = [] of {String, String}
+def replace_links(html)
+  html = XML.parse_html(html)
 
-  # This is painful but likely the only way to accomplish this in Crystal,
-  # as Crystigiri and others are not able to insert XML Nodes into a document.
-  # The goal here is to use as little regex as possible
-  html.scan(/<a[^>]*>([^<]+)<\/a>/) do |match|
-    anchor = XML.parse_html(match[0])
-    anchor = anchor.xpath_node("//a").not_nil!
+  html.xpath_nodes(%q(//a)).each do |anchor|
     url = URI.parse(anchor["href"])
 
-    if ["www.youtube.com", "m.youtube.com"].includes?(url.host)
+    if {"www.youtube.com", "m.youtube.com", "youtu.be"}.includes?(url.host)
       if url.path == "/redirect"
         params = HTTP::Params.parse(url.query.not_nil!)
-        alt_url = params["q"]?
-        alt_url ||= "/"
+        anchor["href"] = params["q"]?
       else
-        alt_url = url.full_path
+        anchor["href"] = url.full_path
       end
-
-      alt_link = <<-END_HTML
-      <a href="#{alt_url}">
-        <i class="icon ion-ios-link"></i>
-      </a>
-      END_HTML
-    elsif url.host == "youtu.be"
-      alt_link = <<-END_HTML
-      <a href="/watch?v=#{url.path.try &.lchop("/")}&#{url.query}">
-        <i class="icon ion-ios-link"></i>
-      </a>
-      END_HTML
     elsif url.to_s == "#"
       begin
         length_seconds = decode_length_seconds(anchor.content)
@@ -228,23 +212,12 @@ def add_alt_links(html)
         length_seconds = decode_time(anchor.content)
       end
 
-      alt_anchor = <<-END_HTML
-      <a href="javascript:void(0)" onclick="player.currentTime(#{length_seconds})">#{anchor.content}</a>
-      END_HTML
-
-      html = html.sub(anchor.to_s, alt_anchor)
-      next
-    else
-      alt_link = ""
+      anchor["href"] = "javascript:void(0)"
+      anchor["onclick"] = "player.currentTime(#{length_seconds})"
     end
-
-    alt_links << {anchor.to_s, alt_link}
   end
 
-  alt_links.each do |original, alternate|
-    html = html.sub(original, original + alternate)
-  end
-
+  html = html.to_xml(options: XML::SaveOptions::NO_DECL)
   return html
 end
 
@@ -267,5 +240,46 @@ def fill_links(html, scheme, host)
     html = html.to_xml(options: XML::SaveOptions::NO_DECL)
   end
 
-  html
+  return html
+end
+
+def content_to_comment_html(content)
+  comment_html = content.map do |run|
+    text = HTML.escape(run["text"].as_s)
+
+    if run["text"] == "\n"
+      text = "<br>"
+    end
+
+    if run["bold"]?
+      text = "<b>#{text}</b>"
+    end
+
+    if run["italics"]?
+      text = "<i>#{text}</i>"
+    end
+
+    if run["navigationEndpoint"]?
+      url = run["navigationEndpoint"]["urlEndpoint"]?.try &.["url"].as_s
+      if url
+        url = URI.parse(url)
+
+        if !url.host || {"m.youtube.com", "www.youtube.com", "youtu.be"}.includes? url.host
+          if url.path == "/redirect"
+            url = HTTP::Params.parse(url.query.not_nil!)["q"]
+          else
+            url = url.full_path
+          end
+        end
+      else
+        url = run["navigationEndpoint"]["commandMetadata"]?.try &.["webCommandMetadata"]["url"].as_s
+      end
+
+      text = %(<a href="#{url}">#{text}</a>)
+    end
+
+    text
+  end.join.rchop('\ufeff')
+
+  return comment_html
 end

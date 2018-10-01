@@ -1,16 +1,3 @@
-class Playlist
-  add_mapping({
-    title:       String,
-    id:          String,
-    author:      String,
-    ucid:        String,
-    description: String,
-    video_count: Int32,
-    views:       Int64,
-    updated:     Time,
-  })
-end
-
 class PlaylistVideo
   add_mapping({
     title:          String,
@@ -24,58 +11,92 @@ class PlaylistVideo
   })
 end
 
-def extract_playlist(plid, page)
-  index = (page - 1) * 100
-  url = produce_playlist_url(plid, index)
+class Playlist
+  add_mapping({
+    title:            String,
+    id:               String,
+    author:           String,
+    author_thumbnail: String,
+    ucid:             String,
+    description:      String,
+    description_html: String,
+    video_count:      Int32,
+    views:            Int64,
+    updated:          Time,
+  })
+end
 
+def fetch_playlist_videos(plid, page, video_count)
   client = make_client(YT_URL)
-  response = client.get(url)
-  response = JSON.parse(response.body)
-  if !response["content_html"]? || response["content_html"].as_s.empty?
-    raise "Playlist does not exist"
+
+  if video_count > 100
+    index = (page - 1) * 100
+    url = produce_playlist_url(plid, index)
+
+    response = client.get(url)
+    response = JSON.parse(response.body)
+    if !response["content_html"]? || response["content_html"].as_s.empty?
+      raise "Playlist is empty"
+    end
+
+    document = XML.parse_html(response["content_html"].as_s)
+    nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
+    videos = extract_playlist(plid, nodeset, index)
+  else
+    # Playlist has less than one page of videos, so subsequent pages will be empty
+    if page > 1
+      videos = [] of PlaylistVideo
+    else
+      # Extract first page of videos
+      response = client.get("/playlist?list=#{plid}&gl=US&hl=en&disable_polymer=1")
+      document = XML.parse_html(response.body)
+      nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
+
+      videos = extract_playlist(plid, nodeset, 0)
+    end
   end
 
+  return videos
+end
+
+def extract_playlist(plid, nodeset, index)
   videos = [] of PlaylistVideo
 
-  document = XML.parse_html(response["content_html"].as_s)
-  anchor = document.xpath_node(%q(//div[@class="pl-video-owner"]/a))
-  if anchor
-    document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")])).each_with_index do |video, offset|
-      anchor = video.xpath_node(%q(.//td[@class="pl-video-title"]))
-      if !anchor
-        next
-      end
-
-      title = anchor.xpath_node(%q(.//a)).not_nil!.content.strip(" \n")
-      id = anchor.xpath_node(%q(.//a)).not_nil!["href"].lchop("/watch?v=")[0, 11]
-
-      anchor = anchor.xpath_node(%q(.//div[@class="pl-video-owner"]/a))
-      if anchor
-        author = anchor.content
-        ucid = anchor["href"].split("/")[2]
-      else
-        author = ""
-        ucid = ""
-      end
-
-      anchor = video.xpath_node(%q(.//td[@class="pl-video-time"]/div/div[1]))
-      if anchor && !anchor.content.empty?
-        length_seconds = decode_length_seconds(anchor.content)
-      else
-        length_seconds = 0
-      end
-
-      videos << PlaylistVideo.new(
-        title,
-        id,
-        author,
-        ucid,
-        length_seconds,
-        Time.now,
-        [plid],
-        index + offset,
-      )
+  nodeset.each_with_index do |video, offset|
+    anchor = video.xpath_node(%q(.//td[@class="pl-video-title"]))
+    if !anchor
+      next
     end
+
+    title = anchor.xpath_node(%q(.//a)).not_nil!.content.strip(" \n")
+    id = anchor.xpath_node(%q(.//a)).not_nil!["href"].lchop("/watch?v=")[0, 11]
+
+    anchor = anchor.xpath_node(%q(.//div[@class="pl-video-owner"]/a))
+    if anchor
+      author = anchor.content
+      ucid = anchor["href"].split("/")[2]
+    else
+      author = ""
+      ucid = ""
+    end
+
+    anchor = video.xpath_node(%q(.//td[@class="pl-video-time"]/div/div[1]))
+    if anchor && !anchor.content.empty?
+      length_seconds = decode_length_seconds(anchor.content)
+    else
+      length_seconds = 0
+    end
+
+    videos << PlaylistVideo.new(
+      title,
+      id,
+      author,
+      ucid,
+      length_seconds,
+      Time.now,
+      [plid],
+      index + offset,
+    )
   end
 
   return videos
@@ -87,60 +108,78 @@ def produce_playlist_url(id, index)
   end
   ucid = "VL" + id
 
-  continuation = [0x08_u8] + write_var_int(index)
-  slice = continuation.to_unsafe.to_slice(continuation.size)
-  slice = Base64.urlsafe_encode(slice, false)
+  meta = [0x08_u8] + write_var_int(index)
+  meta = Slice.new(meta.to_unsafe, meta.size)
+  meta = Base64.urlsafe_encode(meta, false)
+  meta = "PT:#{meta}"
 
-  # Inner Base64
-  continuation = "PT:" + slice
-  continuation = [0x7a_u8, continuation.bytes.size.to_u8] + continuation.bytes
-  slice = continuation.to_unsafe.to_slice(continuation.size)
-  slice = Base64.urlsafe_encode(slice)
-  slice = URI.escape(slice)
+  wrapped = "\x7a"
+  wrapped += meta.bytes.size.unsafe_chr
+  wrapped += meta
 
-  # Outer Base64
-  continuation = [0x1a.to_u8, slice.bytes.size.to_u8] + slice.bytes
-  continuation = ucid.bytes + continuation
-  continuation = [0x12_u8, ucid.size.to_u8] + continuation
-  continuation = [0xe2_u8, 0xa9_u8, 0x85_u8, 0xb2_u8, 2_u8, continuation.size.to_u8] + continuation
+  wrapped = Base64.urlsafe_encode(wrapped)
+  meta = URI.escape(wrapped)
 
-  # Wrap bytes
-  slice = continuation.to_unsafe.to_slice(continuation.size)
-  slice = Base64.urlsafe_encode(slice)
-  slice = URI.escape(slice)
-  continuation = slice
+  continuation = "\x12"
+  continuation += ucid.size.unsafe_chr
+  continuation += ucid
+  continuation += "\x1a"
+  continuation += meta.bytes.size.unsafe_chr
+  continuation += meta
 
-  url = "/browse_ajax?action_continuation=1&continuation=#{continuation}"
+  continuation = continuation.size.to_u8.unsafe_chr + continuation
+  continuation = "\xe2\xa9\x85\xb2\x02" + continuation
+
+  continuation = Base64.urlsafe_encode(continuation)
+  continuation = URI.escape(continuation)
+
+  url = "/browse_ajax?continuation=#{continuation}"
 
   return url
 end
 
 def fetch_playlist(plid)
   client = make_client(YT_URL)
-  response = client.get("/playlist?list=#{plid}&disable_polymer=1")
-  document = XML.parse_html(response.body)
 
-  title = document.xpath_node(%q(//h1[@class="pl-header-title"])).not_nil!.content
-  title = title.strip(" \n")
-
-  description = document.xpath_node(%q(//span[@class="pl-header-description-text"]/div/div[1]))
-  description ||= document.xpath_node(%q(//span[@class="pl-header-description-text"]))
-
-  if description
-    description = description.to_xml.strip(" \n")
-    description = description.split("<button ")[0]
-    description = fill_links(description, "https", "www.youtube.com")
-    description = add_alt_links(description)
-  else
-    description = ""
+  if plid.starts_with? "UC"
+    plid = "UU#{plid.lchop("UC")}"
   end
+
+  response = client.get("/playlist?list=#{plid}&hl=en&disable_polymer=1")
+  if response.status_code != 200
+    raise "Invalid playlist."
+  end
+
+  body = response.body.gsub(<<-END_BUTTON
+  <button class="yt-uix-button yt-uix-button-size-default yt-uix-button-link yt-uix-expander-head playlist-description-expander yt-uix-inlineedit-ignore-edit" type="button" onclick=";return false;"><span class="yt-uix-button-content">  less <img alt="" src="/yts/img/pixel-vfl3z5WfW.gif">
+  </span></button>
+  END_BUTTON
+  , "")
+  document = XML.parse_html(body)
+
+  title = document.xpath_node(%q(//h1[@class="pl-header-title"]))
+  if !title
+    raise "Playlist does not exist."
+  end
+  title = title.content.strip(" \n")
+
+  description_html = document.xpath_node(%q(//span[@class="pl-header-description-text"]/div/div[1]))
+  description_html ||= document.xpath_node(%q(//span[@class="pl-header-description-text"]))
+  description_html, description = html_to_content(description_html)
 
   anchor = document.xpath_node(%q(//ul[@class="pl-header-details"])).not_nil!
   author = anchor.xpath_node(%q(.//li[1]/a)).not_nil!.content
+  author_thumbnail = document.xpath_node(%q(//img[@class="channel-header-profile-image"])).try &.["src"]
+  author_thumbnail ||= ""
   ucid = anchor.xpath_node(%q(.//li[1]/a)).not_nil!["href"].split("/")[2]
 
   video_count = anchor.xpath_node(%q(.//li[2])).not_nil!.content.delete("videos, ").to_i
-  views = anchor.xpath_node(%q(.//li[3])).not_nil!.content.delete("views, ").to_i64
+  views = anchor.xpath_node(%q(.//li[3])).not_nil!.content.delete("No views, ")
+  if views.empty?
+    views = 0_i64
+  else
+    views = views.to_i64
+  end
 
   updated = anchor.xpath_node(%q(.//li[4])).not_nil!.content.lchop("Last updated on ").lchop("Updated ")
   updated = decode_date(updated)
@@ -149,8 +188,10 @@ def fetch_playlist(plid)
     title,
     plid,
     author,
+    author_thumbnail,
     ucid,
     description,
+    description_html,
     video_count,
     views,
     updated

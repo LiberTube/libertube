@@ -9,29 +9,100 @@ class SearchVideo
     description:      String,
     description_html: String,
     length_seconds:   Int32,
+    live_now:         Bool,
   })
 end
 
-def search(query, page = 1, search_params = build_search_params(content_type: "video"))
+class SearchPlaylistVideo
+  add_mapping({
+    title:          String,
+    id:             String,
+    length_seconds: Int32,
+  })
+end
+
+class SearchPlaylist
+  add_mapping({
+    title:       String,
+    id:          String,
+    author:      String,
+    ucid:        String,
+    video_count: Int32,
+    videos:      Array(SearchPlaylistVideo),
+  })
+end
+
+class SearchChannel
+  add_mapping({
+    author:           String,
+    ucid:             String,
+    author_thumbnail: String,
+    subscriber_count: Int32,
+    video_count:      Int32,
+    description:      String,
+    description_html: String,
+  })
+end
+
+alias SearchItem = SearchVideo | SearchChannel | SearchPlaylist
+
+def channel_search(query, page, channel)
   client = make_client(YT_URL)
-  if query.empty?
-    return {0, [] of SearchVideo}
+
+  response = client.get("/user/#{channel}")
+  document = XML.parse_html(response.body)
+  canonical = document.xpath_node(%q(//link[@rel="canonical"]))
+
+  if !canonical
+    response = client.get("/channel/#{channel}")
+    document = XML.parse_html(response.body)
+    canonical = document.xpath_node(%q(//link[@rel="canonical"]))
   end
 
-  html = client.get("/results?q=#{URI.escape(query)}&page=#{page}&sp=#{search_params}&disable_polymer=1").body
+  if !canonical
+    return 0, [] of SearchItem
+  end
+
+  ucid = canonical["href"].split("/")[-1]
+
+  url = produce_channel_search_url(ucid, query, page)
+  response = client.get(url)
+  json = JSON.parse(response.body)
+
+  if json["content_html"]? && !json["content_html"].as_s.empty?
+    document = XML.parse_html(json["content_html"].as_s)
+    nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+
+    count = nodeset.size
+    items = extract_items(nodeset)
+  else
+    count = 0
+    items = [] of SearchItem
+  end
+
+  return count, items
+end
+
+def search(query, page = 1, search_params = produce_search_params(content_type: "all"))
+  client = make_client(YT_URL)
+  if query.empty?
+    return {0, [] of SearchItem}
+  end
+
+  html = client.get("/results?q=#{URI.escape(query)}&page=#{page}&sp=#{search_params}&hl=en&disable_polymer=1").body
   if html.empty?
-    return {0, [] of SearchVideo}
+    return {0, [] of SearchItem}
   end
 
   html = XML.parse_html(html)
   nodeset = html.xpath_nodes(%q(//ol[@class="item-section"]/li))
-  videos = extract_videos(nodeset)
+  items = extract_items(nodeset)
 
-  return {nodeset.size, videos}
+  return {nodeset.size, items}
 end
 
-def build_search_params(sort : String = "relevance", date : String = "", content_type : String = "",
-                        duration : String = "", features : Array(String) = [] of String)
+def produce_search_params(sort : String = "relevance", date : String = "", content_type : String = "",
+                          duration : String = "", features : Array(String) = [] of String)
   head = "\x08"
   head += case sort
           when "relevance"
@@ -73,8 +144,10 @@ def build_search_params(sort : String = "relevance", date : String = "", content
             "\x10\x04"
           when "show"
             "\x10\x05"
-          else
+          when "all"
             ""
+          else
+            "\x10\x01"
           end
 
   body += case duration
@@ -96,7 +169,7 @@ def build_search_params(sort : String = "relevance", date : String = "", content
               "\x30\x01"
             when "3d"
               "\x38\x01"
-            when "live"
+            when "live", "livestream"
               "\x40\x01"
             when "purchased"
               "\x48\x01"
@@ -114,7 +187,7 @@ def build_search_params(sort : String = "relevance", date : String = "", content
   end
 
   if body.size > 0
-    token = head + "\x12" + body.size.to_u8.unsafe_chr + body
+    token = head + "\x12" + body.size.unsafe_chr + body
   else
     token = head
   end
@@ -123,4 +196,41 @@ def build_search_params(sort : String = "relevance", date : String = "", content
   token = URI.escape(token)
 
   return token
+end
+
+def produce_channel_search_url(ucid, query, page)
+  page = "#{page}"
+
+  meta = "\x12\x06search"
+  meta += "\x30\x02"
+  meta += "\x38\x01"
+  meta += "\x60\x01"
+  meta += "\x6a\x00"
+  meta += "\xb8\x01\x00"
+  meta += "\x7a"
+  meta += page.size.unsafe_chr
+  meta += page
+
+  meta = Base64.urlsafe_encode(meta)
+  meta = URI.escape(meta)
+
+  continuation = "\x12"
+  continuation += ucid.size.unsafe_chr
+  continuation += ucid
+  continuation += "\x1a"
+  continuation += meta.size.unsafe_chr
+  continuation += meta
+  continuation += "\x5a"
+  continuation += query.size.unsafe_chr
+  continuation += query
+
+  continuation = continuation.size.unsafe_chr + continuation
+  continuation = "\xe2\xa9\x85\xb2\x02" + continuation
+
+  continuation = Base64.urlsafe_encode(continuation)
+  continuation = URI.escape(continuation)
+
+  url = "/browse_ajax?continuation=#{continuation}"
+
+  return url
 end
