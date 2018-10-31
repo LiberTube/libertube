@@ -22,6 +22,8 @@ CREATE TABLE public.videos
     genre text COLLATE pg_catalog."default",
     genre_url text COLLATE pg_catalog."default",
     license text COLLATE pg_catalog."default",
+    sub_count_text text COLLATE pg_catalog."default",
+    author_thumbnail text COLLATE pg_catalog."default",
     CONSTRAINT videos_pkey PRIMARY KEY (id)
 )
 WITH (

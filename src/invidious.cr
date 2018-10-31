@@ -31,6 +31,7 @@ HMAC_KEY = CONFIG.hmac_key || Random::Secure.random_bytes(32)
 
 crawl_threads = CONFIG.crawl_threads
 channel_threads = CONFIG.channel_threads
+feed_threads = CONFIG.feed_threads
 video_threads = CONFIG.video_threads
 
 Kemal.config.extra_options do |parser|
@@ -46,6 +47,14 @@ Kemal.config.extra_options do |parser|
   parser.on("-c THREADS", "--channel-threads=THREADS", "Number of threads for refreshing channels (default: #{channel_threads})") do |number|
     begin
       channel_threads = number.to_i
+    rescue ex
+      puts "THREADS must be integer"
+      exit
+    end
+  end
+  parser.on("-f THREADS", "--feed-threads=THREADS", "Number of threads for refreshing feeds (default: #{feed_threads})") do |number|
+    begin
+      feed_threads = number.to_i
     rescue ex
       puts "THREADS must be integer"
       exit
@@ -85,6 +94,8 @@ end
 
 refresh_channels(PG_DB, channel_threads, CONFIG.full_refresh)
 
+refresh_feeds(PG_DB, feed_threads)
+
 video_threads.times do |i|
   spawn do
     refresh_videos(PG_DB)
@@ -106,10 +117,12 @@ spawn do
 end
 
 proxies = {} of String => Array({ip: String, port: Int32})
-spawn do
-  find_working_proxies(BYPASS_REGIONS) do |region, list|
-    if !list.empty?
-      proxies[region] = list
+if CONFIG.geo_bypass
+  spawn do
+    find_working_proxies(BYPASS_REGIONS) do |region, list|
+      if !list.empty?
+        proxies[region] = list
+      end
     end
   end
 end
@@ -215,6 +228,12 @@ get "/watch" do |env|
     next env.redirect "/"
   end
 
+  plid = env.params.query["list"]?
+  nojs = env.params.query["nojs"]?
+
+  nojs ||= "0"
+  nojs = nojs == "1"
+
   user = env.get? "user"
   if user
     user = user.as(User)
@@ -228,17 +247,61 @@ get "/watch" do |env|
   subscriptions ||= [] of String
 
   params = process_video_params(env.params.query, preferences)
-
-  if params[:listen]
-    env.params.query.delete_all("listen")
-  end
+  env.params.query.delete_all("listen")
 
   begin
     video = get_video(id, PG_DB, proxies)
+  rescue ex : VideoRedirect
+    next env.redirect "/watch?v=#{ex.message}"
   rescue ex
     error_message = ex.message
     STDOUT << id << " : " << ex.message << "\n"
     next templated "error"
+  end
+
+  if nojs
+    if preferences
+      source = preferences.comments[0]
+      if source.empty?
+        source = preferences.comments[1]
+      end
+
+      if source == "youtube"
+        begin
+          comments = fetch_youtube_comments(id, "", proxies, "html")
+          comments = JSON.parse(comments)
+          comment_html = template_youtube_comments(comments)
+        rescue ex
+          if preferences.comments[1] == "reddit"
+            comments, reddit_thread = fetch_reddit_comments(id)
+            comment_html = template_reddit_comments(comments)
+
+            comment_html = fill_links(comment_html, "https", "www.reddit.com")
+            comment_html = replace_links(comment_html)
+          end
+        end
+      elsif source == "reddit"
+        begin
+          comments, reddit_thread = fetch_reddit_comments(id)
+          comment_html = template_reddit_comments(comments)
+
+          comment_html = fill_links(comment_html, "https", "www.reddit.com")
+          comment_html = replace_links(comment_html)
+        rescue ex
+          if preferences.comments[1] == "youtube"
+            comments = fetch_youtube_comments(id, "", proxies, "html")
+            comments = JSON.parse(comments)
+            comment_html = template_youtube_comments(comments)
+          end
+        end
+      end
+    else
+      comments = fetch_youtube_comments(id, "", proxies, "html")
+      comments = JSON.parse(comments)
+      comment_html = template_youtube_comments(comments)
+    end
+
+    comment_html ||= ""
   end
 
   fmt_stream = video.fmt_stream(decrypt_function)
@@ -335,6 +398,8 @@ get "/embed/:id" do |env|
 
   begin
     video = get_video(id, PG_DB, proxies)
+  rescue ex : VideoRedirect
+    next env.redirect "/embed/#{ex.message}"
   rescue ex
     error_message = ex.message
     next templated "error"
@@ -400,6 +465,10 @@ get "/playlist" do |env|
   page = env.params.query["page"]?.try &.to_i?
   page ||= 1
 
+  if plid.starts_with? "RD"
+    next env.redirect "/mix?list=#{plid}"
+  end
+
   begin
     playlist = fetch_playlist(plid)
   rescue ex
@@ -463,9 +532,8 @@ get "/search" do |env|
   user = env.get? "user"
   if user
     user = user.as(User)
-    ucids = user.subscriptions
+    view_name = "subscriptions_#{sha256(user.email)[0..7]}"
   end
-  ucids ||= [] of String
 
   channel = nil
   content_type = "all"
@@ -502,14 +570,19 @@ get "/search" do |env|
   if channel
     count, videos = channel_search(search_query, page, channel)
   elsif subscriptions
-    videos = PG_DB.query_all("SELECT id,title,published,updated,ucid,author FROM (
+    if view_name
+      videos = PG_DB.query_all("SELECT id,title,published,updated,ucid,author FROM (
       SELECT *,
-      to_tsvector(channel_videos.title) ||
-      to_tsvector(channel_videos.author)
+      to_tsvector(#{view_name}.title) ||
+      to_tsvector(#{view_name}.author)
       as document
-      FROM channel_videos WHERE ucid IN (#{arg_array(ucids, 3)})
-      ) v_search WHERE v_search.document @@ plainto_tsquery($1) LIMIT 20 OFFSET $2;", [search_query, (page - 1) * 20] + ucids, as: ChannelVideo)
-    count = videos.size
+      FROM #{view_name}
+      ) v_search WHERE v_search.document @@ plainto_tsquery($1) LIMIT 20 OFFSET $2;", search_query, (page - 1) * 20, as: ChannelVideo)
+      count = videos.size
+    else
+      videos = [] of ChannelVideo
+      count = 0
+    end
   else
     begin
       search_params = produce_search_params(sort: sort, date: date, content_type: content_type,
@@ -743,7 +816,7 @@ post "/login" do |env|
     end
 
     if action == "signin"
-      user = PG_DB.query_one?("SELECT * FROM users WHERE email = $1 AND password IS NOT NULL", email, as: User)
+      user = PG_DB.query_one?("SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND password IS NOT NULL", email, as: User)
 
       if !user
         error_message = "Invalid username or password"
@@ -757,7 +830,7 @@ post "/login" do |env|
 
       if Crypto::Bcrypt::Password.new(user.password.not_nil!) == password
         sid = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
-        PG_DB.exec("UPDATE users SET id = id || $1 WHERE email = $2", [sid], email)
+        PG_DB.exec("UPDATE users SET id = id || $1 WHERE LOWER(email) = LOWER($2)", [sid], email)
 
         if Kemal.config.ssl || CONFIG.https_only
           secure = true
@@ -772,7 +845,7 @@ post "/login" do |env|
         next templated "error"
       end
     elsif action == "register"
-      user = PG_DB.query_one?("SELECT * FROM users WHERE email = $1 AND password IS NOT NULL", email, as: User)
+      user = PG_DB.query_one?("SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND password IS NOT NULL", email, as: User)
       if user
         error_message = "Please sign in"
         next templated "error"
@@ -786,6 +859,12 @@ post "/login" do |env|
       args = arg_array(user_array)
 
       PG_DB.exec("INSERT INTO users VALUES (#{args})", user_array)
+
+      view_name = "subscriptions_#{sha256(user.email)[0..7]}"
+      PG_DB.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
+        SELECT * FROM channel_videos WHERE \
+        ucid = ANY ((SELECT subscriptions FROM users WHERE email = '#{user.email}')::text[]) \
+      ORDER BY published DESC;")
 
       if Kemal.config.ssl || CONFIG.https_only
         secure = true
@@ -847,6 +926,10 @@ post "/preferences" do |env|
     autoplay ||= "off"
     autoplay = autoplay == "on"
 
+    listen = env.params.body["listen"]?.try &.as(String)
+    listen ||= "off"
+    listen = listen == "on"
+
     speed = env.params.body["speed"]?.try &.as(String).to_f?
     speed ||= 1.0
 
@@ -902,6 +985,7 @@ post "/preferences" do |env|
     preferences = {
       "video_loop"         => video_loop,
       "autoplay"           => autoplay,
+      "listen"             => listen,
       "speed"              => speed,
       "quality"            => quality,
       "volume"             => volume,
@@ -1113,12 +1197,14 @@ post "/data_control" do |env|
         body = JSON.parse(body)
         body["subscriptions"].as_a.each do |ucid|
           ucid = ucid.as_s
-          if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE id = $2", ucid, user.id)
 
+          if !user.subscriptions.includes? ucid
             begin
               client = make_client(YT_URL)
               get_channel(ucid, client, PG_DB, false, false)
+
+              PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+              user.subscriptions << ucid
             rescue ex
               next
             end
@@ -1127,8 +1213,10 @@ post "/data_control" do |env|
 
         body["watch_history"].as_a.each do |id|
           id = id.as_s
+
           if !user.watched.includes? id
             PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE email = $2", id, user.email)
+            user.watched << id
           end
         end
 
@@ -1139,11 +1227,12 @@ post "/data_control" do |env|
           ucid = channel["xmlUrl"].match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
 
           if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
-
             begin
               client = make_client(YT_URL)
               get_channel(ucid, client, PG_DB, false, false)
+
+              PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+              user.subscriptions << ucid
             rescue ex
               next
             end
@@ -1154,11 +1243,12 @@ post "/data_control" do |env|
           ucid = md["channel_id"]
 
           if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
-
             begin
               client = make_client(YT_URL)
               get_channel(ucid, client, PG_DB, false, false)
+
+              PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+              user.subscriptions << ucid
             rescue ex
               next
             end
@@ -1170,11 +1260,12 @@ post "/data_control" do |env|
           ucid = channel["url"].as_s.match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
 
           if !user.subscriptions.includes? ucid
-            PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
-
             begin
               client = make_client(YT_URL)
               get_channel(ucid, client, PG_DB, false, false)
+
+              PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+              user.subscriptions << ucid
             rescue ex
               next
             end
@@ -1190,19 +1281,24 @@ post "/data_control" do |env|
 
               db = entry.io.gets_to_end
               db.scan(/youtube\.com\/watch\?v\=(?<id>[a-zA-Z0-9_-]{11})/) do |md|
-                if !user.watched.includes? md["id"]
-                  PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE email = $2", md["id"], user.email)
+                id = md["id"]
+
+                if !user.watched.includes? id
+                  PG_DB.exec("UPDATE users SET watched = array_append(watched,$1) WHERE email = $2", id, user.email)
+                  user.watched << id
                 end
               end
 
               db.scan(/youtube\.com\/channel\/(?<ucid>[a-zA-Z0-9_-]{22})/) do |md|
                 ucid = md["ucid"]
-                if !user.subscriptions.includes? ucid
-                  PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
 
+                if !user.subscriptions.includes? ucid
                   begin
                     client = make_client(YT_URL)
                     get_channel(ucid, client, PG_DB, false, false)
+
+                    PG_DB.exec("UPDATE users SET subscriptions = array_append(subscriptions,$1) WHERE email = $2", ucid, user.email)
+                    user.subscriptions << ucid
                   rescue ex
                     next
                   end
@@ -1340,6 +1436,8 @@ get "/feed/subscriptions" do |env|
 
     notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email,
       as: Array(String))
+    view_name = "subscriptions_#{sha256(user.email)[0..7]}"
+
     if preferences.notifications_only && !notifications.empty?
       args = arg_array(notifications)
 
@@ -1362,39 +1460,35 @@ get "/feed/subscriptions" do |env|
     else
       if preferences.latest_only
         if preferences.unseen_only
-          ucids = arg_array(user.subscriptions)
           if user.watched.empty?
             watched = "'{}'"
           else
-            watched = arg_array(user.watched, user.subscriptions.size + 1)
+            watched = arg_array(user.watched)
           end
 
-          videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM channel_videos WHERE \
-            ucid IN (#{ucids}) AND id NOT IN (#{watched}) ORDER BY ucid, published DESC",
-            user.subscriptions + user.watched, as: ChannelVideo)
+          videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} WHERE \
+            id NOT IN (#{watched}) ORDER BY ucid, published DESC",
+            user.watched, as: ChannelVideo)
         else
-          args = arg_array(user.subscriptions)
-          videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM channel_videos WHERE \
-          ucid IN (#{args}) ORDER BY ucid, published DESC", user.subscriptions, as: ChannelVideo)
+          videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} \
+          ORDER BY ucid, published DESC", as: ChannelVideo)
         end
 
         videos.sort_by! { |video| video.published }.reverse!
       else
         if preferences.unseen_only
-          ucids = arg_array(user.subscriptions, 3)
           if user.watched.empty?
             watched = "'{}'"
           else
-            watched = arg_array(user.watched, user.subscriptions.size + 3)
+            watched = arg_array(user.watched, 3)
           end
 
-          videos = PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid IN (#{ucids}) \
-          AND id NOT IN (#{watched}) ORDER BY published DESC LIMIT $1 OFFSET $2",
-            [limit, offset] + user.subscriptions + user.watched, as: ChannelVideo)
+          videos = PG_DB.query_all("SELECT * FROM #{view_name} WHERE \
+          id NOT IN (#{watched}) LIMIT $1 OFFSET $2",
+            [limit, offset] + user.watched, as: ChannelVideo)
         else
-          args = arg_array(user.subscriptions, 3)
-          videos = PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid IN (#{args}) \
-          ORDER BY published DESC LIMIT $1 OFFSET $2", [limit, offset] + user.subscriptions, as: ChannelVideo)
+          videos = PG_DB.query_all("SELECT * FROM #{view_name} \
+          ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
         end
       end
 
@@ -1439,33 +1533,12 @@ get "/feed/channel/:ucid" do |env|
   begin
     author, ucid, auto_generated = get_about_info(ucid)
   rescue ex
-    error_message = "User does not exist"
-    halt env, status_code: 404, response: error_message
+    error_message = ex.message
+    halt env, status_code: 500, response: error_message
   end
-
-  client = make_client(YT_URL)
 
   page = 1
-
-  videos = [] of SearchVideo
-  2.times do |i|
-    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated)
-    response = client.get(url)
-    json = JSON.parse(response.body)
-
-    if json["content_html"]? && !json["content_html"].as_s.empty?
-      document = XML.parse_html(json["content_html"].as_s)
-      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
-
-      if auto_generated
-        videos += extract_videos(nodeset)
-      else
-        videos += extract_videos(nodeset, ucid)
-      end
-    else
-      break
-    end
-  end
+  videos, count = get_60_videos(ucid, page, auto_generated)
 
   host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
   path = env.request.path
@@ -1552,15 +1625,14 @@ get "/feed/private" do |env|
   latest_only ||= 0
   latest_only = latest_only == 1
 
+  view_name = "subscriptions_#{sha256(user.email)[0..7]}"
+
   if latest_only
-    args = arg_array(user.subscriptions)
-    videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM channel_videos WHERE \
-    ucid IN (#{args}) ORDER BY ucid, published DESC", user.subscriptions, as: ChannelVideo)
+    videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} ORDER BY ucid, published DESC", as: ChannelVideo)
     videos.sort_by! { |video| video.published }.reverse!
   else
-    args = arg_array(user.subscriptions, 3)
-    videos = PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid IN (#{args}) \
-  ORDER BY published DESC LIMIT $1 OFFSET $2", [limit, offset] + user.subscriptions, as: ChannelVideo)
+    videos = PG_DB.query_all("SELECT * FROM #{view_name} \
+    ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
   end
 
   sort = env.params.query["sort"]?
@@ -1697,9 +1769,9 @@ get "/channel/:ucid" do |env|
   page ||= 1
 
   begin
-    author, ucid, auto_generated = get_about_info(ucid)
+    author, ucid, auto_generated, sub_count = get_about_info(ucid)
   rescue ex
-    error_message = "User does not exist"
+    error_message = ex.message
     next templated "error"
   end
 
@@ -1711,27 +1783,7 @@ get "/channel/:ucid" do |env|
     end
   end
 
-  client = make_client(YT_URL)
-
-  videos = [] of SearchVideo
-  2.times do |i|
-    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated)
-    response = client.get(url)
-    json = JSON.parse(response.body)
-
-    if json["content_html"]? && !json["content_html"].as_s.empty?
-      document = XML.parse_html(json["content_html"].as_s)
-      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
-
-      if auto_generated
-        videos += extract_videos(nodeset)
-      else
-        videos += extract_videos(nodeset, ucid)
-      end
-    else
-      break
-    end
-  end
+  videos, count = get_60_videos(ucid, page, auto_generated)
 
   templated "channel"
 end
@@ -1759,8 +1811,10 @@ get "/api/v1/captions/:id" do |env|
   client = make_client(YT_URL)
   begin
     video = get_video(id, PG_DB, proxies)
+  rescue ex : VideoRedirect
+    next env.redirect "/api/v1/captions/#{ex.message}"
   rescue ex
-    halt env, status_code: 403
+    halt env, status_code: 500
   end
 
   captions = video.captions
@@ -1858,206 +1912,15 @@ get "/api/v1/comments/:id" do |env|
   format = env.params.query["format"]?
   format ||= "json"
 
+  continuation = env.params.query["continuation"]?
+  continuation ||= ""
+
   if source == "youtube"
-    client = make_client(YT_URL)
-    html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
-    headers = HTTP::Headers.new
-    headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
-    body = html.body
-
-    session_token = body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-    itct = body.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
-    ctoken = body.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
-
-    if body.match(/<meta itemprop="regionsAllowed" content="">/)
-      bypass_channel = Channel({String, HTTPClient, HTTP::Headers} | Nil).new
-
-      proxies.each do |region, list|
-        spawn do
-          begin
-            proxy_client = HTTPClient.new(YT_URL)
-            proxy_client.read_timeout = 10.seconds
-            proxy_client.connect_timeout = 10.seconds
-
-            proxy = list.sample(1)[0]
-            proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
-            proxy_client.set_proxy(proxy)
-
-            proxy_html = proxy_client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
-            proxy_headers = HTTP::Headers.new
-            proxy_headers["cookie"] = proxy_html.cookies.add_request_headers(headers)["cookie"]
-            proxy_html = proxy_html.body
-
-            if proxy_html.match(/<meta itemprop="regionsAllowed" content="">/)
-              bypass_channel.send(nil)
-            else
-              bypass_channel.send({proxy_html, proxy_client, proxy_headers})
-            end
-          rescue ex
-            bypass_channel.send(nil)
-          end
-        end
-      end
-
-      proxies.size.times do
-        response = bypass_channel.receive
-        if response
-          session_token = response[0].match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-          itct = response[0].match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
-          ctoken = response[0].match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
-
-          client = response[1]
-          headers = response[2]
-          break
-        end
-      end
-    end
-
-    if !ctoken
-      if format == "json"
-        next {"comments" => [] of String}.to_json
-      else
-        next {"contentHtml" => "", "commentCount" => 0}.to_json
-      end
-    end
-    ctoken = ctoken["ctoken"]
-
-    if env.params.query["continuation"]? && !env.params.query["continuation"].empty?
-      continuation = env.params.query["continuation"]
-      ctoken = continuation
-    else
-      continuation = ctoken
-    end
-
-    post_req = {
-      "session_token" => session_token,
-    }
-    post_req = HTTP::Params.encode(post_req)
-
-    headers["content-type"] = "application/x-www-form-urlencoded"
-
-    headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
-    headers["x-spf-previous"] = "https://www.youtube.com/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1"
-    headers["x-spf-referer"] = "https://www.youtube.com/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1"
-
-    headers["x-youtube-client-name"] = "1"
-    headers["x-youtube-client-version"] = "2.20180719"
-    response = client.post("/comment_service_ajax?action_get_comments=1&pbj=1&ctoken=#{ctoken}&continuation=#{continuation}&itct=#{itct}&hl=en&gl=US", headers, post_req)
-    response = JSON.parse(response.body)
-
-    if !response["response"]["continuationContents"]?
-      halt env, status_code: 403
-    end
-
-    response = response["response"]["continuationContents"]
-    if response["commentRepliesContinuation"]?
-      body = response["commentRepliesContinuation"]
-    else
-      body = response["itemSectionContinuation"]
-    end
-    contents = body["contents"]?
-    if !contents
-      if format == "json"
-        next {"comments" => [] of String}.to_json
-      else
-        next {"contentHtml" => "", "commentCount" => 0}.to_json
-      end
-    end
-
-    comments = JSON.build do |json|
-      json.object do
-        if body["header"]?
-          comment_count = body["header"]["commentsHeaderRenderer"]["countText"]["simpleText"].as_s.delete("Comments,").to_i
-          json.field "commentCount", comment_count
-        end
-
-        json.field "comments" do
-          json.array do
-            contents.as_a.each do |node|
-              json.object do
-                if !response["commentRepliesContinuation"]?
-                  node = node["commentThreadRenderer"]
-                end
-
-                if node["replies"]?
-                  node_replies = node["replies"]["commentRepliesRenderer"]
-                end
-
-                if !response["commentRepliesContinuation"]?
-                  node_comment = node["comment"]["commentRenderer"]
-                else
-                  node_comment = node["commentRenderer"]
-                end
-
-                content_html = node_comment["contentText"]["simpleText"]?.try &.as_s.rchop('\ufeff')
-                if content_html
-                  content_html = HTML.escape(content_html)
-                end
-
-                content_html ||= content_to_comment_html(node_comment["contentText"]["runs"].as_a)
-                content_html, content = html_to_content(content_html)
-
-                author = node_comment["authorText"]?.try &.["simpleText"]
-                author ||= ""
-
-                json.field "author", author
-                json.field "authorThumbnails" do
-                  json.array do
-                    node_comment["authorThumbnail"]["thumbnails"].as_a.each do |thumbnail|
-                      json.object do
-                        json.field "url", thumbnail["url"]
-                        json.field "width", thumbnail["width"]
-                        json.field "height", thumbnail["height"]
-                      end
-                    end
-                  end
-                end
-
-                if node_comment["authorEndpoint"]?
-                  json.field "authorId", node_comment["authorEndpoint"]["browseEndpoint"]["browseId"]
-                  json.field "authorUrl", node_comment["authorEndpoint"]["browseEndpoint"]["canonicalBaseUrl"]
-                else
-                  json.field "authorId", ""
-                  json.field "authorUrl", ""
-                end
-
-                published = decode_date(node_comment["publishedTimeText"]["runs"][0]["text"].as_s.rchop(" (edited)"))
-
-                json.field "content", content
-                json.field "contentHtml", content_html
-                json.field "published", published.epoch
-                json.field "publishedText", "#{recode_date(published)} ago"
-                json.field "likeCount", node_comment["likeCount"]
-                json.field "commentId", node_comment["commentId"]
-
-                if node_replies && !response["commentRepliesContinuation"]?
-                  reply_count = node_replies["moreText"]["simpleText"].as_s.delete("View all reply replies,")
-                  if reply_count.empty?
-                    reply_count = 1
-                  else
-                    reply_count = reply_count.try &.to_i?
-                    reply_count ||= 1
-                  end
-
-                  continuation = node_replies["continuations"].as_a[0]["nextContinuationData"]["continuation"].as_s
-
-                  json.field "replies" do
-                    json.object do
-                      json.field "replyCount", reply_count
-                      json.field "continuation", continuation
-                    end
-                  end
-                end
-              end
-            end
-          end
-        end
-
-        if body["continuations"]?
-          continuation = body["continuations"][0]["nextContinuationData"]["continuation"]
-          json.field "continuation", continuation
-        end
-      end
+    begin
+      comments = fetch_youtube_comments(id, continuation, proxies, format)
+    rescue ex
+      error_message = {"error" => ex.message}.to_json
+      halt env, status_code: 500, response: error_message
     end
 
     if format == "json"
@@ -2081,10 +1944,8 @@ get "/api/v1/comments/:id" do |env|
       next response
     end
   elsif source == "reddit"
-    client = make_client(REDDIT_URL)
-    headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.6.0 (by /u/omarroth)"}
     begin
-      comments, reddit_thread = get_reddit_comments(id, client, headers)
+      comments, reddit_thread = fetch_reddit_comments(id)
       content_html = template_reddit_comments(comments)
 
       content_html = fill_links(content_html, "https", "www.reddit.com")
@@ -2200,6 +2061,8 @@ get "/api/v1/videos/:id" do |env|
 
   begin
     video = get_video(id, PG_DB, proxies)
+  rescue ex : VideoRedirect
+    next env.redirect "/api/v1/videos/#{ex.message}"
   rescue ex
     error_message = {"error" => ex.message}.to_json
     halt env, status_code: 500, response: error_message
@@ -2234,6 +2097,8 @@ get "/api/v1/videos/:id" do |env|
       json.field "likeCount", video.likes
       json.field "dislikeCount", video.dislikes
 
+      json.field "paid", video.paid
+      json.field "premium", video.premium
       json.field "isFamilyFriendly", video.is_family_friendly
       json.field "allowedRegions", video.allowed_regions
       json.field "genre", video.genre
@@ -2242,6 +2107,22 @@ get "/api/v1/videos/:id" do |env|
       json.field "author", video.author
       json.field "authorId", video.ucid
       json.field "authorUrl", "/channel/#{video.ucid}"
+
+      json.field "authorThumbnails" do
+        json.array do
+          qualities = [32, 48, 76, 100, 176, 512]
+
+          qualities.each do |quality|
+            json.object do
+              json.field "url", video.author_thumbnail.gsub("=s48-", "=s#{quality}-")
+              json.field "width", quality
+              json.field "height", quality
+            end
+          end
+        end
+      end
+
+      json.field "subCountText", video.sub_count_text
 
       json.field "lengthSeconds", video.info["length_seconds"].to_i
       if video.info["allow_ratings"]?
@@ -2457,34 +2338,14 @@ get "/api/v1/channels/:ucid" do |env|
   begin
     author, ucid, auto_generated = get_about_info(ucid)
   rescue ex
-    error_message = {"error" => "User does not exist"}.to_json
-    halt env, status_code: 404, response: error_message
+    error_message = {"error" => ex.message}.to_json
+    halt env, status_code: 500, response: error_message
   end
-
-  client = make_client(YT_URL)
 
   page = 1
+  videos, count = get_60_videos(ucid, page, auto_generated)
 
-  videos = [] of SearchVideo
-  2.times do |i|
-    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated)
-    response = client.get(url)
-    json = JSON.parse(response.body)
-
-    if json["content_html"]? && !json["content_html"].as_s.empty?
-      document = XML.parse_html(json["content_html"].as_s)
-      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
-
-      if auto_generated
-        videos += extract_videos(nodeset)
-      else
-        videos += extract_videos(nodeset, ucid)
-      end
-    else
-      break
-    end
-  end
-
+  client = make_client(YT_URL)
   channel_html = client.get("/channel/#{ucid}/about?disable_polymer=1").body
   channel_html = XML.parse_html(channel_html)
   banner = channel_html.xpath_node(%q(//div[@id="gh-banner"]/style)).not_nil!.content
@@ -2595,6 +2456,8 @@ get "/api/v1/channels/:ucid" do |env|
               json.field "published", video.published.epoch
               json.field "publishedText", "#{recode_date(video.published)} ago"
               json.field "lengthSeconds", video.length_seconds
+              json.field "paid", video.paid
+              json.field "premium", video.premium
             end
           end
         end
@@ -2616,31 +2479,11 @@ end
     begin
       author, ucid, auto_generated = get_about_info(ucid)
     rescue ex
-      error_message = {"error" => "User does not exist"}.to_json
-      halt env, status_code: 404, response: error_message
+      error_message = {"error" => ex.message}.to_json
+      halt env, status_code: 500, response: error_message
     end
 
-    client = make_client(YT_URL)
-
-    videos = [] of SearchVideo
-    2.times do |i|
-      url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated)
-      response = client.get(url)
-      json = JSON.parse(response.body)
-
-      if json["content_html"]? && !json["content_html"].as_s.empty?
-        document = XML.parse_html(json["content_html"].as_s)
-        nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
-
-        if auto_generated
-          videos += extract_videos(nodeset)
-        else
-          videos += extract_videos(nodeset, ucid)
-        end
-      else
-        break
-      end
-    end
+    videos, count = get_60_videos(ucid, page, auto_generated)
 
     result = JSON.build do |json|
       json.array do
@@ -2670,6 +2513,8 @@ end
             json.field "published", video.published.epoch
             json.field "publishedText", "#{recode_date(video.published)} ago"
             json.field "lengthSeconds", video.length_seconds
+            json.field "paid", video.paid
+            json.field "premium", video.premium
           end
         end
       end
@@ -2717,6 +2562,8 @@ get "/api/v1/channels/search/:ucid" do |env|
             json.field "publishedText", "#{recode_date(item.published)} ago"
             json.field "lengthSeconds", item.length_seconds
             json.field "liveNow", item.live_now
+            json.field "paid", item.paid
+            json.field "premium", item.premium
           when SearchPlaylist
             json.field "type", "playlist"
             json.field "title", item.title
@@ -2838,6 +2685,8 @@ get "/api/v1/search" do |env|
             json.field "publishedText", "#{recode_date(item.published)} ago"
             json.field "lengthSeconds", item.length_seconds
             json.field "liveNow", item.live_now
+            json.field "paid", item.paid
+            json.field "premium", item.premium
           when SearchPlaylist
             json.field "type", "playlist"
             json.field "title", item.title
@@ -2903,15 +2752,24 @@ get "/api/v1/playlists/:plid" do |env|
   page = env.params.query["page"]?.try &.to_i?
   page ||= 1
 
+  format = env.params.query["format"]?
+  format ||= "json"
+
+  continuation = env.params.query["continuation"]?
+
+  if plid.starts_with? "RD"
+    next env.redirect "/api/v1/mixes/#{plid}"
+  end
+
   begin
     playlist = fetch_playlist(plid)
   rescue ex
     error_message = {"error" => "Playlist is empty"}.to_json
-    halt env, status_code: 404, response: error_message
+    halt env, status_code: 500, response: error_message
   end
 
   begin
-    videos = fetch_playlist_videos(plid, page, playlist.video_count)
+    videos = fetch_playlist_videos(plid, page, playlist.video_count, continuation)
   rescue ex
     videos = [] of PlaylistVideo
   end
@@ -2970,6 +2828,17 @@ get "/api/v1/playlists/:plid" do |env|
     end
   end
 
+  if format == "html"
+    response = JSON.parse(response)
+    playlist_html = template_playlist(response)
+    next_video = response["videos"].as_a[1]?.try &.["videoId"]
+
+    response = {
+      "playlistHtml" => playlist_html,
+      "nextVideo"    => next_video,
+    }.to_json
+  end
+
   response
 end
 
@@ -2981,8 +2850,19 @@ get "/api/v1/mixes/:rdid" do |env|
   continuation = env.params.query["continuation"]?
   continuation ||= rdid.lchop("RD")
 
+  format = env.params.query["format"]?
+  format ||= "json"
+
   begin
     mix = fetch_mix(rdid, continuation)
+
+    if !rdid.ends_with? continuation
+      mix = fetch_mix(rdid, mix.videos[1].id)
+      index = mix.videos.index(mix.videos.select { |video| video.id == continuation }[0]?)
+    end
+    index ||= 0
+
+    mix.videos = mix.videos[index..-1]
   rescue ex
     error_message = {"error" => ex.message}.to_json
     halt env, status_code: 500, response: error_message
@@ -3019,6 +2899,18 @@ get "/api/v1/mixes/:rdid" do |env|
     end
   end
 
+  if format == "html"
+    response = JSON.parse(response)
+    playlist_html = template_mix(response)
+    next_video = response["videos"].as_a[1]?.try &.["videoId"]
+    next_video ||= ""
+
+    response = {
+      "playlistHtml" => playlist_html,
+      "nextVideo"    => next_video,
+    }.to_json
+  end
+
   response
 end
 
@@ -3042,6 +2934,8 @@ get "/api/manifest/dash/id/:id" do |env|
   client = make_client(YT_URL)
   begin
     video = get_video(id, PG_DB, proxies)
+  rescue ex : VideoRedirect
+    next env.redirect "/api/manifest/dash/id/#{ex.message}"
   rescue ex
     halt env, status_code: 403
   end
@@ -3227,34 +3121,39 @@ get "/videoplayback" do |env|
   host = "https://r#{fvip}---#{mn}.googlevideo.com"
   url = "/videoplayback?#{query_params.to_s}"
 
-  client = make_client(URI.parse(host))
-  response = client.head(url)
+  if query_params["region"]?
+    client = make_client(URI.parse(host))
+    response = HTTP::Client::Response.new(status_code: 403)
 
-  if response.status_code == 403
-    ip = query_params["ip"]
-    proxy = proxies.values.flatten.select { |proxy| proxy[:ip] == ip }
-    if proxy.empty?
+    if !proxies[query_params["region"]]?
       halt env, status_code: 403
     end
 
-    proxy = proxy[0]
-    # Try to find proxy in same region
-    proxy = proxies.select { |region, list| list.includes? proxy }.values[0].sample(1)[0]
-    if proxy.empty?
-      halt env, status_code: 403
+    proxies[query_params["region"]].each do |proxy|
+      begin
+        client = HTTPClient.new(URI.parse(host))
+        client.read_timeout = 10.seconds
+        client.connect_timeout = 10.seconds
+
+        proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
+        client.set_proxy(proxy)
+
+        response = client.head(url)
+        if response.status_code == 200
+          # For whatever reason the proxy needs to be set again
+          client.set_proxy(proxy)
+          break
+        end
+      rescue ex
+      end
     end
-
-    client = HTTPClient.new(URI.parse(host))
-    client.read_timeout = 10.seconds
-    client.connect_timeout = 10.seconds
-
-    proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
-    client.set_proxy(proxy)
-
+  else
+    client = make_client(URI.parse(host))
     response = client.head(url)
+  end
 
-    # For whatever reason the proxy needs to be set again
-    client.set_proxy(proxy)
+  if response.status_code != 200
+    halt env, status_code: 403
   end
 
   if response.headers["Location"]?
@@ -3400,6 +3299,24 @@ get "/vi/:id/:name" do |env|
 end
 
 error 404 do |env|
+  if md = env.request.path.match(/^\/(?<id>[a-zA-Z0-9_-]{11})/)
+    id = md["id"]
+
+    params = [] of String
+    env.params.query.each do |k, v|
+      params << "#{k}=#{v}"
+    end
+    params = params.join("&")
+
+    url = "/watch?v=#{id}"
+    if !params.empty?
+      url += "&#{params}"
+    end
+
+    env.response.headers["Location"] = url
+    halt env, status_code: 302
+  end
+
   error_message = "404 Page not found"
   templated "error"
 end

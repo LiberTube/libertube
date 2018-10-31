@@ -8,12 +8,16 @@ end
 
 class ChannelVideo
   add_mapping({
-    id:        String,
-    title:     String,
-    published: Time,
-    updated:   Time,
-    ucid:      String,
-    author:    String,
+    id:             String,
+    title:          String,
+    published:      Time,
+    updated:        Time,
+    ucid:           String,
+    author:         String,
+    length_seconds: {
+      type:    Int32,
+      default: 0,
+    },
   })
 end
 
@@ -31,8 +35,10 @@ def get_channel(id, client, db, refresh = true, pull_all_videos = true)
     end
   else
     channel = fetch_channel(id, client, db, pull_all_videos)
-    args = arg_array(channel.to_a)
-    db.exec("INSERT INTO channels VALUES (#{args})", channel.to_a)
+    channel_array = channel.to_a
+    args = arg_array(channel_array)
+
+    db.exec("INSERT INTO channels VALUES (#{args})", channel_array)
   end
 
   return channel
@@ -56,6 +62,25 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
   end
 
   if !pull_all_videos
+    url = produce_channel_videos_url(ucid, 1, auto_generated: auto_generated)
+    response = client.get(url)
+    json = JSON.parse(response.body)
+
+    if json["content_html"]? && !json["content_html"].as_s.empty?
+      document = XML.parse_html(json["content_html"].as_s)
+      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+
+      if auto_generated
+        videos = extract_videos(nodeset)
+      else
+        videos = extract_videos(nodeset, ucid)
+        videos.each { |video| video.ucid = ucid }
+        videos.each { |video| video.author = author }
+      end
+    end
+
+    videos ||= [] of ChannelVideo
+
     rss.xpath_nodes("//feed/entry").each do |entry|
       video_id = entry.xpath_node("videoid").not_nil!.content
       title = entry.xpath_node("title").not_nil!.content
@@ -64,16 +89,20 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
       author = entry.xpath_node("author/name").not_nil!.content
       ucid = entry.xpath_node("channelid").not_nil!.content
 
-      video = ChannelVideo.new(video_id, title, published, Time.now, ucid, author)
+      length_seconds = videos.select { |video| video.id == video_id }[0]?.try &.length_seconds
+      length_seconds ||= 0
+
+      video = ChannelVideo.new(video_id, title, published, Time.now, ucid, author, length_seconds)
 
       db.exec("UPDATE users SET notifications = notifications || $1 \
         WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, ucid)
 
       video_array = video.to_a
       args = arg_array(video_array)
+
       db.exec("INSERT INTO channel_videos VALUES (#{args}) \
-        ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
-        updated = $4, ucid = $5, author = $6", video_array)
+      ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
+      updated = $4, ucid = $5, author = $6, length_seconds = $7", video_array)
     end
   else
     page = 1
@@ -100,7 +129,7 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
       end
 
       count = nodeset.size
-      videos = videos.map { |video| ChannelVideo.new(video.id, video.title, video.published, Time.now, video.ucid, video.author) }
+      videos = videos.map { |video| ChannelVideo.new(video.id, video.title, video.published, Time.now, video.ucid, video.author, video.length_seconds) }
 
       videos.each do |video|
         ids << video.id
@@ -112,8 +141,9 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
 
           video_array = video.to_a
           args = arg_array(video_array)
+
           db.exec("INSERT INTO channel_videos VALUES (#{args}) ON CONFLICT (id) DO UPDATE SET title = $2, \
-          published = $3, updated = $4, ucid = $5, author = $6", video_array)
+          published = $3, updated = $4, ucid = $5, author = $6, length_seconds = $7", video_array)
         end
       end
 
@@ -176,7 +206,7 @@ def produce_channel_videos_url(ucid, page = 1, auto_generated = nil)
   continuation = Base64.urlsafe_encode(continuation)
   continuation = URI.escape(continuation)
 
-  url = "/browse_ajax?continuation=#{continuation}"
+  url = "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
 
   return url
 end
@@ -184,19 +214,33 @@ end
 def get_about_info(ucid)
   client = make_client(YT_URL)
 
-  about = client.get("/user/#{ucid}/about?disable_polymer=1")
+  about = client.get("/channel/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
+  if about.status_code == 404
+    about = client.get("/user/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
+  end
+
   about = XML.parse_html(about.body)
 
-  if !about.xpath_node(%q(//span[@class="qualified-channel-title-text"]/a))
-    about = client.get("/channel/#{ucid}/about?disable_polymer=1")
-    about = XML.parse_html(about.body)
+  if about.xpath_node(%q(//div[contains(@class, "channel-empty-message")]))
+    error_message = "This channel does not exist."
+
+    raise error_message
   end
 
-  if !about.xpath_node(%q(//span[@class="qualified-channel-title-text"]/a))
-    raise "User does not exist."
+  if about.xpath_node(%q(//span[contains(@class,"qualified-channel-title-text")]/a)).try &.content.empty?
+    error_message = about.xpath_node(%q(//div[@class="yt-alert-content"])).try &.content.strip
+    error_message ||= "Could not get channel info."
+
+    raise error_message
   end
 
-  author = about.xpath_node(%q(//span[@class="qualified-channel-title-text"]/a)).not_nil!.content
+  sub_count = about.xpath_node(%q(//span[contains(text(), "subscribers")]))
+  if sub_count
+    sub_count = sub_count.content.delete(", subscribers").to_i?
+  end
+  sub_count ||= 0
+
+  author = about.xpath_node(%q(//span[contains(@class,"qualified-channel-title-text")]/a)).not_nil!.content
   ucid = about.xpath_node(%q(//link[@rel="canonical"])).not_nil!["href"].split("/")[-1]
 
   # Auto-generated channels
@@ -207,5 +251,37 @@ def get_about_info(ucid)
     auto_generated = true
   end
 
-  return {author, ucid, auto_generated}
+  return {author, ucid, auto_generated, sub_count}
+end
+
+def get_60_videos(ucid, page, auto_generated)
+  count = 0
+  videos = [] of SearchVideo
+
+  client = make_client(YT_URL)
+
+  2.times do |i|
+    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated)
+    response = client.get(url)
+    json = JSON.parse(response.body)
+
+    if json["content_html"]? && !json["content_html"].as_s.empty?
+      document = XML.parse_html(json["content_html"].as_s)
+      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+
+      if !json["load_more_widget_html"]?.try &.as_s.empty?
+        count += 30
+      end
+
+      if auto_generated
+        videos += extract_videos(nodeset)
+      else
+        videos += extract_videos(nodeset, ucid)
+      end
+    else
+      break
+    end
+  end
+
+  return videos, count
 end

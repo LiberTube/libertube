@@ -273,6 +273,12 @@ class Video
     streams.each { |s| s.add("label", "#{s["quality"]} - #{s["type"].split(";")[0].split("/")[1]}") }
     streams = streams.uniq { |s| s["label"] }
 
+    if self.info["region"]?
+      streams.each do |fmt|
+        fmt["url"] += "&region=" + self.info["region"]
+      end
+    end
+
     if streams[0]? && streams[0]["s"]?
       streams.each do |fmt|
         fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
@@ -362,6 +368,12 @@ class Video
       end
     end
 
+    if self.info["region"]?
+      adaptive_fmts.each do |fmt|
+        fmt["url"] += "&region=" + self.info["region"]
+      end
+    end
+
     if adaptive_fmts[0]? && adaptive_fmts[0]["s"]?
       adaptive_fmts.each do |fmt|
         fmt["url"] += "&signature=" + decrypt_signature(fmt["s"], decrypt_function)
@@ -395,6 +407,23 @@ class Video
     return @player_json.not_nil!
   end
 
+  def paid
+    reason = self.player_response["playabilityStatus"]?.try &.["reason"]?
+
+    if reason == "This video requires payment to watch."
+      paid = true
+    else
+      paid = false
+    end
+
+    return paid
+  end
+
+  def premium
+    premium = self.player_response.to_s.includes? "Get YouTube without the ads."
+    return premium
+  end
+
   def captions
     captions = [] of Caption
     if player_response["captions"]?
@@ -422,6 +451,10 @@ class Video
     return description
   end
 
+  def length_seconds
+    return self.info["length_seconds"].to_i
+  end
+
   add_mapping({
     id:   String,
     info: {
@@ -444,10 +477,9 @@ class Video
     is_family_friendly: Bool,
     genre:              String,
     genre_url:          String,
-    license:            {
-      type:    String,
-      default: "",
-    },
+    license:            String,
+    sub_count_text:     String,
+    author_thumbnail:   String,
   })
 end
 
@@ -465,6 +497,9 @@ class CaptionName
   )
 end
 
+class VideoRedirect < Exception
+end
+
 def get_video(id, db, proxies = {} of String => Array({ip: String, port: Int32}), refresh = true)
   if db.query_one?("SELECT EXISTS (SELECT true FROM videos WHERE id = $1)", id, as: Bool)
     video = db.query_one("SELECT * FROM videos WHERE id = $1", id, as: Video)
@@ -478,8 +513,8 @@ def get_video(id, db, proxies = {} of String => Array({ip: String, port: Int32})
         args = arg_array(video_array[1..-1], 2)
 
         db.exec("UPDATE videos SET (info,updated,title,views,likes,dislikes,wilson_score,\
-          published,description,language,author,ucid, allowed_regions, is_family_friendly,\
-          genre, genre_url, license)\
+          published,description,language,author,ucid,allowed_regions,is_family_friendly,\
+          genre,genre_url,license,sub_count_text,author_thumbnail)\
           = (#{args}) WHERE id = $1", video_array)
       rescue ex
         db.exec("DELETE FROM videos * WHERE id = $1", id)
@@ -499,14 +534,18 @@ def get_video(id, db, proxies = {} of String => Array({ip: String, port: Int32})
 end
 
 def fetch_video(id, proxies)
-  html_channel = Channel(XML::Node).new
+  html_channel = Channel(XML::Node | String).new
   info_channel = Channel(HTTP::Params).new
 
   spawn do
     client = make_client(YT_URL)
     html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
-    html = XML.parse_html(html.body)
 
+    if md = html.headers["location"]?.try &.match(/v=(?<id>[a-zA-Z0-9_-]{11})/)
+      next html_channel.send(md["id"])
+    end
+
+    html = XML.parse_html(html.body)
     html_channel.send(html)
   end
 
@@ -524,50 +563,72 @@ def fetch_video(id, proxies)
   end
 
   html = html_channel.receive
+  if html.as?(String)
+    raise VideoRedirect.new("#{html.as(String)}")
+  end
+  html = html.as(XML::Node)
+
   info = info_channel.receive
 
   if info["reason"]? && info["reason"].includes? "your country"
-    bypass_channel = Channel({HTTP::Params | Nil, XML::Node | Nil}).new
+    bypass_channel = Channel(HTTPProxy | Nil).new
 
     proxies.each do |region, list|
       spawn do
-        begin
-          client = HTTPClient.new(YT_URL)
-          client.read_timeout = 10.seconds
-          client.connect_timeout = 10.seconds
+        info = HTTP::Params.new({
+          "reason" => [info["reason"]],
+        })
 
-          proxy = list.sample(1)[0]
-          proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
-          client.set_proxy(proxy)
+        list.each do |proxy|
+          begin
+            client = HTTPClient.new(YT_URL)
+            client.read_timeout = 10.seconds
+            client.connect_timeout = 10.seconds
 
-          proxy_info = client.get("/get_video_info?video_id=#{id}&el=detailpage&ps=default&eurl=&gl=US&hl=en&disable_polymer=1")
-          proxy_info = HTTP::Params.parse(proxy_info.body)
+            proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
+            client.set_proxy(proxy)
 
-          if proxy_info["reason"]?
-            proxy_info = client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en&disable_polymer=1")
-            proxy_info = HTTP::Params.parse(proxy_info.body)
+            info = HTTP::Params.parse(client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en&disable_polymer=1").body)
+            if !info["reason"]?
+              bypass_channel.send(proxy)
+              break
+            end
+          rescue ex
           end
+        end
 
-          if !proxy_info["reason"]?
-            proxy_html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
-            proxy_html = XML.parse_html(proxy_html.body)
-
-            bypass_channel.send({proxy_info, proxy_html})
-          else
-            bypass_channel.send({nil, nil})
-          end
-        rescue ex
-          bypass_channel.send({nil, nil})
+        # If none of the proxies we tried returned a valid response
+        if info["reason"]?
+          bypass_channel.send(nil)
         end
       end
     end
 
     proxies.size.times do
-      response = bypass_channel.receive
-      if response[0] || response[1]
-        info = response[0].not_nil!
-        html = response[1].not_nil!
-        break
+      proxy = bypass_channel.receive
+      if proxy
+        begin
+          client = HTTPClient.new(YT_URL)
+          client.read_timeout = 10.seconds
+          client.connect_timeout = 10.seconds
+          client.set_proxy(proxy)
+
+          html = XML.parse_html(client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1").body)
+          info = HTTP::Params.parse(client.get("/get_video_info?video_id=#{id}&el=detailpage&ps=default&eurl=&gl=US&hl=en&disable_polymer=1").body)
+
+          if info["reason"]?
+            info = HTTP::Params.parse(client.get("/get_video_info?video_id=#{id}&ps=default&eurl=&gl=US&hl=en&disable_polymer=1").body)
+          end
+
+          proxy = {ip: proxy.proxy_host, port: proxy.proxy_port}
+          region = proxies.select { |region, list| list.includes? proxy }
+          if !region.empty?
+            info["region"] = region.keys[0]
+          end
+
+          break
+        rescue ex
+        end
       end
     end
   end
@@ -618,11 +679,25 @@ def fetch_video(id, proxies)
   if license
     license = license.content
   else
-    license ||= ""
+    license = ""
+  end
+
+  sub_count_text = html.xpath_node(%q(//span[contains(@class, "yt-subscriber-count")]))
+  if sub_count_text
+    sub_count_text = sub_count_text["title"]
+  else
+    sub_count_text = "0"
+  end
+
+  author_thumbnail = html.xpath_node(%(//img[@alt="#{author}"]))
+  if author_thumbnail
+    author_thumbnail = author_thumbnail["data-thumb"]
+  else
+    author_thumbnail = ""
   end
 
   video = Video.new(id, info, Time.now, title, views, likes, dislikes, wilson_score, published, description,
-    nil, author, ucid, allowed_regions, is_family_friendly, genre, genre_url, license)
+    nil, author, ucid, allowed_regions, is_family_friendly, genre, genre_url, license, sub_count_text, author_thumbnail)
 
   return video
 end
@@ -633,6 +708,7 @@ end
 
 def process_video_params(query, preferences)
   autoplay = query["autoplay"]?.try &.to_i?
+  listen = query["listen"]? && (query["listen"] == "true" || query["listen"] == "1").to_unsafe
   preferred_captions = query["subtitles"]?.try &.split(",").map { |a| a.downcase }
   quality = query["quality"]?
   speed = query["speed"]?.try &.to_f?
@@ -641,6 +717,7 @@ def process_video_params(query, preferences)
 
   if preferences
     autoplay ||= preferences.autoplay.to_unsafe
+    listen ||= preferences.listen.to_unsafe
     preferred_captions ||= preferences.captions
     quality ||= preferences.quality
     speed ||= preferences.speed
@@ -649,6 +726,7 @@ def process_video_params(query, preferences)
   end
 
   autoplay ||= 0
+  listen ||= 0
   preferred_captions ||= [] of String
   quality ||= "hd720"
   speed ||= 1
@@ -656,6 +734,7 @@ def process_video_params(query, preferences)
   volume ||= 100
 
   autoplay = autoplay == 1
+  listen = listen == 1
   video_loop = video_loop == 1
 
   if query["t"]?
@@ -674,11 +753,6 @@ def process_video_params(query, preferences)
     video_end = decode_time(query["end"])
   end
   video_end ||= -1
-
-  if query["listen"]? && (query["listen"] == "true" || query["listen"] == "1")
-    listen = true
-  end
-  listen ||= false
 
   raw = query["raw"]?.try &.to_i?
   raw ||= 0

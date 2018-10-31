@@ -2,6 +2,7 @@ class Config
   YAML.mapping({
     crawl_threads:   Int32,
     channel_threads: Int32,
+    feed_threads:    Int32,
     video_threads:   Int32,
     db:              NamedTuple(
       user: String,
@@ -14,6 +15,7 @@ class Config
     https_only:   Bool?,
     hmac_key:     String?,
     full_refresh: Bool,
+    geo_bypass:   Bool,
   })
 end
 
@@ -356,6 +358,18 @@ def extract_items(nodeset, ucid = nil)
         live_now = false
       end
 
+      if node.xpath_node(%q(.//span[text()="Premium"]))
+        premium = true
+      else
+        premium = false
+      end
+
+      if node.xpath_node(%q(.//span[contains(text(), "Get YouTube Premium")]))
+        paid = true
+      else
+        paid = false
+      end
+
       items << SearchVideo.new(
         title,
         id,
@@ -366,7 +380,9 @@ def extract_items(nodeset, ucid = nil)
         description,
         description_html,
         length_seconds,
-        live_now
+        live_now,
+        paid,
+        premium
       )
     end
   end

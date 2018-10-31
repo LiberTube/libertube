@@ -40,6 +40,23 @@ def decode_length_seconds(string)
   return length_seconds
 end
 
+def recode_length_seconds(time)
+  if time <= 0
+    return ""
+  else
+    time = time.seconds
+    text = "#{time.minutes.to_s.rjust(2, '0')}:#{time.seconds.to_s.rjust(2, '0')}"
+
+    if time.hours > 0
+      text = "#{time.hours.to_s.rjust(2, '0')}:#{text}"
+    end
+
+    text = text.lchop('0')
+
+    return text
+  end
+end
+
 def decode_time(string)
   time = string.try &.to_f?
 
@@ -136,6 +153,25 @@ end
 
 def number_with_separator(number)
   number.to_s.reverse.gsub(/(\d{3})(?=\d)/, "\\1,").reverse
+end
+
+def number_to_short_text(number)
+  seperated = number_with_separator(number).gsub(",", ".").split("")
+  text = seperated.first(2).join
+
+  if seperated[2]? && seperated[2] != "."
+    text += seperated[2]
+  end
+
+  text = text.rchop(".0")
+
+  if number / 1000000 != 0
+    text += "M"
+  elsif number / 1000 != 0
+    text += "K"
+  end
+
+  text
 end
 
 def arg_array(array, start = 1)
@@ -237,4 +273,10 @@ def write_var_int(value : Int)
   end
 
   return bytes
+end
+
+def sha256(text)
+  digest = OpenSSL::Digest.new("SHA256")
+  digest << text
+  return digest.hexdigest
 end

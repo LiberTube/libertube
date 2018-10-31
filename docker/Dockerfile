@@ -1,1 +1,15 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/c9ce9c894bb6de47d5a90f3ec85c8774
+FROM archlinux/base
+
+RUN pacman -Sy --noconfirm shards crystal imagemagick librsvg \
+    which pkgconf gcc ttf-liberation
+# base-devel contains many other basic packages, that are normally assumed to already exist on a clean arch system
+
+ADD . /invidious
+
+WORKDIR /invidious
+
+RUN sed -i 's/host: localhost/host: postgres/' config/config.yml && \
+    shards && \
+    crystal build src/invidious.cr
+
+CMD [ "/invidious/invidious" ]

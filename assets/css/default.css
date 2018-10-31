@@ -17,6 +17,44 @@ div {
   animation: spin 2s linear infinite;
 }
 
+.playlist-restricted {
+  height: 20em;
+  padding-right: 10px;
+}
+
+a.pure-button-primary {
+  background-color: #a0a0a0;
+  color: rgba(35, 35, 35, 1);
+}
+
+a.pure-button-primary:hover {
+  background-color: rgba(0, 182, 240, 1);
+  color: #fff;
+}
+
+div.thumbnail {
+  position: relative;
+}
+
+img.thumbnail {
+  width: 100%;
+  left: 0;
+  top: 0;
+}
+
+.length {
+  z-index: 100;
+  position: absolute;
+  background-color: rgba(35, 35, 35, 0.75);
+  color: #fff;
+  border-radius: 2px;
+  padding: 2px;
+  font-size: 16px;
+  font-family: sans-serif;
+  right: 0.5em;
+  bottom: -0.5em;
+}
+
 /*
  * Navbar
  */

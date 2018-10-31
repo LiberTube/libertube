@@ -104,6 +104,44 @@ def refresh_videos(db)
   end
 end
 
+def refresh_feeds(db, max_threads = 1)
+  max_channel = Channel(Int32).new
+
+  spawn do
+    max_threads = max_channel.receive
+    active_threads = 0
+    active_channel = Channel(Bool).new
+
+    loop do
+      db.query("SELECT email FROM users") do |rs|
+        rs.each do
+          email = rs.read(String)
+          view_name = "subscriptions_#{sha256(email)[0..7]}"
+
+          if active_threads >= max_threads
+            if active_channel.receive
+              active_threads -= 1
+            end
+          end
+
+          active_threads += 1
+          spawn do
+            begin
+              db.exec("REFRESH MATERIALIZED VIEW #{view_name}")
+            rescue ex
+              STDOUT << "REFRESH " << email << " : " << ex.message << "\n"
+            end
+
+            active_channel.send(true)
+          end
+        end
+      end
+    end
+  end
+
+  max_channel.send(max_threads)
+end
+
 def pull_top_videos(config, db)
   if config.dl_api_key
     DetectLanguage.configure do |dl_config|
@@ -156,39 +194,14 @@ def update_decrypt_function
 end
 
 def find_working_proxies(regions)
-  proxy_channel = Channel({String, Array({ip: String, port: Int32})}).new
-
-  regions.each do |region|
-    spawn do
-      loop do
-        begin
-          proxies = get_proxies(region).first(20)
-        rescue ex
-          next proxy_channel.send({region, Array({ip: String, port: Int32}).new})
-        end
-
-        proxies.select! do |proxy|
-          begin
-            client = HTTPClient.new(YT_URL)
-            client.read_timeout = 10.seconds
-            client.connect_timeout = 10.seconds
-
-            proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
-            client.set_proxy(proxy)
-
-            client.get("/").status_code == 200
-          rescue ex
-            false
-          end
-        end
-        proxies = proxies.map { |proxy| {ip: proxy[:ip], port: proxy[:port]} }
-
-        proxy_channel.send({region, proxies})
-      end
-    end
-  end
-
   loop do
-    yield proxy_channel.receive
+    regions.each do |region|
+      proxies = get_proxies(region).first(20)
+      proxies = proxies.map { |proxy| {ip: proxy[:ip], port: proxy[:port]} }
+      # proxies = filter_proxies(proxies)
+
+      yield region, proxies
+      Fiber.yield
+    end
   end
 end
