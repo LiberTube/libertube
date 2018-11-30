@@ -24,10 +24,28 @@
                     <label for="password">Password:</label>
                     <input required class="pure-input-1" name="password" type="password" placeholder="Password">
                 
-                    <img style="width:100%" src='<%= captcha.not_nil![:challenge] %>'/>
+                <% if captcha_type == "image" %>
+                    <img style="width:100%" src='<%= captcha.not_nil![:image] %>'/>
                     <input type="hidden" name="token" value="<%= captcha.not_nil![:token] %>">
-                    <label for="challenge_response">Time (h:mm):</label>
-                    <input required type="text" name="challenge_response" type="text>" placeholder="hh:mm">
+                    <input type="hidden" name="challenge" value="<%= captcha.not_nil![:challenge] %>">
+                    <label for="answer">Time (h:mm:ss):</label>
+                    <input required type="text" name="answer" type="text" placeholder="h:mm:ss">
+                    
+                    <label>
+                        <a href="/login?referer=<%= URI.escape(referer) %>&type=invidious&captcha=text">Text CAPTCHA</a>
+                    </label>
+                <% else %>
+                    <% text_captcha.not_nil![:tokens].each_with_index do |token, i| %>
+                        <input type="hidden" name="text_challenge<%= i %>" value="<%= token[0] %>">
+                        <input type="hidden" name="text_token<%= i %>" value="<%= token[1] %>">
+                    <% end %>
+                    <label for="text_answer"><%= text_captcha.not_nil![:question] %></label>
+                    <input required type="text" name="text_answer" type="text" placeholder="Answer">
+
+                    <label>
+                        <a href="/login?referer=<%= URI.escape(referer) %>&type=invidious">Image CAPTCHA</a>
+                    </label>
+                <% end %>
 
                     <button type="submit" name="action" value="signin" class="pure-button pure-button-primary">Sign In</button>
                     <button type="submit" name="action" value="register" class="pure-button pure-button-primary">Register</button>
@@ -47,7 +65,7 @@
                     <input required class="pure-input-1" name="tfa" type="text" placeholder="Google verification code">
                     <% end %>
 
-                    <button type="submit" class="pure-button pure-button-primary">Sign in</button>
+                    <button type="submit" class="pure-button pure-button-primary">Sign In</button>
                 </fieldset>
             </form>
             <% end %>

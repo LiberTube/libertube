@@ -30,7 +30,7 @@ def fetch_playlist_videos(plid, page, video_count, continuation = nil)
   client = make_client(YT_URL)
 
   if continuation
-    html = client.get("/watch?v=#{continuation}&list=#{plid}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
+    html = client.get("/watch?v=#{continuation}&list=#{plid}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
     html = XML.parse_html(html.body)
 
     index = html.xpath_node(%q(//span[@id="playlist-current-index"])).try &.content.to_i?
@@ -167,11 +167,10 @@ def fetch_playlist(plid)
     raise "Invalid playlist."
   end
 
-  body = response.body.gsub(<<-END_BUTTON
+  body = response.body.gsub(%(
   <button class="yt-uix-button yt-uix-button-size-default yt-uix-button-link yt-uix-expander-head playlist-description-expander yt-uix-inlineedit-ignore-edit" type="button" onclick=";return false;"><span class="yt-uix-button-content">  less <img alt="" src="/yts/img/pixel-vfl3z5WfW.gif">
   </span></button>
-  END_BUTTON
-  , "")
+  ), "")
   document = XML.parse_html(body)
 
   title = document.xpath_node(%q(//h1[@class="pl-header-title"]))
@@ -188,7 +187,7 @@ def fetch_playlist(plid)
   author = anchor.xpath_node(%q(.//li[1]/a)).not_nil!.content
   author_thumbnail = document.xpath_node(%q(//img[@class="channel-header-profile-image"])).try &.["src"]
   author_thumbnail ||= ""
-  ucid = anchor.xpath_node(%q(.//li[1]/a)).not_nil!["href"].split("/")[2]
+  ucid = anchor.xpath_node(%q(.//li[1]/a)).not_nil!["href"].split("/")[-1]
 
   video_count = anchor.xpath_node(%q(.//li[2])).not_nil!.content.delete("videos, ").to_i
   views = anchor.xpath_node(%q(.//li[3])).not_nil!.content.delete("No views, ")
@@ -202,16 +201,16 @@ def fetch_playlist(plid)
   updated = decode_date(updated)
 
   playlist = Playlist.new(
-    title,
-    plid,
-    author,
-    author_thumbnail,
-    ucid,
-    description,
-    description_html,
-    video_count,
-    views,
-    updated
+    title: title,
+    id: plid,
+    author: author,
+    author_thumbnail: author_thumbnail,
+    ucid: ucid,
+    description: description,
+    description_html: description_html,
+    video_count: video_count,
+    views: views,
+    updated: updated
   )
 
   return playlist

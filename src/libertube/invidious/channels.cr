@@ -21,7 +21,9 @@ class ChannelVideo
   })
 end
 
-def get_channel(id, client, db, refresh = true, pull_all_videos = true)
+def get_channel(id, db, refresh = true, pull_all_videos = true)
+  client = make_client(YT_URL)
+
   if db.query_one?("SELECT EXISTS (SELECT true FROM channels WHERE id = $1)", id, as: Bool)
     channel = db.query_one("SELECT * FROM channels WHERE id = $1", id, as: InvidiousChannel)
 
@@ -31,7 +33,7 @@ def get_channel(id, client, db, refresh = true, pull_all_videos = true)
       args = arg_array(channel_array)
 
       db.exec("INSERT INTO channels VALUES (#{args}) \
-        ON CONFLICT (id) DO UPDATE SET updated = $3", channel_array)
+        ON CONFLICT (id) DO UPDATE SET author = $2, updated = $3", channel_array)
     end
   else
     channel = fetch_channel(id, client, db, pull_all_videos)
@@ -163,16 +165,16 @@ def fetch_channel(ucid, client, db, pull_all_videos = true)
   return channel
 end
 
-def produce_channel_videos_url(ucid, page = 1, auto_generated = nil)
+def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "newest")
   if auto_generated
-    seed = Time.epoch(1525757349)
+    seed = Time.unix(1525757349)
 
     until seed >= Time.now
       seed += 1.month
     end
     timestamp = seed - (page - 1).months
 
-    page = "#{timestamp.epoch}"
+    page = "#{timestamp.to_unix}"
     switch = "\x36"
   else
     page = "#{page}"
@@ -189,6 +191,16 @@ def produce_channel_videos_url(ucid, page = 1, auto_generated = nil)
   meta += "\x7a"
   meta += page.size.to_u8.unsafe_chr
   meta += page
+
+  case sort_by
+  when "newest"
+    # Empty tags can be omitted
+    # meta += "\x18\x00"
+  when "popular"
+    meta += "\x18\x01"
+  when "oldest"
+    meta += "\x18\x02"
+  end
 
   meta = Base64.urlsafe_encode(meta)
   meta = URI.escape(meta)
@@ -254,14 +266,14 @@ def get_about_info(ucid)
   return {author, ucid, auto_generated, sub_count}
 end
 
-def get_60_videos(ucid, page, auto_generated)
+def get_60_videos(ucid, page, auto_generated, sort_by = "newest")
   count = 0
   videos = [] of SearchVideo
 
   client = make_client(YT_URL)
 
   2.times do |i|
-    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated)
+    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated, sort_by: sort_by)
     response = client.get(url)
     json = JSON.parse(response.body)
 

@@ -1,5 +1,8 @@
 <video style="width:100%" playsinline poster="<%= thumbnail %>" title="<%= HTML.escape(video.title) %>" 
     id="player" class="video-js"
+    onmouseenter='this["data-title"]=this["title"];this["title"]=""'
+    onmouseleave='this["title"]=this["data-title"];this["data-title"]=""'
+    oncontextmenu='this["title"]=this["data-title"]'
     <% if params[:autoplay] %>autoplay<% end %>
     <% if params[:video_loop] %>loop<% end %>
     <% if params[:controls] %>controls<% end %>>
@@ -139,4 +142,27 @@ player.currentTime(<%= params[:video_start] %>);
 
 player.volume(<%= params[:volume].to_f / 100 %>);
 player.playbackRate(<%= params[:speed] %>);
+
+<% if params[:autoplay] %>
+var bpb = player.getChild('bigPlayButton');
+
+if (bpb) {
+  bpb.hide();
+  
+  player.ready(function() {
+    new Promise(function(resolve, reject) {
+      setTimeout(() => resolve(1), 1);
+    }).then(function(result) {
+      var promise = player.play();
+
+      if (promise !== undefined) {
+          promise.then(_ => {
+          }).catch(error => {
+              bpb.show();
+          });
+      }
+    });
+  });
+}
+<% end %>
 </script>

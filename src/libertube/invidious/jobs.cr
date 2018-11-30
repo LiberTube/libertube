@@ -71,7 +71,7 @@ def refresh_channels(db, max_threads = 1, full_refresh = false)
               client = make_client(YT_URL)
               channel = fetch_channel(id, client, db, full_refresh)
 
-              db.exec("UPDATE channels SET updated = $1 WHERE id = $2", Time.now, id)
+              db.exec("UPDATE channels SET updated = $1, author = $2 WHERE id = $3", Time.now, channel.author, id)
             rescue ex
               STDOUT << id << " : " << ex.message << "\n"
             end
@@ -174,6 +174,21 @@ def pull_top_videos(config, db)
         next
       end
     end
+
+    yield videos
+    Fiber.yield
+  end
+end
+
+def pull_popular_videos(db)
+  loop do
+    subscriptions = PG_DB.query_all("SELECT channel FROM \
+      (SELECT UNNEST(subscriptions) AS channel FROM users) AS d \
+    GROUP BY channel ORDER BY COUNT(channel) DESC LIMIT 40", as: String)
+
+    videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM \
+      channel_videos WHERE ucid IN (#{arg_array(subscriptions)}) \
+    ORDER BY ucid, published DESC", subscriptions, as: ChannelVideo).sort_by { |video| video.published }.reverse
 
     yield videos
     Fiber.yield

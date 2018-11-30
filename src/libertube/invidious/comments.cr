@@ -8,11 +8,11 @@ end
 class RedditComment
   module TimeConverter
     def self.from_json(value : JSON::PullParser) : Time
-      Time.epoch(value.read_float.to_i)
+      Time.unix(value.read_float.to_i)
     end
 
     def self.to_json(value : Time, json : JSON::Builder)
-      json.number(value.epoch)
+      json.number(value.to_unix)
     end
   end
 
@@ -58,7 +58,7 @@ end
 
 def fetch_youtube_comments(id, continuation, proxies, format)
   client = make_client(YT_URL)
-  html = client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
+  html = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
   headers = HTTP::Headers.new
   headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
   body = html.body
@@ -70,34 +70,18 @@ def fetch_youtube_comments(id, continuation, proxies, format)
   if body.match(/<meta itemprop="regionsAllowed" content="">/)
     bypass_channel = Channel({String, HTTPClient, HTTP::Headers} | Nil).new
 
-    proxies.each do |region, list|
+    proxies.each do |proxy_region, list|
       spawn do
-        proxy_html = %(<meta itemprop="regionsAllowed" content="">)
+        proxy_client = make_client(YT_URL, proxies, proxy_region)
 
-        list.each do |proxy|
-          begin
-            proxy_client = HTTPClient.new(YT_URL)
-            proxy_client.read_timeout = 10.seconds
-            proxy_client.connect_timeout = 10.seconds
+        response = proxy_client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
+        proxy_headers = HTTP::Headers.new
+        proxy_headers["Cookie"] = response.cookies.add_request_headers(headers)["cookie"]
+        proxy_html = response.body
 
-            proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
-            proxy_client.set_proxy(proxy)
-
-            response = proxy_client.get("/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1")
-            proxy_headers = HTTP::Headers.new
-            proxy_headers["cookie"] = response.cookies.add_request_headers(headers)["cookie"]
-            proxy_html = response.body
-
-            if !proxy_html.match(/<meta itemprop="regionsAllowed" content="">/)
-              bypass_channel.send({proxy_html, proxy_client, proxy_headers})
-              break
-            end
-          rescue ex
-          end
-        end
-
-        # If none of the proxies we tried returned a valid response
-        if proxy_html.match(/<meta itemprop="regionsAllowed" content="">/)
+        if !proxy_html.match(/<meta itemprop="regionsAllowed" content="">/)
+          bypass_channel.send({proxy_html, proxy_client, proxy_headers})
+        else
           bypass_channel.send(nil)
         end
       end
@@ -106,12 +90,12 @@ def fetch_youtube_comments(id, continuation, proxies, format)
     proxies.size.times do
       response = bypass_channel.receive
       if response
-        session_token = response[0].match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-        itct = response[0].match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
-        ctoken = response[0].match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
+        html, client, headers = response
 
-        client = response[1]
-        headers = response[2]
+        session_token = html.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
+        itct = html.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
+        ctoken = html.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
+
         break
       end
     end
@@ -140,8 +124,8 @@ def fetch_youtube_comments(id, continuation, proxies, format)
   headers["content-type"] = "application/x-www-form-urlencoded"
 
   headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
-  headers["x-spf-previous"] = "https://www.youtube.com/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1"
-  headers["x-spf-referer"] = "https://www.youtube.com/watch?v=#{id}&bpctr=#{Time.new.epoch + 2000}&gl=US&hl=en&disable_polymer=1"
+  headers["x-spf-previous"] = "https://www.youtube.com/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999"
+  headers["x-spf-referer"] = "https://www.youtube.com/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999"
 
   headers["x-youtube-client-name"] = "1"
   headers["x-youtube-client-version"] = "2.20180719"
@@ -229,7 +213,7 @@ def fetch_youtube_comments(id, continuation, proxies, format)
 
               json.field "content", content
               json.field "contentHtml", content_html
-              json.field "published", published.epoch
+              json.field "published", published.to_unix
               json.field "publishedText", "#{recode_date(published)} ago"
               json.field "likeCount", node_comment["likeCount"]
               json.field "commentId", node_comment["commentId"]
@@ -264,12 +248,29 @@ def fetch_youtube_comments(id, continuation, proxies, format)
     end
   end
 
+  if format == "html"
+    comments = JSON.parse(comments)
+    content_html = template_youtube_comments(comments)
+
+    comments = JSON.build do |json|
+      json.object do
+        json.field "contentHtml", content_html
+
+        if comments["commentCount"]?
+          json.field "commentCount", comments["commentCount"]
+        else
+          json.field "commentCount", 0
+        end
+      end
+    end
+  end
+
   return comments
 end
 
 def fetch_reddit_comments(id)
   client = make_client(REDDIT_URL)
-  headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.11.0 (by /u/omarroth)"}
+  headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.12.0 (by /u/omarroth)"}
 
   query = "(url:3D#{id}%20OR%20url:#{id})%20(site:youtube.com%20OR%20site:youtu.be)"
   search_results = client.get("/search.json?q=#{query}", headers)
@@ -327,7 +328,7 @@ def template_youtube_comments(comments)
             <a href="#{child["authorUrl"]}">#{child["author"]}</a>
           </b> 
           <p style="white-space:pre-wrap">#{child["contentHtml"]}</p>
-          #{recode_date(Time.epoch(child["published"].as_i64))} ago
+          #{recode_date(Time.unix(child["published"].as_i64))} ago
           | 
           <i class="icon ion-ios-thumbs-up"></i> #{number_with_separator(child["likeCount"])} 
         </p>
@@ -474,8 +475,7 @@ def content_to_comment_html(content)
     end
 
     if run["navigationEndpoint"]?
-      url = run["navigationEndpoint"]["urlEndpoint"]?.try &.["url"].as_s
-      if url
+      if url = run["navigationEndpoint"]["urlEndpoint"]?.try &.["url"].as_s
         url = URI.parse(url)
 
         if !url.host || {"m.youtube.com", "www.youtube.com", "youtu.be"}.includes? url.host
@@ -485,11 +485,16 @@ def content_to_comment_html(content)
             url = url.full_path
           end
         end
-      else
-        url = run["navigationEndpoint"]["commandMetadata"]?.try &.["webCommandMetadata"]["url"].as_s
-      end
 
-      text = %(<a href="#{url}">#{text}</a>)
+        text = %(<a href="#{url}">#{text}</a>)
+      elsif watch_endpoint = run["navigationEndpoint"]["watchEndpoint"]?
+        length_seconds = watch_endpoint["startTimeSeconds"].as_i
+        video_id = watch_endpoint["videoId"].as_s
+
+        text = %(<a href="javascript:void(0)" onclick="player.currentTime(#{length_seconds})">#{text}</a>)
+      elsif url = run["navigationEndpoint"]["commandMetadata"]?.try &.["webCommandMetadata"]["url"].as_s
+        text = %(<a href="#{url}">#{text}</a>)
+      end
     end
 
     text

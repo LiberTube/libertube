@@ -1,7 +1,7 @@
 <% content_for "header" do %>
 <meta name="thumbnail" content="<%= thumbnail %>">
 <meta name="description" content="<%= description %>">
-<meta name="keywords" content="<%= video.info["keywords"] %>">
+<meta name="keywords" content="<%= video.keywords.join(",") %>">
 <meta property="og:site_name" content="Invidious">
 <meta property="og:url" content="<%= host_url %>/watch?v=<%= video.id %>">
 <meta property="og:title" content="<%= HTML.escape(video.title) %>">
@@ -18,7 +18,7 @@
 <meta name="twitter:url" content="<%= host_url %>/watch?v=<%= video.id %>">
 <meta name="twitter:title" content="<%= HTML.escape(video.title) %>">
 <meta name="twitter:description" content="<%= description %>">
-<meta name="twitter:image" content="<%= thumbnail %>">
+<meta name="twitter:image" content="/vi/<%= video.id %>/hqdefault.jpg">
 <meta name="twitter:player" content="<%= host_url %>/embed/<%= video.id %>">
 <meta name="twitter:player:width" content="1280">
 <meta name="twitter:player:height" content="720">
@@ -66,8 +66,8 @@
             <% if !video.license.empty? %>
             <p id="License">License: <%= video.license %></p>
             <% end %>
-            <p id="FamilyFriendly">Family Friendly? <%= video.is_family_friendly %></p>
-            <p id="Wilson">Wilson Score: <%= video.wilson_score.round(4) %></p>
+            <p id="FamilyFriendly">Family friendly? <%= video.is_family_friendly %></p>
+            <p id="Wilson">Wilson score: <%= video.wilson_score.round(4) %></p>
             <p id="Rating">Rating: <%= rating.round(4) %> / 5</p>
             <p id="Engagement">Engagement: <%= engagement.round(2) %>%</p>
             <% if video.allowed_regions.size != REGIONS.size %>
@@ -82,7 +82,7 @@
         </div>
     </div>
 
-    <div class="pure-u-1 pure-u-md-3-5">
+    <div class="pure-u-1 <% if preferences && !preferences.related_videos && !plid %>pure-u-md-4-5<% else %>pure-u-md-3-5<% end %>">
         <div class="h-box">
             <p>
                 <a href="/channel/<%= video.ucid %>">
@@ -132,6 +132,7 @@
             </div>
         </div>
     </div>
+    <% if preferences && preferences.related_videos || plid %>
     <div class="pure-u-1 pure-u-md-1-5">
         <% if plid %>
         <div id="playlist" class="h-box">
@@ -140,8 +141,19 @@
 
         <% if !preferences || preferences && preferences.related_videos %>
         <div class="h-box">
+        
+        <% if !rvs.empty? %>
+        <div id="continue" <% if plid %>style="display:none"<% end %>>
+            <div class="pure-control-group">
+                <label for="continue">Autoplay next video: </label>
+                <input name="continue" onclick="continue_autoplay(this)" id="continue" type="checkbox" <% if params[:continue] %>checked<% end %>>
+            </div>
+            <hr>
+        </div>
+        <% end %>
+
         <% rvs.each do |rv| %>
-            <% if rv.has_key?("id") %>
+            <% if rv["id"]? %>
             <a href="/watch?v=<%= rv["id"] %>">
                 <% if preferences && preferences.thin_mode %>
                 <% else %>
@@ -160,9 +172,50 @@
         </div>
         <% end %>
     </div>
+    <% end %>
 </div>
 
 <script>
+<% if !rvs.empty? && !plid && params[:continue] %>
+player.on('ended', function() {
+    window.location.replace("/watch?v=" 
+        + "<%= rvs.select { |rv| rv["id"]? }[0]?.try &.["id"] %>"
+        + "&continue=1"
+        <% if params[:listen] %>
+        + "&listen=1"
+        <% end %>
+        <% if params[:autoplay] %>
+        + "&autoplay=1"
+        <% end %>
+        <% if params[:speed] %>
+        + "&speed=<%= params[:speed] %>"
+        <% end %>
+    );
+});
+<% end %>
+
+function continue_autoplay(target) {
+    if (target.checked) {
+        player.on('ended', function() {
+            window.location.replace("/watch?v=" 
+                + "<%= rvs.select { |rv| rv["id"]? }[0]?.try &.["id"] %>"
+                + "&continue=1"
+                <% if params[:listen] %>
+                + "&listen=1"
+                <% end %>
+                <% if params[:autoplay] %>
+                + "&autoplay=1"
+                <% end %>
+                <% if params[:speed] %>
+                + "&speed=<%= params[:speed] %>"
+                <% end %>
+            );
+        });
+    } else {
+        player.off('ended');
+    }
+}
+
 function number_with_separator(val) {
   while (/(\d+)(\d{3})/.test(val.toString())) {
     val = val.toString().replace(/(\d+)(\d{3})/, "$1" + "," + "$2");
@@ -172,7 +225,7 @@ function number_with_separator(val) {
 
 subscribe_button = document.getElementById("subscribe");
 if (subscribe_button.getAttribute('onclick')) {
-    subscribe_button["href"] = "javascript:void(0);";
+    subscribe_button["href"] = "javascript:void(0)";
 }
 
 function subscribe() {
@@ -258,6 +311,7 @@ function get_playlist() {
                 }
             } else {
                 playlist.innerHTML = "";
+                document.getElementById('continue').style.display = "";
             }
         }
     };
@@ -450,5 +504,4 @@ function get_youtube_replies(target, load_more) {
 <% else %>
 get_youtube_comments();
 <% end %>
-
 </script>
