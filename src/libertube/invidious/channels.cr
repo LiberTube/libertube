@@ -21,6 +21,33 @@ class ChannelVideo
   })
 end
 
+def get_batch_channels(channels, db, refresh = false, pull_all_videos = true, max_threads = 10)
+  active_threads = 0
+  active_channel = Channel(String | Nil).new
+
+  final = [] of String
+  channels.map do |ucid|
+    if active_threads >= max_threads
+      if response = active_channel.receive
+        active_threads -= 1
+        final << response
+      end
+    end
+
+    active_threads += 1
+    spawn do
+      begin
+        get_channel(ucid, db, refresh, pull_all_videos)
+        active_channel.send(ucid)
+      rescue ex
+        active_channel.send(nil)
+      end
+    end
+  end
+
+  return final
+end
+
 def get_channel(id, db, refresh = true, pull_all_videos = true)
   client = make_client(YT_URL)
 
@@ -28,7 +55,7 @@ def get_channel(id, db, refresh = true, pull_all_videos = true)
     channel = db.query_one("SELECT * FROM channels WHERE id = $1", id, as: InvidiousChannel)
 
     if refresh && Time.now - channel.updated > 10.minutes
-      channel = fetch_channel(id, client, db, pull_all_videos)
+      channel = fetch_channel(id, client, db, pull_all_videos: pull_all_videos)
       channel_array = channel.to_a
       args = arg_array(channel_array)
 
@@ -36,7 +63,7 @@ def get_channel(id, db, refresh = true, pull_all_videos = true)
         ON CONFLICT (id) DO UPDATE SET author = $2, updated = $3", channel_array)
     end
   else
-    channel = fetch_channel(id, client, db, pull_all_videos)
+    channel = fetch_channel(id, client, db, pull_all_videos: pull_all_videos)
     channel_array = channel.to_a
     args = arg_array(channel_array)
 
@@ -46,13 +73,13 @@ def get_channel(id, db, refresh = true, pull_all_videos = true)
   return channel
 end
 
-def fetch_channel(ucid, client, db, pull_all_videos = true)
+def fetch_channel(ucid, client, db, pull_all_videos = true, locale = nil)
   rss = client.get("/feeds/videos.xml?channel_id=#{ucid}").body
   rss = XML.parse_html(rss)
 
   author = rss.xpath_node(%q(//feed/title))
   if !author
-    raise "Deleted or invalid channel"
+    raise translate(locale, "Deleted or invalid channel")
   end
   author = author.content
 
@@ -223,7 +250,7 @@ def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "
   return url
 end
 
-def get_about_info(ucid)
+def get_about_info(ucid, locale)
   client = make_client(YT_URL)
 
   about = client.get("/channel/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
@@ -234,14 +261,14 @@ def get_about_info(ucid)
   about = XML.parse_html(about.body)
 
   if about.xpath_node(%q(//div[contains(@class, "channel-empty-message")]))
-    error_message = "This channel does not exist."
+    error_message = translate(locale, "This channel does not exist.")
 
     raise error_message
   end
 
   if about.xpath_node(%q(//span[contains(@class,"qualified-channel-title-text")]/a)).try &.content.empty?
     error_message = about.xpath_node(%q(//div[@class="yt-alert-content"])).try &.content.strip
-    error_message ||= "Could not get channel info."
+    error_message ||= translate(locale, "Could not get channel info.")
 
     raise error_message
   end

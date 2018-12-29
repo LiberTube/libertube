@@ -1,1 +1,19 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/894bb45d01c7ba4a8d0f9bf9b8816f52
+{
+    "name": "Invidious",
+    "short_name": "Invidious",
+    "icons": [
+        {
+            "src": "/android-chrome-192x192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/android-chrome-512x512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ],
+    "theme_color": "#575757",
+    "background_color": "#575757",
+    "display": "standalone"
+}

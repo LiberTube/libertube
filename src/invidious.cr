@@ -88,6 +88,16 @@ REDDIT_URL      = URI.parse("https://www.reddit.com")
 LOGIN_URL       = URI.parse("https://accounts.google.com")
 TEXTCAPTCHA_URL = URI.parse("http://textcaptcha.com/omarroth@hotmail.com.json")
 
+LOCALES = {
+  "ar"    => load_locale("ar"),
+  "de"    => load_locale("de"),
+  "en-US" => load_locale("en-US"),
+  "nb_NO" => load_locale("nb_NO"),
+  "nl"    => load_locale("nl"),
+  "pl"    => load_locale("pl"),
+  "ru"    => load_locale("ru"),
+}
+
 crawl_threads.times do
   spawn do
     crawl_videos(PG_DB)
@@ -122,6 +132,8 @@ decrypt_function = [] of {name: String, value: Int32}
 spawn do
   update_decrypt_function do |function|
     decrypt_function = function
+    sleep 1.minutes
+    Fiber.yield
   end
 end
 
@@ -147,6 +159,7 @@ before_all do |env|
         env.set "challenge", challenge
         env.set "token", token
 
+        locale = user.preferences.locale
         env.set "user", user
         env.set "sid", sid
       end
@@ -158,12 +171,17 @@ before_all do |env|
         env.set "challenge", challenge
         env.set "token", token
 
+        locale = user.preferences.locale
         env.set "user", user
         env.set "sid", sid
       rescue ex
       end
     end
   end
+
+  locale = env.params.query["hl"]? || locale
+  locale ||= "en-US"
+  env.set "locale", locale
 
   current_page = env.request.path
   if env.request.query
@@ -180,7 +198,9 @@ before_all do |env|
 end
 
 get "/" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
   user = env.get? "user"
+
   if user
     user = user.as(User)
     if user.preferences.redirect_feed
@@ -192,12 +212,14 @@ get "/" do |env|
 end
 
 get "/licenses" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
   rendered "licenses"
 end
 
 # Videos
 
 get "/:id" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
   id = env.params.url["id"]
 
   if md = id.match(/[a-zA-Z0-9_-]{11}/)
@@ -219,6 +241,8 @@ get "/:id" do |env|
 end
 
 get "/watch" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   if env.params.query.to_s.includes?("%20") || env.params.query.to_s.includes?("+")
     url = "/watch?" + env.params.query.to_s.gsub("%20", "").delete("+")
     next env.redirect url
@@ -287,11 +311,11 @@ get "/watch" do |env|
 
       if source == "youtube"
         begin
-          comment_html = JSON.parse(fetch_youtube_comments(id, "", proxies, "html"))["contentHtml"]
+          comment_html = JSON.parse(fetch_youtube_comments(id, "", proxies, "html", locale))["contentHtml"]
         rescue ex
           if preferences.comments[1] == "reddit"
             comments, reddit_thread = fetch_reddit_comments(id)
-            comment_html = template_reddit_comments(comments)
+            comment_html = template_reddit_comments(comments, locale)
 
             comment_html = fill_links(comment_html, "https", "www.reddit.com")
             comment_html = replace_links(comment_html)
@@ -300,18 +324,18 @@ get "/watch" do |env|
       elsif source == "reddit"
         begin
           comments, reddit_thread = fetch_reddit_comments(id)
-          comment_html = template_reddit_comments(comments)
+          comment_html = template_reddit_comments(comments, locale)
 
           comment_html = fill_links(comment_html, "https", "www.reddit.com")
           comment_html = replace_links(comment_html)
         rescue ex
           if preferences.comments[1] == "youtube"
-            comment_html = JSON.parse(fetch_youtube_comments(id, "", proxies, "html"))["contentHtml"]
+            comment_html = JSON.parse(fetch_youtube_comments(id, "", proxies, "html", locale))["contentHtml"]
           end
         end
       end
     else
-      comment_html = JSON.parse(fetch_youtube_comments(id, "", proxies, "html"))["contentHtml"]
+      comment_html = JSON.parse(fetch_youtube_comments(id, "", proxies, "html", locale))["contentHtml"]
     end
 
     comment_html ||= ""
@@ -383,6 +407,7 @@ get "/watch" do |env|
 end
 
 get "/embed/:id" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
   id = env.params.url["id"]
 
   if id.includes?("%20") || id.includes?("+") || env.params.query.to_s.includes?("%20") || env.params.query.to_s.includes?("+")
@@ -470,6 +495,8 @@ end
 # Playlists
 
 get "/playlist" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   plid = env.params.query["list"]?
   if !plid
     next env.redirect "/"
@@ -483,14 +510,14 @@ get "/playlist" do |env|
   end
 
   begin
-    playlist = fetch_playlist(plid)
+    playlist = fetch_playlist(plid, locale)
   rescue ex
     error_message = ex.message
     next templated "error"
   end
 
   begin
-    videos = fetch_playlist_videos(plid, page, playlist.video_count)
+    videos = fetch_playlist_videos(plid, page, playlist.video_count, locale: locale)
   rescue ex
     videos = [] of PlaylistVideo
   end
@@ -499,6 +526,8 @@ get "/playlist" do |env|
 end
 
 get "/mix" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   rdid = env.params.query["list"]?
   if !rdid
     next env.redirect "/"
@@ -508,7 +537,7 @@ get "/mix" do |env|
   continuation ||= rdid.lchop("RD")
 
   begin
-    mix = fetch_mix(rdid, continuation)
+    mix = fetch_mix(rdid, continuation, locale: locale)
   rescue ex
     error_message = ex.message
     next templated "error"
@@ -520,6 +549,7 @@ end
 # Search
 
 get "/opensearch.xml" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
   env.response.content_type = "application/opensearchdescription+xml"
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
@@ -535,6 +565,8 @@ get "/opensearch.xml" do |env|
 end
 
 get "/results" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   query = env.params.query["search_query"]?
   query ||= env.params.query["q"]?
   query ||= ""
@@ -550,9 +582,15 @@ get "/results" do |env|
 end
 
 get "/search" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   query = env.params.query["search_query"]?
   query ||= env.params.query["q"]?
   query ||= ""
+
+  if query.empty?
+    next env.redirect "/"
+  end
 
   page = env.params.query["page"]?.try &.to_i?
   page ||= 1
@@ -599,7 +637,7 @@ get "/search" do |env|
     count, videos = channel_search(search_query, page, channel)
   elsif subscriptions
     if view_name
-      videos = PG_DB.query_all("SELECT id,title,published,updated,ucid,author FROM (
+      videos = PG_DB.query_all("SELECT id,title,published,updated,ucid,author,length_seconds FROM (
       SELECT *,
       to_tsvector(#{view_name}.title) ||
       to_tsvector(#{view_name}.author)
@@ -629,6 +667,8 @@ end
 # Users
 
 get "/login" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   if user
     next env.redirect "/feed/subscriptions"
@@ -668,6 +708,8 @@ end
 
 # See https://github.com/rg3/youtube-dl/blob/master/youtube_dl/extractor/youtube.py#L79
 post "/login" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   referer = get_referer(env, "/feed/subscriptions")
 
   email = env.params.body["email"]?
@@ -754,7 +796,7 @@ post "/login" do |env|
       headers["Cookie"] = URI.unescape(headers["Cookie"])
 
       if challenge_results[0][-1]?.try &.[5] == "INCORRECT_ANSWER_ENTERED"
-        error_message = "Incorrect password"
+        error_message = translate(locale, "Incorrect password")
         next templated "error"
       end
 
@@ -775,7 +817,7 @@ post "/login" do |env|
 
         if tfa[2] == "TWO_STEP_VERIFICATION"
           if tfa[5] == "QUOTA_EXCEEDED"
-            error_message = "Quota exceeded, try again in a few hours"
+            error_message = translate(locale, "Quota exceeded, try again in a few hours")
             next templated "error"
           end
 
@@ -806,7 +848,7 @@ post "/login" do |env|
           challenge_results = JSON.parse(challenge_results)
 
           if challenge_results[0][-1]?.try &.[5] == "INCORRECT_ANSWER_ENTERED"
-            error_message = "Invalid TFA code"
+            error_message = translate(locale, "Invalid TFA code")
             next templated "error"
           end
         end
@@ -845,7 +887,7 @@ post "/login" do |env|
 
       env.redirect referer
     rescue ex
-      error_message = "Login failed. This may be because two-factor authentication is not enabled on your account."
+      error_message = translate(locale, "Login failed. This may be because two-factor authentication is not enabled on your account.")
       next templated "error"
     end
   elsif account_type == "invidious"
@@ -860,10 +902,10 @@ post "/login" do |env|
       token = env.params.body["token"]?
 
       begin
-        validate_response(challenge, token, answer, "sign_in", HMAC_KEY, PG_DB)
+        validate_response(challenge, token, answer, "sign_in", HMAC_KEY, PG_DB, locale)
       rescue ex
-        if ex.message == "Invalid user"
-          error_message = "Invalid answer"
+        if ex.message == translate(locale, "Invalid user")
+          error_message = translate(locale, "Invalid answer")
         else
           error_message = ex.message
         end
@@ -878,16 +920,16 @@ post "/login" do |env|
 
       found_valid_captcha = false
 
-      error_message = "Invalid CAPTCHA"
+      error_message = translate(locale, "Invalid CAPTCHA")
       challenges.each_with_index do |challenge, i|
         begin
           challenge = challenge[1]
           token = tokens[i][1]
-          validate_response(challenge, token, text_answer, "sign_in", HMAC_KEY, PG_DB)
+          validate_response(challenge, token, text_answer, "sign_in", HMAC_KEY, PG_DB, locale)
           found_valid_captcha = true
         rescue ex
-          if ex.message == "Invalid user"
-            error_message = "Invalid answer"
+          if ex.message == translate(locale, "Invalid user")
+            error_message = translate(locale, "Invalid answer")
           else
             error_message = ex.message
           end
@@ -898,7 +940,7 @@ post "/login" do |env|
         next templated "error"
       end
     else
-      error_message = "CAPTCHA is a required field"
+      error_message = translate(locale, "CAPTCHA is a required field")
       next templated "error"
     end
 
@@ -906,25 +948,25 @@ post "/login" do |env|
     action ||= "signin"
 
     if !email
-      error_message = "User ID is a required field"
+      error_message = translate(locale, "User ID is a required field")
       next templated "error"
     end
 
     if !password
-      error_message = "Password is a required field"
+      error_message = translate(locale, "Password is a required field")
       next templated "error"
     end
 
     if action == "signin"
-      user = PG_DB.query_one?("SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND password IS NOT NULL", email, as: User)
+      user = PG_DB.query_one?("SELECT * FROM users WHERE LOWER(email) = LOWER($1)", email, as: User)
 
       if !user
-        error_message = "Invalid username or password"
+        error_message = translate(locale, "Invalid username or password")
         next templated "error"
       end
 
       if !user.password
-        error_message = "Please sign in using 'Sign in with Google'"
+        error_message = translate(locale, "Please sign in using 'Sign in with Google'")
         next templated "error"
       end
 
@@ -946,24 +988,24 @@ post "/login" do |env|
             secure: secure, http_only: true)
         end
       else
-        error_message = "Invalid username or password"
+        error_message = translate(locale, "Invalid username or password")
         next templated "error"
       end
     elsif action == "register"
       if password.empty?
-        error_message = "Password cannot be empty"
+        error_message = translate(locale, "Password cannot be empty")
         next templated "error"
       end
 
       # See https://security.stackexchange.com/a/39851
       if password.size > 55
-        error_message = "Password cannot be longer than 55 characters"
+        error_message = translate(locale, "Password cannot be longer than 55 characters")
         next templated "error"
       end
 
       user = PG_DB.query_one?("SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND password IS NOT NULL", email, as: User)
       if user
-        error_message = "Please sign in"
+        error_message = translate(locale, "Please sign in")
         next templated "error"
       end
 
@@ -1002,6 +1044,8 @@ post "/login" do |env|
 end
 
 get "/signout" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1012,7 +1056,7 @@ get "/signout" do |env|
     token = env.params.query["token"]?
 
     begin
-      validate_response(challenge, token, user.email, "sign_out", HMAC_KEY, PG_DB)
+      validate_response(challenge, token, user.email, "sign_out", HMAC_KEY, PG_DB, locale)
     rescue ex
       error_message = ex.message
       next templated "error"
@@ -1033,6 +1077,8 @@ get "/signout" do |env|
 end
 
 get "/preferences" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1045,6 +1091,8 @@ get "/preferences" do |env|
 end
 
 post "/preferences" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1093,6 +1141,9 @@ post "/preferences" do |env|
     redirect_feed ||= "off"
     redirect_feed = redirect_feed == "on"
 
+    locale = env.params.body["locale"]?.try &.as(String)
+    locale ||= "en-US"
+
     dark_mode = env.params.body["dark_mode"]?.try &.as(String)
     dark_mode ||= "off"
     dark_mode = dark_mode == "on"
@@ -1131,6 +1182,7 @@ post "/preferences" do |env|
       "captions"           => captions,
       "related_videos"     => related_videos,
       "redirect_feed"      => redirect_feed,
+      "locale"             => locale,
       "dark_mode"          => dark_mode,
       "thin_mode"          => thin_mode,
       "max_results"        => max_results,
@@ -1147,6 +1199,8 @@ post "/preferences" do |env|
 end
 
 get "/toggle_theme" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1167,6 +1221,8 @@ get "/toggle_theme" do |env|
 end
 
 get "/mark_watched" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env, "/feed/subscriptions")
 
@@ -1195,6 +1251,8 @@ get "/mark_watched" do |env|
 end
 
 get "/mark_unwatched" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env, "/feed/history")
 
@@ -1225,6 +1283,8 @@ end
 # /modify_notifications?receive_all_updates=false&receive_no_updates=false
 # will "unding" all subscriptions.
 get "/modify_notifications" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1270,6 +1330,8 @@ get "/modify_notifications" do |env|
 end
 
 get "/subscription_manager" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env, "/")
 
@@ -1297,7 +1359,7 @@ get "/subscription_manager" do |env|
   subscriptions = [] of InvidiousChannel
   user.subscriptions.each do |ucid|
     begin
-      subscriptions << get_channel(ucid, PG_DB, false)
+      subscriptions << get_channel(ucid, PG_DB, false, false)
     rescue ex
       next
     end
@@ -1351,6 +1413,8 @@ get "/subscription_manager" do |env|
 end
 
 get "/data_control" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1364,6 +1428,8 @@ get "/data_control" do |env|
 end
 
 post "/data_control" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1413,14 +1479,7 @@ post "/data_control" do |env|
         end
         user.subscriptions.uniq!
 
-        user.subscriptions.select! do |ucid|
-          begin
-            get_channel(ucid, PG_DB, false, false)
-            true
-          rescue ex
-            false
-          end
-        end
+        user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
 
         PG_DB.exec("UPDATE users SET subscriptions = $1 WHERE email = $2", user.subscriptions, user.email)
       when "import_freetube"
@@ -1429,14 +1488,7 @@ post "/data_control" do |env|
         end
         user.subscriptions.uniq!
 
-        user.subscriptions.select! do |ucid|
-          begin
-            get_channel(ucid, PG_DB, false, false)
-            true
-          rescue ex
-            false
-          end
-        end
+        user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
 
         PG_DB.exec("UPDATE users SET subscriptions = $1 WHERE email = $2", user.subscriptions, user.email)
       when "import_newpipe_subscriptions"
@@ -1446,13 +1498,7 @@ post "/data_control" do |env|
         end
         user.subscriptions.uniq!
 
-        user.subscriptions.each do |ucid|
-          begin
-            get_channel(ucid, PG_DB, false, false)
-          rescue ex
-            next
-          end
-        end
+        user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
 
         PG_DB.exec("UPDATE users SET subscriptions = $1 WHERE email = $2", user.subscriptions, user.email)
       when "import_newpipe"
@@ -1471,14 +1517,7 @@ post "/data_control" do |env|
               user.subscriptions += db.query_all("SELECT url FROM subscriptions", as: String).map { |url| url.lchop("https://www.youtube.com/channel/") }
               user.subscriptions.uniq!
 
-              user.subscriptions.select! do |ucid|
-                begin
-                  get_channel(ucid, PG_DB, false, false)
-                  true
-                rescue ex
-                  false
-                end
-              end
+              user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
 
               PG_DB.exec("UPDATE users SET subscriptions = $1 WHERE email = $2", user.subscriptions, user.email)
 
@@ -1495,6 +1534,8 @@ post "/data_control" do |env|
 end
 
 get "/subscription_ajax" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1574,6 +1615,8 @@ get "/subscription_ajax" do |env|
 end
 
 get "/delete_account" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1589,6 +1632,8 @@ get "/delete_account" do |env|
 end
 
 post "/delete_account" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1599,7 +1644,7 @@ post "/delete_account" do |env|
     token = env.params.body["token"]?
 
     begin
-      validate_response(challenge, token, user.email, "delete_account", HMAC_KEY, PG_DB)
+      validate_response(challenge, token, user.email, "delete_account", HMAC_KEY, PG_DB, locale)
     rescue ex
       error_message = ex.message
       next templated "error"
@@ -1619,6 +1664,8 @@ post "/delete_account" do |env|
 end
 
 get "/clear_watch_history" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1634,6 +1681,8 @@ get "/clear_watch_history" do |env|
 end
 
 post "/clear_watch_history" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1644,7 +1693,7 @@ post "/clear_watch_history" do |env|
     token = env.params.body["token"]?
 
     begin
-      validate_response(challenge, token, user.email, "clear_watch_history", HMAC_KEY, PG_DB)
+      validate_response(challenge, token, user.email, "clear_watch_history", HMAC_KEY, PG_DB, locale)
     rescue ex
       error_message = ex.message
       next templated "error"
@@ -1659,19 +1708,28 @@ end
 # Feeds
 
 get "/feed/top" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   templated "top"
 end
 
 get "/feed/popular" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   templated "popular"
 end
 
 get "/feed/trending" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   trending_type = env.params.query["type"]?
+  trending_type ||= "Default"
+
   region = env.params.query["region"]?
+  region ||= "US"
 
   begin
-    trending = fetch_trending(trending_type, proxies, region)
+    trending = fetch_trending(trending_type, proxies, region, locale)
   rescue ex
     error_message = "#{ex.message}"
     next templated "error"
@@ -1681,6 +1739,8 @@ get "/feed/trending" do |env|
 end
 
 get "/feed/subscriptions" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1814,6 +1874,8 @@ get "/feed/subscriptions" do |env|
 end
 
 get "/feed/history" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   referer = get_referer(env)
 
@@ -1837,11 +1899,13 @@ get "/feed/history" do |env|
 end
 
 get "/feed/channel/:ucid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "text/xml"
   ucid = env.params.url["ucid"]
 
   begin
-    author, ucid, auto_generated = get_about_info(ucid)
+    author, ucid, auto_generated = get_about_info(ucid, locale)
   rescue ex
     error_message = ex.message
     halt env, status_code: 500, response: error_message
@@ -1849,13 +1913,15 @@ get "/feed/channel/:ucid" do |env|
 
   page = 1
   videos, count = get_60_videos(ucid, page, auto_generated)
+  videos.select! { |video| !video.paid }
 
   host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
   path = env.request.path
 
   feed = XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
-      "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom") do
+      "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom",
+      "xml:lang": "en-US") do
       xml.element("link", rel: "self", href: "#{host_url}#{path}")
       xml.element("id") { xml.text "yt:channel:#{ucid}" }
       xml.element("yt:channelId") { xml.text ucid }
@@ -1906,6 +1972,8 @@ get "/feed/channel/:ucid" do |env|
 end
 
 get "/feed/private" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   token = env.params.query["token"]?
 
   if !token
@@ -1974,11 +2042,12 @@ get "/feed/private" do |env|
   query = env.request.query.not_nil!
 
   feed = XML.build(indent: "  ", encoding: "UTF-8") do |xml|
-    xml.element("feed", xmlns: "http://www.w3.org/2005/Atom", "xmlns:media": "http://search.yahoo.com/mrss/",
+    xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
+      "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom",
       "xml:lang": "en-US") do
       xml.element("link", "type": "text/html", rel: "alternate", href: "#{host_url}/feed/subscriptions")
       xml.element("link", "type": "application/atom+xml", rel: "self", href: "#{host_url}#{path}?#{query}")
-      xml.element("title") { xml.text "Invidious Private Feed for #{user.email}" }
+      xml.element("title") { xml.text translate(locale, "Invidious Private Feed for `x`", user.email) }
 
       videos.each do |video|
         xml.element("entry") do
@@ -2011,6 +2080,8 @@ get "/feed/private" do |env|
 end
 
 get "/feed/playlist/:plid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   plid = env.params.url["plid"]
 
   host_url = make_host_url(Kemal.config.ssl || CONFIG.https_only, env.request.headers["Host"]?)
@@ -2047,6 +2118,8 @@ end
 # YouTube appears to let users set a "brand" URL that
 # is different from their username, so we convert that here
 get "/c/:user" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   client = make_client(YT_URL)
   user = env.params.url["user"]
 
@@ -2072,6 +2145,8 @@ get "/user/:user/videos" do |env|
 end
 
 get "/channel/:ucid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   user = env.get? "user"
   if user
     user = user.as(User)
@@ -2088,7 +2163,7 @@ get "/channel/:ucid" do |env|
   sort_by ||= "newest"
 
   begin
-    author, ucid, auto_generated, sub_count = get_about_info(ucid)
+    author, ucid, auto_generated, sub_count = get_about_info(ucid, locale)
   rescue ex
     error_message = ex.message
     next templated "error"
@@ -2103,11 +2178,14 @@ get "/channel/:ucid" do |env|
   end
 
   videos, count = get_60_videos(ucid, page, auto_generated, sort_by)
+  videos.select! { |video| !video.paid }
 
   templated "channel"
 end
 
 get "/channel/:ucid/videos" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   ucid = env.params.url["ucid"]
   params = env.request.query
 
@@ -2123,6 +2201,8 @@ end
 # API Endpoints
 
 get "/api/v1/captions/:id" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   id = env.params.url["id"]
@@ -2222,6 +2302,8 @@ get "/api/v1/captions/:id" do |env|
 end
 
 get "/api/v1/comments/:id" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   id = env.params.url["id"]
@@ -2237,7 +2319,7 @@ get "/api/v1/comments/:id" do |env|
 
   if source == "youtube"
     begin
-      comments = fetch_youtube_comments(id, continuation, proxies, format)
+      comments = fetch_youtube_comments(id, continuation, proxies, format, locale)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       halt env, status_code: 500, response: error_message
@@ -2247,7 +2329,7 @@ get "/api/v1/comments/:id" do |env|
   elsif source == "reddit"
     begin
       comments, reddit_thread = fetch_reddit_comments(id)
-      content_html = template_reddit_comments(comments)
+      content_html = template_reddit_comments(comments, locale)
 
       content_html = fill_links(content_html, "https", "www.reddit.com")
       content_html = replace_links(content_html)
@@ -2276,6 +2358,8 @@ get "/api/v1/comments/:id" do |env|
 end
 
 get "/api/v1/insights/:id" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   id = env.params.url["id"]
   env.response.content_type = "application/json"
 
@@ -2356,6 +2440,8 @@ get "/api/v1/insights/:id" do |env|
 end
 
 get "/api/v1/videos/:id" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   id = env.params.url["id"]
@@ -2388,7 +2474,7 @@ get "/api/v1/videos/:id" do |env|
       json.field "description", description
       json.field "descriptionHtml", video.description
       json.field "published", video.published.to_unix
-      json.field "publishedText", "#{recode_date(video.published)} ago"
+      json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published))
       json.field "keywords", video.keywords
 
       json.field "viewCount", video.views
@@ -2559,11 +2645,13 @@ get "/api/v1/videos/:id" do |env|
 end
 
 get "/api/v1/trending" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   region = env.params.query["region"]?
   trending_type = env.params.query["type"]?
 
   begin
-    trending = fetch_trending(trending_type, proxies, region)
+    trending = fetch_trending(trending_type, proxies, region, locale)
   rescue ex
     error_message = {"error" => ex.message}.to_json
     halt env, status_code: 500, response: error_message
@@ -2587,7 +2675,7 @@ get "/api/v1/trending" do |env|
           json.field "authorUrl", "/channel/#{video.ucid}"
 
           json.field "published", video.published.to_unix
-          json.field "publishedText", "#{recode_date(video.published)} ago"
+          json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published))
           json.field "description", video.description
           json.field "descriptionHtml", video.description_html
           json.field "liveNow", video.live_now
@@ -2603,6 +2691,8 @@ get "/api/v1/trending" do |env|
 end
 
 get "/api/v1/popular" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   videos = JSON.build do |json|
     json.array do
       popular_videos.each do |video|
@@ -2619,7 +2709,7 @@ get "/api/v1/popular" do |env|
           json.field "authorId", video.ucid
           json.field "authorUrl", "/channel/#{video.ucid}"
           json.field "published", video.published.to_unix
-          json.field "publishedText", "#{recode_date(video.published)} ago"
+          json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published))
         end
       end
     end
@@ -2630,6 +2720,8 @@ get "/api/v1/popular" do |env|
 end
 
 get "/api/v1/top" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   videos = JSON.build do |json|
     json.array do
       top_videos.each do |video|
@@ -2647,7 +2739,7 @@ get "/api/v1/top" do |env|
           json.field "authorId", video.ucid
           json.field "authorUrl", "/channel/#{video.ucid}"
           json.field "published", video.published.to_unix
-          json.field "publishedText", "#{recode_date(video.published)} ago"
+          json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published))
 
           description = video.description.gsub("<br>", "\n")
           description = description.gsub("<br/>", "\n")
@@ -2664,6 +2756,8 @@ get "/api/v1/top" do |env|
 end
 
 get "/api/v1/channels/:ucid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   ucid = env.params.url["ucid"]
@@ -2671,7 +2765,7 @@ get "/api/v1/channels/:ucid" do |env|
   sort_by ||= "newest"
 
   begin
-    author, ucid, auto_generated = get_about_info(ucid)
+    author, ucid, auto_generated = get_about_info(ucid, locale)
   rescue ex
     error_message = {"error" => ex.message}.to_json
     halt env, status_code: 500, response: error_message
@@ -2817,7 +2911,7 @@ get "/api/v1/channels/:ucid" do |env|
 
               json.field "viewCount", video.views
               json.field "published", video.published.to_unix
-              json.field "publishedText", "#{recode_date(video.published)} ago"
+              json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published))
               json.field "lengthSeconds", video.length_seconds
               json.field "liveNow", video.live_now
               json.field "paid", video.paid
@@ -2860,6 +2954,8 @@ end
 
 ["/api/v1/channels/:ucid/videos", "/api/v1/channels/videos/:ucid"].each do |route|
   get route do |env|
+    locale = LOCALES[env.get("locale").as(String)]?
+
     env.response.content_type = "application/json"
 
     ucid = env.params.url["ucid"]
@@ -2869,7 +2965,7 @@ end
     sort_by ||= "newest"
 
     begin
-      author, ucid, auto_generated = get_about_info(ucid)
+      author, ucid, auto_generated = get_about_info(ucid, locale)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       halt env, status_code: 500, response: error_message
@@ -2908,7 +3004,7 @@ end
 
             json.field "viewCount", video.views
             json.field "published", video.published.to_unix
-            json.field "publishedText", "#{recode_date(video.published)} ago"
+            json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published))
             json.field "lengthSeconds", video.length_seconds
             json.field "liveNow", video.live_now
             json.field "paid", video.paid
@@ -2923,6 +3019,8 @@ end
 end
 
 get "/api/v1/channels/search/:ucid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   ucid = env.params.url["ucid"]
@@ -2957,7 +3055,7 @@ get "/api/v1/channels/search/:ucid" do |env|
 
             json.field "viewCount", item.views
             json.field "published", item.published.to_unix
-            json.field "publishedText", "#{recode_date(item.published)} ago"
+            json.field "publishedText", translate(locale, "`x` ago", recode_date(item.published))
             json.field "lengthSeconds", item.length_seconds
             json.field "liveNow", item.live_now
             json.field "paid", item.paid
@@ -3021,6 +3119,8 @@ get "/api/v1/channels/search/:ucid" do |env|
 end
 
 get "/api/v1/search" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   query = env.params.query["q"]?
@@ -3080,7 +3180,7 @@ get "/api/v1/search" do |env|
 
             json.field "viewCount", item.views
             json.field "published", item.published.to_unix
-            json.field "publishedText", "#{recode_date(item.published)} ago"
+            json.field "publishedText", translate(locale, "`x` ago", recode_date(item.published))
             json.field "lengthSeconds", item.length_seconds
             json.field "liveNow", item.live_now
             json.field "paid", item.paid
@@ -3144,6 +3244,8 @@ get "/api/v1/search" do |env|
 end
 
 get "/api/v1/playlists/:plid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
   plid = env.params.url["plid"]
 
@@ -3160,14 +3262,14 @@ get "/api/v1/playlists/:plid" do |env|
   end
 
   begin
-    playlist = fetch_playlist(plid)
+    playlist = fetch_playlist(plid, locale)
   rescue ex
     error_message = {"error" => "Playlist is empty"}.to_json
     halt env, status_code: 500, response: error_message
   end
 
   begin
-    videos = fetch_playlist_videos(plid, page, playlist.video_count, continuation)
+    videos = fetch_playlist_videos(plid, page, playlist.video_count, continuation, locale)
   rescue ex
     videos = [] of PlaylistVideo
   end
@@ -3241,6 +3343,8 @@ get "/api/v1/playlists/:plid" do |env|
 end
 
 get "/api/v1/mixes/:rdid" do |env|
+  locale = LOCALES[env.get("locale").as(String)]?
+
   env.response.content_type = "application/json"
 
   rdid = env.params.url["rdid"]
@@ -3252,7 +3356,7 @@ get "/api/v1/mixes/:rdid" do |env|
   format ||= "json"
 
   begin
-    mix = fetch_mix(rdid, continuation)
+    mix = fetch_mix(rdid, continuation, locale: locale)
 
     if !rdid.ends_with? continuation
       mix = fetch_mix(rdid, mix.videos[1].id)
