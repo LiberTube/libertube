@@ -22,11 +22,13 @@ div {
   padding-right: 10px;
 }
 
+button.pure-button-primary,
 a.pure-button-primary {
   background-color: #a0a0a0;
   color: rgba(35, 35, 35, 1);
 }
 
+button.pure-button-primary:hover,
 a.pure-button-primary:hover {
   background-color: rgba(0, 182, 240, 1);
   color: #fff;
@@ -262,8 +264,25 @@ img.thumbnail {
 
 #player-container {
   position: relative;
-  padding-bottom: 56.25%;
-  margin-left: 1em;
-  margin-right: 1em;
+  padding-bottom: 55.25%;
+  margin-left: 2em;
+  margin-right: 2em;
   height: 0;
+}
+
+#progress-container {
+  width: 100%;
+  border-radius: 2px;
+  background-color: #a0a0a0;
+  color: rgba(35, 35, 35, 1);
+}
+
+#download-progress {
+  width: 0%;
+  border-radius: 2px;
+  height: 10px;
+  background-color: rgba(0, 182, 240, 1);
+  color: #fff;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
 }

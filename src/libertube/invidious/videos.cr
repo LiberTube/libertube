@@ -137,7 +137,7 @@ BYPASS_REGIONS = {
 }
 
 VIDEO_THUMBNAILS = {
-  {name: "maxres", host: "invidio.us", url: "maxres", height: 720, width: 1280},
+  {name: "maxres", host: "#{CONFIG.domain}", url: "maxres", height: 720, width: 1280},
   {name: "maxresdefault", host: "i.ytimg.com", url: "maxresdefault", height: 720, width: 1280},
   {name: "sddefault", host: "i.ytimg.com", url: "sddefault", height: 480, width: 640},
   {name: "high", host: "i.ytimg.com", url: "hqdefault", height: 360, width: 480},
@@ -633,6 +633,10 @@ def fetch_video(id, proxies, region)
     end
   end
 
+  if info["errorcode"]?.try &.== "2"
+    raise "Video unavailable."
+  end
+
   title = info["title"]
   author = info["author"]
   ucid = info["ucid"]
@@ -648,6 +652,10 @@ def fetch_video(id, proxies, region)
   dislikes = html.xpath_node(%q(//button[@title="I dislike this"]/span))
   dislikes = dislikes.try &.content.delete(",").try &.to_i?
   dislikes ||= 0
+
+  avg_rating = (likes.to_f/(likes.to_f + dislikes.to_f) * 4 + 1)
+  avg_rating = avg_rating.nan? ? 0.0 : avg_rating
+  info["avg_rating"] = "#{avg_rating}"
 
   description = html.xpath_node(%q(//p[@id="eow-description"]))
   description = description ? description.to_xml : ""
@@ -666,13 +674,20 @@ def fetch_video(id, proxies, region)
   genre = html.xpath_node(%q(//meta[@itemprop="genre"])).try &.["content"]
   genre ||= ""
 
-  genre_url = html.xpath_node(%(//a[text()="#{genre}"])).try &.["href"]
+  genre_url = html.xpath_node(%(//ul[contains(@class, "watch-info-tag-list")]/li/a[text()="#{genre}"])).try &.["href"]
+
+  # Sometimes YouTube tries to link to invalid/missing channels, so we fix that here
   case genre
+  when "Education"
+    genre_url = "/channel/UCdxpofrI-dO6oYfsqHDHphw"
+  when "Gaming"
+    genre_url = "/channel/UCOpNcN46UbXVtpKMrmU4Abg"
   when "Movies"
     genre_url = "/channel/UClgRkhTL3_hImCAmdLfDE4g"
-  when "Education"
-    # Education channel is linked but does not exist
-    genre_url = "/channel/UC3yA8nDwraeOfnYfBWun83g"
+  when "Nonprofits & Activism"
+    genre_url = "/channel/UCfFyYRYslvuhwMDnx6KjUvw"
+  when "Trailers"
+    genre_url = "/channel/UClgRkhTL3_hImCAmdLfDE4g"
   end
   genre_url ||= ""
 
@@ -730,14 +745,14 @@ def process_video_params(query, preferences)
     volume ||= preferences.volume
   end
 
-  autoplay ||= 0
-  continue ||= 0
-  listen ||= 0
-  preferred_captions ||= [] of String
-  quality ||= "hd720"
-  speed ||= 1
-  video_loop ||= 0
-  volume ||= 100
+  autoplay ||= DEFAULT_USER_PREFERENCES.autoplay.to_unsafe
+  continue ||= DEFAULT_USER_PREFERENCES.continue.to_unsafe
+  listen ||= DEFAULT_USER_PREFERENCES.listen.to_unsafe
+  preferred_captions ||= DEFAULT_USER_PREFERENCES.captions
+  quality ||= DEFAULT_USER_PREFERENCES.quality
+  speed ||= DEFAULT_USER_PREFERENCES.speed
+  video_loop ||= DEFAULT_USER_PREFERENCES.video_loop.to_unsafe
+  volume ||= DEFAULT_USER_PREFERENCES.volume
 
   autoplay = autoplay == 1
   continue = continue == 1

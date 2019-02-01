@@ -67,7 +67,7 @@ def fetch_youtube_comments(id, continuation, proxies, format, locale)
   itct = body.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
   ctoken = body.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
 
-  if body.match(/<meta itemprop="regionsAllowed" content="">/)
+  if body.match(/<meta itemprop="regionsAllowed" content="">/) && !body.match(/player-age-gate-content\">/)
     bypass_channel = Channel({String, HTTPClient, HTTP::Headers} | Nil).new
 
     proxies.each do |proxy_region, list|
@@ -79,7 +79,7 @@ def fetch_youtube_comments(id, continuation, proxies, format, locale)
         proxy_headers["Cookie"] = response.cookies.add_request_headers(headers)["cookie"]
         proxy_html = response.body
 
-        if !proxy_html.match(/<meta itemprop="regionsAllowed" content="">/)
+        if !proxy_html.match(/<meta itemprop="regionsAllowed" content="">/) && !proxy_html.match(/player-age-gate-content\">/)
           bypass_channel.send({proxy_html, proxy_client, proxy_headers})
         else
           bypass_channel.send(nil)
@@ -227,7 +227,8 @@ def fetch_youtube_comments(id, continuation, proxies, format, locale)
                   reply_count ||= 1
                 end
 
-                continuation = node_replies["continuations"].as_a[0]["nextContinuationData"]["continuation"].as_s
+                continuation = node_replies["continuations"]?.try &.as_a[0]["nextContinuationData"]["continuation"].as_s
+                continuation ||= ""
 
                 json.field "replies" do
                   json.object do
@@ -270,7 +271,7 @@ end
 
 def fetch_reddit_comments(id)
   client = make_client(REDDIT_URL)
-  headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.12.0 (by /u/omarroth)"}
+  headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.13.1 (by /u/omarroth)"}
 
   query = "(url:3D#{id}%20OR%20url:#{id})%20(site:youtube.com%20OR%20site:youtu.be)"
   search_results = client.get("/search.json?q=#{query}", headers)
@@ -488,10 +489,14 @@ def content_to_comment_html(content)
 
         text = %(<a href="#{url}">#{text}</a>)
       elsif watch_endpoint = run["navigationEndpoint"]["watchEndpoint"]?
-        length_seconds = watch_endpoint["startTimeSeconds"].as_i
+        length_seconds = watch_endpoint["startTimeSeconds"]?
         video_id = watch_endpoint["videoId"].as_s
 
-        text = %(<a href="javascript:void(0)" onclick="player.currentTime(#{length_seconds})">#{text}</a>)
+        if length_seconds
+          text = %(<a href="javascript:void(0)" onclick="player.currentTime(#{length_seconds})">#{text}</a>)
+        else
+          text = %(<a href="/watch?v=#{video_id}">#{text}</a>)
+        end
       elsif url = run["navigationEndpoint"]["commandMetadata"]?.try &.["webCommandMetadata"]["url"].as_s
         text = %(<a href="#{url}">#{text}</a>)
       end
