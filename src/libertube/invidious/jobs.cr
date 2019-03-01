@@ -68,11 +68,13 @@ def refresh_channels(db, logger, max_threads = 1, full_refresh = false)
           active_threads += 1
           spawn do
             begin
-              client = make_client(YT_URL)
-              channel = fetch_channel(id, client, db, full_refresh)
+              channel = fetch_channel(id, db, full_refresh)
 
-              db.exec("UPDATE channels SET updated = $1, author = $2 WHERE id = $3", Time.now, channel.author, id)
+              db.exec("UPDATE channels SET updated = $1, author = $2, deleted = false WHERE id = $3", Time.now, channel.author, id)
             rescue ex
+              if ex.message == "Deleted or invalid channel"
+                db.exec("UPDATE channels SET updated = $1, deleted = true WHERE id = $2", Time.now, id)
+              end
               logger.write("#{id} : #{ex.message}\n")
             end
 
@@ -129,7 +131,16 @@ def refresh_feeds(db, logger, max_threads = 1)
             begin
               db.exec("REFRESH MATERIALIZED VIEW #{view_name}")
             rescue ex
-              logger.write("REFRESH #{email} : #{ex.message}\n")
+              # Create view if it doesn't exist
+              if ex.message.try &.ends_with? "does not exist"
+                PG_DB.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
+                SELECT * FROM channel_videos WHERE \
+                ucid = ANY ((SELECT subscriptions FROM users WHERE email = E'#{email.gsub("'", "\\'")}')::text[]) \
+                ORDER BY published DESC;")
+                logger.write("CREATE #{view_name}")
+              else
+                logger.write("REFRESH #{email} : #{ex.message}\n")
+              end
             end
 
             active_channel.send(true)

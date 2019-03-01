@@ -1,1 +1,19 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/2898750929a3bcd87e11903ab915cb7b
+[Unit]
+Description=Invidious (An alternative YouTube front-end)
+After=syslog.target
+After=network.target
+
+[Service]
+RestartSec=2s
+Type=simple
+
+User=libertube
+Group=libertube
+
+WorkingDirectory=/home/libertube/libertube
+ExecStart=/home/libertube/libertube/libertube -o libertube.log
+
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -136,31 +136,26 @@ def decode_date(string : String)
   return Time.now - delta
 end
 
-def recode_date(time : Time)
+def recode_date(time : Time, locale)
   span = Time.now - time
 
   if span.total_days > 365.0
-    span = {span.total_days / 365, "year"}
+    span = translate(locale, "`x` years", (span.total_days.to_i / 365).to_s)
   elsif span.total_days > 30.0
-    span = {span.total_days / 30, "month"}
+    span = translate(locale, "`x` months", (span.total_days.to_i / 30).to_s)
   elsif span.total_days > 7.0
-    span = {span.total_days / 7, "week"}
+    span = translate(locale, "`x` weeks", (span.total_days.to_i / 7).to_s)
   elsif span.total_hours > 24.0
-    span = {span.total_days, "day"}
+    span = translate(locale, "`x` days", (span.total_days.to_i).to_s)
   elsif span.total_minutes > 60.0
-    span = {span.total_hours, "hour"}
+    span = translate(locale, "`x` hours", (span.total_hours.to_i).to_s)
   elsif span.total_seconds > 60.0
-    span = {span.total_minutes, "minute"}
+    span = translate(locale, "`x` minutes", (span.total_minutes.to_i).to_s)
   else
-    span = {span.total_seconds, "second"}
+    span = translate(locale, "`x` seconds", (span.total_seconds.to_i).to_s)
   end
 
-  span = {span[0].to_i, span[1]}
-  if span[0] > 1
-    span = {span[0], span[1] + "s"}
-  end
-
-  return span.join(" ")
+  return span
 end
 
 def number_with_separator(number)
@@ -240,21 +235,21 @@ def get_referer(env, fallback = "/")
 end
 
 def read_var_int(bytes)
-  numRead = 0
+  num_read = 0
   result = 0
 
-  read = bytes[numRead]
+  read = bytes[num_read]
 
   if bytes.size == 1
     result = bytes[0].to_i32
   else
     while ((read & 0b10000000) != 0)
-      read = bytes[numRead].to_u64
+      read = bytes[num_read].to_u64
       value = (read & 0b01111111)
-      result |= (value << (7 * numRead))
+      result |= (value << (7 * num_read))
 
-      numRead += 1
-      if numRead > 5
+      num_read += 1
+      if num_read > 5
         raise "VarInt is too big"
       end
     end
@@ -282,7 +277,7 @@ def write_var_int(value : Int)
     end
   end
 
-  return bytes
+  return Slice.new(bytes.to_unsafe, bytes.size)
 end
 
 def sha256(text)

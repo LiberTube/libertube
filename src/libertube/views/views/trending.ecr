@@ -1,6 +1,9 @@
 <% content_for "header" do %>
+<meta name="description" content="<%= translate(locale, "An alternative front-end to YouTube") %>">
 <title><%= translate(locale, "Trending") %> - Invidious</title>
 <% end %>
+
+<%= rendered "components/feed_menu" %>
 
 <div class="pure-g h-box">
     <div class="pure-u-2-3">

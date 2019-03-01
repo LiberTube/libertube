@@ -1,6 +1,9 @@
 <% content_for "header" do %>
+<meta name="description" content="<%= translate(locale, "An alternative front-end to YouTube") %>">
 <title><%= translate(locale, "Popular") %> - Invidious</title>
 <% end %>
+
+<%= rendered "components/feed_menu" %>
 
 <div class="pure-g">
 <% popular_videos.each_slice(4) do |slice| %>

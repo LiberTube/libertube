@@ -56,72 +56,32 @@ class RedditListing
   })
 end
 
-def fetch_youtube_comments(id, continuation, proxies, format, locale)
-  client = make_client(YT_URL)
-  html = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
-  headers = HTTP::Headers.new
-  headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
-  body = html.body
+def fetch_youtube_comments(id, db, continuation, proxies, format, locale, region)
+  video = get_video(id, db, proxies, region: region)
 
-  session_token = body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-  itct = body.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
-  ctoken = body.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
+  session_token = video.info["session_token"]?
+  itct = video.info["itct"]?
+  ctoken = video.info["ctoken"]?
+  continuation ||= ctoken
 
-  if body.match(/<meta itemprop="regionsAllowed" content="">/) && !body.match(/player-age-gate-content\">/)
-    bypass_channel = Channel({String, HTTPClient, HTTP::Headers} | Nil).new
-
-    proxies.each do |proxy_region, list|
-      spawn do
-        proxy_client = make_client(YT_URL, proxies, proxy_region)
-
-        response = proxy_client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
-        proxy_headers = HTTP::Headers.new
-        proxy_headers["Cookie"] = response.cookies.add_request_headers(headers)["cookie"]
-        proxy_html = response.body
-
-        if !proxy_html.match(/<meta itemprop="regionsAllowed" content="">/) && !proxy_html.match(/player-age-gate-content\">/)
-          bypass_channel.send({proxy_html, proxy_client, proxy_headers})
-        else
-          bypass_channel.send(nil)
-        end
-      end
-    end
-
-    proxies.size.times do
-      response = bypass_channel.receive
-      if response
-        html, client, headers = response
-
-        session_token = html.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-        itct = html.match(/itct=(?<itct>[^"]+)"/).not_nil!["itct"]
-        ctoken = html.match(/'COMMENTS_TOKEN': "(?<ctoken>[^"]+)"/)
-
-        break
-      end
-    end
-  end
-
-  if !ctoken
+  if !continuation || !itct || !session_token
     if format == "json"
       return {"comments" => [] of String}.to_json
     else
       return {"contentHtml" => "", "commentCount" => 0}.to_json
     end
   end
-  ctoken = ctoken["ctoken"]
-
-  if !continuation.empty?
-    ctoken = continuation
-  else
-    continuation = ctoken
-  end
 
   post_req = {
-    "session_token" => session_token,
+    "session_token" => session_token.not_nil!,
   }
   post_req = HTTP::Params.encode(post_req)
 
+  client = make_client(YT_URL, proxies, video.info["region"]?)
+  headers = HTTP::Headers.new
+
   headers["content-type"] = "application/x-www-form-urlencoded"
+  headers["cookie"] = video.info["cookie"]
 
   headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
   headers["x-spf-previous"] = "https://www.youtube.com/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999"
@@ -129,7 +89,8 @@ def fetch_youtube_comments(id, continuation, proxies, format, locale)
 
   headers["x-youtube-client-name"] = "1"
   headers["x-youtube-client-version"] = "2.20180719"
-  response = client.post("/comment_service_ajax?action_get_comments=1&pbj=1&ctoken=#{ctoken}&continuation=#{continuation}&itct=#{itct}&hl=en&gl=US", headers, post_req)
+
+  response = client.post("/comment_service_ajax?action_get_comments=1&pbj=1&ctoken=#{continuation}&continuation=#{continuation}&itct=#{itct}&hl=en&gl=US", headers, post_req)
   response = JSON.parse(response.body)
 
   if !response["response"]["continuationContents"]?
@@ -158,6 +119,8 @@ def fetch_youtube_comments(id, continuation, proxies, format, locale)
         comment_count = body["header"]["commentsHeaderRenderer"]["countText"]["simpleText"].as_s.delete("Comments,").to_i
         json.field "commentCount", comment_count
       end
+
+      json.field "videoId", id
 
       json.field "comments" do
         json.array do
@@ -209,14 +172,32 @@ def fetch_youtube_comments(id, continuation, proxies, format, locale)
                 json.field "authorUrl", ""
               end
 
-              published = decode_date(node_comment["publishedTimeText"]["runs"][0]["text"].as_s.rchop(" (edited)"))
+              published_text = node_comment["publishedTimeText"]["runs"][0]["text"].as_s
+              published = decode_date(published_text.rchop(" (edited)"))
+
+              if published_text.includes?(" (edited)")
+                json.field "isEdited", true
+              else
+                json.field "isEdited", false
+              end
 
               json.field "content", content
               json.field "contentHtml", content_html
               json.field "published", published.to_unix
-              json.field "publishedText", translate(locale, "`x` ago", recode_date(published))
+              json.field "publishedText", translate(locale, "`x` ago", recode_date(published, locale))
               json.field "likeCount", node_comment["likeCount"]
               json.field "commentId", node_comment["commentId"]
+              json.field "authorIsChannelOwner", node_comment["authorIsChannelOwner"]
+
+              if node_comment["actionButtons"]["commentActionButtonsRenderer"]["creatorHeart"]?
+                hearth_data = node_comment["actionButtons"]["commentActionButtonsRenderer"]["creatorHeart"]["creatorHeartRenderer"]["creatorThumbnail"]
+                json.field "creatorHeart" do
+                  json.object do
+                    json.field "creatorThumbnail", hearth_data["thumbnails"][-1]["url"]
+                    json.field "creatorName", hearth_data["accessibility"]["accessibilityData"]["label"]
+                  end
+                end
+              end
 
               if node_replies && !response["commentRepliesContinuation"]?
                 reply_count = node_replies["moreText"]["simpleText"].as_s.delete("View all reply replies,")
@@ -271,7 +252,7 @@ end
 
 def fetch_reddit_comments(id)
   client = make_client(REDDIT_URL)
-  headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.13.1 (by /u/omarroth)"}
+  headers = HTTP::Headers{"User-Agent" => "web:invidio.us:v0.14.1 (by /u/omarroth)"}
 
   query = "(url:3D#{id}%20OR%20url:#{id})%20(site:youtube.com%20OR%20site:youtu.be)"
   search_results = client.get("/search.json?q=#{query}", headers)
@@ -326,12 +307,31 @@ def template_youtube_comments(comments, locale)
       <div class="pure-u-20-24 pure-u-md-22-24">
         <p>
           <b>
-            <a href="#{child["authorUrl"]}">#{child["author"]}</a>
+            <a class="#{child["authorIsChannelOwner"] == true ? "channel-owner" : ""}" href="#{child["authorUrl"]}">#{child["author"]}</a>
           </b> 
           <p style="white-space:pre-wrap">#{child["contentHtml"]}</p>
-          #{translate(locale, "`x` ago", recode_date(Time.unix(child["published"].as_i64)))}
+          <span title="#{Time.unix(child["published"].as_i64).to_s(translate(locale, "%A %B %-d, %Y"))}">#{translate(locale, "`x` ago", recode_date(Time.unix(child["published"].as_i64), locale))} #{child["isEdited"] == true ? translate(locale, "(edited)") : ""}</span>
+          |
+          <a href="https://www.youtube.com/watch?v=#{comments["videoId"]}&lc=#{child["commentId"]}" title="#{translate(locale, "Youtube permalink of the comment")}">[YT]</a>
           | 
           <i class="icon ion-ios-thumbs-up"></i> #{number_with_separator(child["likeCount"])} 
+    END_HTML
+
+    if child["creatorHeart"]?
+      creator_thumbnail = "/ggpht#{URI.parse(child["creatorHeart"]["creatorThumbnail"].as_s).full_path}"
+      html += <<-END_HTML
+          <span class="creator-heart-container" title="#{translate(locale, "`x` marked it with a ❤", child["creatorHeart"]["creatorName"].as_s)}">
+              <div class="creator-heart">
+                  <img class="creator-heart-background-hearted" src="#{creator_thumbnail}"></img>
+                  <div class="creator-heart-small-hearted">
+                      <div class="icon ion-ios-heart creator-heart-small-container"></div>
+                  </div>
+              </div>
+          </span>
+      END_HTML
+    end
+
+    html += <<-END_HTML
         </p>
         #{replies_html}
       </div>
@@ -375,7 +375,7 @@ def template_reddit_comments(root, locale)
         <a href="javascript:void(0)" onclick="toggle_parent(this)">[ - ]</a> 
         <b><a href="https://www.reddit.com/user/#{author}">#{author}</a></b> 
         #{translate(locale, "`x` points", number_with_separator(score))}
-        #{translate(locale, "`x` ago", recode_date(child.created_utc))}
+        #{translate(locale, "`x` ago", recode_date(child.created_utc, locale))}
       </p>
       <div>
       #{body_html}
