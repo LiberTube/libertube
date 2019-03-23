@@ -3,7 +3,7 @@
     <% case item when %>
     <% when SearchChannel %>
         <a style="width:100%;" href="/channel/<%= item.ucid %>">
-            <% if env.get?("user") && env.get("user").as(User).preferences.thin_mode %>
+            <% if env.get("preferences").as(Preferences).thin_mode %>
             <% else %>
             <center>
                 <img style="width:56.25%;" src="/ggpht<%= URI.parse(item.author_thumbnail).full_path %>"/>
@@ -16,15 +16,15 @@
         <h5><%= item.description_html %></h5>
     <% when SearchPlaylist %>
         <% if item.id.starts_with? "RD" %>
-        <% url = "/mix?list=#{item.id}&continuation=#{item.videos[0]?.try &.id}" %>
+        <% url = "/mix?list=#{item.id}&continuation=#{item.thumbnail_id}" %>
         <% else %>
         <% url = "/playlist?list=#{item.id}" %>
         <% end %>
         <a style="width:100%;" href="<%= url %>">
-            <% if env.get?("user") && env.get("user").as(User).preferences.thin_mode %>
+            <% if env.get("preferences").as(Preferences).thin_mode %>
             <% else %>
             <div class="thumbnail">
-                <img class="thumbnail" src="/vi/<%= item.videos[0]?.try &.id %>/mqdefault.jpg"/>
+                <img class="thumbnail" src="/vi/<%= item.thumbnail_id %>/mqdefault.jpg"/>
                 <p class="length"><%= number_with_separator(item.video_count) %> videos</p>
             </div>
             <% end %>
@@ -35,11 +35,13 @@
         </p>
     <% when MixVideo %>
         <a style="width:100%;" href="/watch?v=<%= item.id %>&list=<%= item.mixes[0] %>">
-            <% if env.get?("user") && env.get("user").as(User).preferences.thin_mode %>
+            <% if env.get("preferences").as(Preferences).thin_mode %>
             <% else %>
             <div class="thumbnail">
                 <img class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
+                <% if item.length_seconds != 0 %>
                 <p class="length"><%= recode_length_seconds(item.length_seconds) %></p>
+                <% end %>
             </div>
             <% end %>
             <p><%= item.title %></p>
@@ -49,13 +51,13 @@
         </p>
     <% when PlaylistVideo %>
         <a style="width:100%;" href="/watch?v=<%= item.id %>&list=<%= item.playlists[0] %>">
-            <% if env.get?("user") && env.get("user").as(User).preferences.thin_mode %>
+            <% if env.get("preferences").as(Preferences).thin_mode %>
             <% else %>
             <div class="thumbnail">
                 <img class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
                 <% if item.responds_to?(:live_now) && item.live_now %>
                 <p class="length"><i class="icon ion-ios-play-circle"></i> <%= translate(locale, "LIVE") %></p>
-                <% else %>
+                <% elsif item.length_seconds != 0 %>
                 <p class="length"><%= recode_length_seconds(item.length_seconds) %></p>
                 <% end %>
             </div>
@@ -65,32 +67,41 @@
         <p>
             <b><a style="width:100%;" href="/channel/<%= item.ucid %>"><%= item.author %></a></b>
         </p>
-        
-        <% if Time.now - item.published > 1.minute %>
-        <h5><%= translate(locale, "Shared `x` ago", recode_date(item.published, locale)) %></h5>
+
+        <% if item.responds_to?(:premiere_timestamp) && item.premiere_timestamp && item.premiere_timestamp.not_nil! > Time.now %>
+        <h5><%= translate(locale, "Premieres in `x`", recode_date((item.premiere_timestamp.as(Time) - Time.now).ago, locale)) %></h5>
+        <% elsif Time.now - item.published > 1.minute %>
+        <h5 class="pure-g">
+            <div class="pure-u-2-3"><%= translate(locale, "Shared `x` ago", recode_date(item.published, locale)) %></div>
+            <div class="pure-u-1-3" style="text-align: right">
+                <%= item.responds_to?(:views) ? translate(locale, "`x` views", number_to_short_text(item.views)) : "" %>
+            </div>
+        </h5>
         <% end %>
     <% else %>
-        <% if env.get?("user") && env.get("user").as(User).preferences.thin_mode %>
+        <% if env.get("preferences").as(Preferences).thin_mode %>
         <% else %>
         <a style="width:100%;" href="/watch?v=<%= item.id %>">
             <div class="thumbnail">
                 <img class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
                 <% if env.get? "show_watched" %>
-                <p class="watched">
-                    <a onclick="mark_watched(this)"
-                        data-id="<%= item.id %>"
-                        onmouseenter='this["href"]="javascript:void(0)"'
-                        href="/mark_watched?id=<%= item.id %>">
-                        <i onmouseenter='this.setAttribute("class", "icon ion-ios-eye-off")'
-                           onmouseleave='this.setAttribute("class", "icon ion-ios-eye")'
-                           class="icon ion-ios-eye">
-                        </i>
-                    </a>
-                </p>
+                <form onsubmit="return false;" action="/watch_ajax?action_mark_watched=1&id=<%= item.id %>&referer=<%= env.get("current_page") %>" method="post">
+                    <input type="hidden" name="csrf_token" value="<%= URI.escape(env.get?("csrf_token").try &.as(String) || "") %>">
+                    <p class="watched">
+                        <a onclick="mark_watched(this)" data-id="<%= item.id %>" href="#">
+                            <button type="submit" style="all:unset">
+                                <i onmouseenter='this.setAttribute("class", "icon ion-ios-eye-off")'
+                                onmouseleave='this.setAttribute("class", "icon ion-ios-eye")'
+                                class="icon ion-ios-eye">
+                                </i>
+                            </button>
+                        </a>
+                    </p>
+                </form>
                 <% end %>
                 <% if item.responds_to?(:live_now) && item.live_now %>
                 <p class="length"><i class="icon ion-ios-play-circle"></i> <%= translate(locale, "LIVE") %></p>
-                <% else %>
+                <% elsif item.length_seconds != 0 %>
                 <p class="length"><%= recode_length_seconds(item.length_seconds) %></p>
                 <% end %>
             </div>
@@ -100,9 +111,16 @@
         <p>
             <b><a style="width:100%;" href="/channel/<%= item.ucid %>"><%= item.author %></a></b>
         </p>
-        
-        <% if Time.now - item.published > 1.minute %>
-        <h5><%= translate(locale, "Shared `x` ago", recode_date(item.published, locale)) %></h5>
+
+        <% if item.responds_to?(:premiere_timestamp) && item.premiere_timestamp && item.premiere_timestamp.not_nil! > Time.now %>
+        <h5><%= translate(locale, "Premieres in `x`", recode_date((item.premiere_timestamp.as(Time) - Time.now).ago, locale)) %></h5>
+        <% elsif Time.now - item.published > 1.minute %>
+        <h5 class="pure-g">
+            <div class="pure-u-2-3"><%= translate(locale, "Shared `x` ago", recode_date(item.published, locale)) %></div>
+            <div class="pure-u-1-3" style="text-align: right">
+                <%= item.responds_to?(:views) ? translate(locale, "`x` views", number_to_short_text(item.views)) : "" %>
+            </div>
+        </h5>
         <% end %>
     <% end %>
     </div>

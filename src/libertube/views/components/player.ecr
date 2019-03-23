@@ -1,4 +1,4 @@
-<video style="width:100%" playsinline poster="<%= thumbnail %>" title="<%= HTML.escape(video.title) %>" 
+<video style="outline:none;width:100%;background-color:#000" playsinline poster="<%= thumbnail %>" title="<%= HTML.escape(video.title) %>"
     id="player" class="video-js"
     onmouseenter='this["data-title"]=this["title"];this["title"]=""'
     onmouseleave='this["title"]=this["data-title"];this["data-title"]=""'
@@ -7,32 +7,33 @@
     <% if params[:video_loop] %>loop<% end %>
     <% if params[:controls] %>controls<% end %>>
     <% if hlsvp %>
-        <source src="<%= hlsvp %>" type="application/x-mpegURL" label="livestream">
+        <source src="<%= hlsvp %>?local=true" type="application/x-mpegURL" label="livestream">
     <% else %>
         <% if params[:listen] %>
             <% audio_streams.each_with_index do |fmt, i| %>
-                <source src="/latest_version?id=<%= video.id %>&itag=<%= fmt["itag"] %>" type='<%= fmt["type"] %>' label="<%= fmt["bitrate"] %>k" selected="<%= i == 0 ? true : false %>">
+                <source src="/latest_version?id=<%= video.id %>&itag=<%= fmt["itag"] %><% if params[:local] %>&local=true<% end %>" type='<%= fmt["type"] %>' label="<%= fmt["bitrate"] %>k" selected="<%= i == 0 ? true : false %>">
             <% end %>
-        <% else %>
+          <% else %>
             <% if params[:quality] == "dash" %>
                 <source src="/api/manifest/dash/id/<%= video.id %>?local=true" type='application/dash+xml' label="dash">
             <% end %>
+
             <% fmt_stream.each_with_index do |fmt, i| %>
                 <% if params[:quality] %>
-                <source src="/latest_version?id=<%= video.id %>&itag=<%= fmt["itag"] %>" type='<%= fmt["type"] %>' label="<%= fmt["label"] %>" selected="<%= params[:quality] == fmt["label"].split(" - ")[0] %>">
+                    <source src="/latest_version?id=<%= video.id %>&itag=<%= fmt["itag"] %><% if params[:local] %>&local=true<% end %>" type='<%= fmt["type"] %>' label="<%= fmt["label"] %>" selected="<%= params[:quality] == fmt["label"].split(" - ")[0] %>">
                 <% else %>
-                <source src="/latest_version?id=<%= video.id %>&itag=<%= fmt["itag"] %>" type='<%= fmt["type"] %>' label="<%= fmt["label"] %>" selected="<%= i == 0 ? true : false %>">
+                    <source src="/latest_version?id=<%= video.id %>&itag=<%= fmt["itag"] %><% if params[:local] %>&local=true<% end %>" type='<%= fmt["type"] %>' label="<%= fmt["label"] %>" selected="<%= i == 0 ? true : false %>">
                 <% end %>
             <% end %>
-        <% end %>
+        <% end %> 
 
         <% preferred_captions.each_with_index do |caption, i| %>
-        <track kind="captions" src="/api/v1/captions/<%= video.id %>?label=<%= caption.name.simpleText %>&hl=<%= env.get("locale").as(String) %>"
+        <track kind="captions" src="/api/v1/captions/<%= video.id %>?label=<%= caption.name.simpleText %>&hl=<%= env.get("preferences").as(Preferences).locale %>"
             label="<%= caption.name.simpleText %>" <% if i == 0 %>default<% end %>>
         <% end %>
 
         <% captions.each do |caption| %>
-        <track kind="captions" src="/api/v1/captions/<%= video.id %>?label=<%= caption.name.simpleText %>&hl=<%= env.get("locale").as(String) %>"
+        <track kind="captions" src="/api/v1/captions/<%= video.id %>?label=<%= caption.name.simpleText %>&hl=<%= env.get("preferences").as(Preferences).locale %>"
             label="<%= caption.name.simpleText %>">
         <% end %>
     <% end %>
@@ -44,7 +45,7 @@ var options = {
   aspectRatio: "<%= aspect_ratio %>",
   <% end %>
   preload: "auto",
-  playbackRates: [0.5, 1, 1.5, 2],
+  playbackRates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
   controlBar: {
     children: [
       "playToggle",
@@ -63,9 +64,9 @@ var options = {
 };
 
 var shareOptions = {
-  socials: ["fb", "tw", "reddit", "mail"],
+  socials: ["fbFeed", "tw", "reddit", "email"],
 
-  url: "<%= host_url %>/<%= video.id %>?<%= host_params %>",
+  url: window.location.href,
   title: "<%= video.title.dump_unquoted %>",
   description: "<%= description %>",
   image: "<%= thumbnail %>",
@@ -78,10 +79,11 @@ var player = videojs("player", options, function() {
     volumeStep: 0.1,
     seekStep: 5,
     enableModifiersForNumbers: false,
+    enableHoverScroll: true,
     customKeys: {
+      // Toggle play with K Key
       play: {
         key: function(e) {
-          // Toggle play with K Key
           return e.which === 75;
         },
         handler: function(player, options, e) {
@@ -92,22 +94,44 @@ var player = videojs("player", options, function() {
           }
         }
       },
+      // Go backward 5 seconds
       backward: {
         key: function(e) {
-          // Go backward 5 seconds
           return e.which === 74;
         },
         handler: function(player, options, e) {
-          player.currentTime(player.currentTime() - 5);
+          player.currentTime(player.currentTime() - 10);
         }
       },
+      // Go forward 5 seconds
       forward: {
         key: function(e) {
-          // Go forward 5 seconds
           return e.which === 76;
         },
         handler: function(player, options, e) {
-          player.currentTime(player.currentTime() + 5);
+          player.currentTime(player.currentTime() + 10);
+        }
+      },
+      // Increase speed
+      increase_speed: {
+        key: function(e) {
+          return (e.which === 190 && e.shiftKey);
+        },
+        handler: function(player, _, e) {
+          size = options.playbackRates.length;
+          index = options.playbackRates.indexOf(player.playbackRate());
+          player.playbackRate(options.playbackRates[(index + 1) % size]);
+        }
+      },
+      // Decrease speed
+      decrease_speed: {
+        key: function(e) {
+          return (e.which === 188 && e.shiftKey);
+        },
+        handler: function(player, _, e) {
+          size = options.playbackRates.length;
+          index = options.playbackRates.indexOf(player.playbackRate());
+          player.playbackRate(options.playbackRates[(size + index - 1) % size]);
         }
       }
     }
@@ -129,15 +153,13 @@ player.on('error', function(event) {
       }
       player.currentTime(currentTime);
       player.playbackRate(playbackRate);
-      
+
       if (!paused) {
         player.play();
       }
     }, 5000), 5000);
   }
 });
-
-player.share(shareOptions);
 
 <% if params[:video_start] > 0 || params[:video_end] > 0 %>
 player.markers({
@@ -171,7 +193,7 @@ var bpb = player.getChild('bigPlayButton');
 
 if (bpb) {
   bpb.hide();
-  
+
   player.ready(function() {
     new Promise(function(resolve, reject) {
       setTimeout(() => resolve(1), 1);
@@ -188,4 +210,9 @@ if (bpb) {
   });
 }
 <% end %>
+
+player.httpSourceSelector();
+
+// Since videojs-share can sometimes be blocked, we try to load it last
+player.share(shareOptions);
 </script>

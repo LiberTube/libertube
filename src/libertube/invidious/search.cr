@@ -1,41 +1,43 @@
-class SearchVideo
-  add_mapping({
-    title:            String,
-    id:               String,
-    author:           String,
-    ucid:             String,
-    published:        Time,
-    views:            Int64,
-    description:      String,
-    description_html: String,
-    length_seconds:   Int32,
-    live_now:         Bool,
-    paid:             Bool,
-    premium:          Bool,
+struct SearchVideo
+  db_mapping({
+    title:              String,
+    id:                 String,
+    author:             String,
+    ucid:               String,
+    published:          Time,
+    views:              Int64,
+    description:        String,
+    description_html:   String,
+    length_seconds:     Int32,
+    live_now:           Bool,
+    paid:               Bool,
+    premium:            Bool,
+    premiere_timestamp: Time?,
   })
 end
 
-class SearchPlaylistVideo
-  add_mapping({
+struct SearchPlaylistVideo
+  db_mapping({
     title:          String,
     id:             String,
     length_seconds: Int32,
   })
 end
 
-class SearchPlaylist
-  add_mapping({
-    title:       String,
-    id:          String,
-    author:      String,
-    ucid:        String,
-    video_count: Int32,
-    videos:      Array(SearchPlaylistVideo),
+struct SearchPlaylist
+  db_mapping({
+    title:        String,
+    id:           String,
+    author:       String,
+    ucid:         String,
+    video_count:  Int32,
+    videos:       Array(SearchPlaylistVideo),
+    thumbnail_id: String?,
   })
 end
 
-class SearchChannel
-  add_mapping({
+struct SearchChannel
+  db_mapping({
     author:           String,
     ucid:             String,
     author_thumbnail: String,
@@ -51,12 +53,18 @@ alias SearchItem = SearchVideo | SearchChannel | SearchPlaylist
 def channel_search(query, page, channel)
   client = make_client(YT_URL)
 
-  response = client.get("/user/#{channel}?disable_polymer=1&hl=en&gl=US")
+  response = client.get("/channel/#{channel}?disable_polymer=1&hl=en&gl=US")
   document = XML.parse_html(response.body)
   canonical = document.xpath_node(%q(//link[@rel="canonical"]))
 
   if !canonical
-    response = client.get("/channel/#{channel}?disable_polymer=1&hl=en&gl=US")
+    response = client.get("/c/#{channel}?disable_polymer=1&hl=en&gl=US")
+    document = XML.parse_html(response.body)
+    canonical = document.xpath_node(%q(//link[@rel="canonical"]))
+  end
+
+  if !canonical
+    response = client.get("/user/#{channel}?disable_polymer=1&hl=en&gl=US")
     document = XML.parse_html(response.body)
     canonical = document.xpath_node(%q(//link[@rel="canonical"]))
   end

@@ -1,3 +1,7 @@
+.deleted {
+  background-color: rgb(255, 0, 0, 0.5);
+}
+
 .channel-owner {
   background-color: #008bec;
   color: #fff;
@@ -54,6 +58,7 @@ div {
 }
 
 .loading {
+  display: inline-block;
   animation: spin 2s linear infinite;
 }
 
@@ -76,11 +81,15 @@ a.pure-button-primary:hover {
 }
 
 div.thumbnail {
+  padding: 28.125%;
   position: relative;
+  box-sizing: border-box;
 }
 
 img.thumbnail {
+  position: absolute;
   width: 100%;
+  height: 100%;
   left: 0;
   top: 0;
 }
@@ -153,6 +162,15 @@ img.thumbnail {
   -webkit-appearance: none;
 }
 
+/* https://stackoverflow.com/a/55170420 */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  height: 14px;
+  width: 14px;
+  background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAAn0lEQVR42u3UMQrDMBBEUZ9WfQqDmm22EaTyjRMHAlM5K+Y7lb0wnUZPIKHlnutOa+25Z4D++MRBX98MD1V/trSppLKHqj9TTBWKcoUqffbUcbBBEhTjBOV4ja4l4OIAZThEOV6jHO8ARXD+gPPvKMABinGOrnu6gTNUawrcQKNCAQ7QeTxORzle3+sDfjJpPCqhJh7GixZq4rHcc9l5A9qZ+WeBhgEuAAAAAElFTkSuQmCC);
+  background-size: 14px;
+}
+
 .navbar > .searchbar .pure-form fieldset {
   padding: 0;
 }
@@ -175,6 +193,16 @@ img.thumbnail {
 
 .user-field div:not(:last-child) {
   margin-right: 1em;
+}
+
+@media only screen and (max-aspect-ratio: 16/9) {
+  .player-dimensions.vjs-fluid {
+    padding-top: 46.86% !important;
+  }
+
+  #player-container {
+    padding-bottom: 46.86% !important;
+  }
 }
 
 @media screen and (max-width: 767px) {
@@ -203,7 +231,7 @@ img.thumbnail {
   }
 }
 
-/* 
+/*
  * Footer
  */
 
@@ -235,6 +263,46 @@ img.thumbnail {
   .vjs-menu-button-popup .vjs-menu .vjs-menu-content {
     overflow: -webkit-paged-x;
   }
+}
+
+.vjs-play-control,
+.vjs-volume-panel,
+.vjs-current-time,
+.vjs-time-control,
+.vjs-duration,
+.vjs-progress-control,
+.vjs-remaining-time {
+  order: 1;
+}
+
+.vjs-captions-button {
+  order: 2;
+}
+
+.vjs-quality-selector,
+.video-js .vjs-http-source-selector {
+  order: 3;
+}
+
+.vjs-playback-rate {
+  order: 4;
+}
+
+.vjs-share-control {
+  order: 5;
+}
+
+.vjs-fullscreen-control {
+  order: 6;
+}
+
+.vjs-control-bar {
+  display: flex;
+  flex-direction: row;
+}
+
+.video-js .vjs-icon-cog {
+  font-size: 18px;
 }
 
 .video-js .vjs-control-bar,
@@ -304,38 +372,21 @@ img.thumbnail {
   object-fit: cover;
 }
 
-#player {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
+.player-dimensions.vjs-fluid {
+  padding-top: 82vh;
 }
 
-.player-dimensions.vjs-fluid {
-  padding-top: 46.86%;
+video.video-js {
+  position: absolute;
+  height: 100%;
 }
 
 #player-container {
   position: relative;
-  padding-bottom: 46.86%;
-  margin-left: 1em;
-  margin-right: 1em;
+  padding-bottom: 82vh;
   height: 0;
 }
 
-#progress-container {
-  width: 100%;
-  border-radius: 2px;
-  background-color: #a0a0a0;
-  color: rgba(35, 35, 35, 1);
-}
-
-#download-progress {
-  width: 0%;
-  border-radius: 2px;
-  height: 10px;
-  background-color: rgba(0, 182, 240, 1);
-  color: #fff;
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
+.pure-control-group label {
+  word-wrap: normal;
 }

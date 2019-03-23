@@ -18,13 +18,18 @@ def elapsed_text(elapsed)
   "#{(millis * 1000).round(2)}µs"
 end
 
-def make_client(url, proxies = {} of String => Array({ip: String, port: Int32}), region = nil)
-  context = OpenSSL::SSL::Context::Client.new
-  context.add_options(
-    OpenSSL::SSL::Options::ALL |
-    OpenSSL::SSL::Options::NO_SSL_V2 |
-    OpenSSL::SSL::Options::NO_SSL_V3
-  )
+def make_client(url : URI, proxies = {} of String => Array({ip: String, port: Int32}), region = nil)
+  context = nil
+
+  if url.scheme == "https"
+    context = OpenSSL::SSL::Context::Client.new
+    context.add_options(
+      OpenSSL::SSL::Options::ALL |
+      OpenSSL::SSL::Options::NO_SSL_V2 |
+      OpenSSL::SSL::Options::NO_SSL_V3
+    )
+  end
+
   client = HTTPClient.new(url, context)
   client.read_timeout = 10.seconds
   client.connect_timeout = 10.seconds
@@ -162,6 +167,23 @@ def number_with_separator(number)
   number.to_s.reverse.gsub(/(\d{3})(?=\d)/, "\\1,").reverse
 end
 
+def short_text_to_number(short_text)
+  case short_text
+  when .ends_with? "M"
+    number = short_text.rstrip(" mM").to_f
+    number *= 1000000
+  when .ends_with? "K"
+    number = short_text.rstrip(" kK").to_f
+    number *= 1000
+  else
+    number = short_text.rstrip(" ")
+  end
+
+  number = number.to_i
+
+  return number
+end
+
 def number_to_short_text(number)
   seperated = number_with_separator(number).gsub(",", ".").split("")
   text = seperated.first(2).join
@@ -172,7 +194,9 @@ def number_to_short_text(number)
 
   text = text.rchop(".0")
 
-  if number / 1000000 != 0
+  if number / 1_000_000_000 != 0
+    text += "B"
+  elsif number / 1_000_000 != 0
     text += "M"
   elsif number / 1000 != 0
     text += "K"
@@ -193,14 +217,30 @@ def arg_array(array, start = 1)
   return args
 end
 
-def make_host_url(ssl, host)
+def make_host_url(config, kemal_config)
+  ssl = config.https_only || kemal_config.ssl
+  port = config.external_port || kemal_config.port
+
   if ssl
     scheme = "https://"
   else
     scheme = "http://"
   end
 
-  return "#{scheme}#{host}"
+  # Add if non-standard port
+  if port != 80 && port != 443
+    port = ":#{kemal_config.port}"
+  else
+    port = ""
+  end
+
+  if !config.domain
+    return ""
+  end
+
+  host = config.domain.not_nil!.lchop(".")
+
+  return "#{scheme}#{host}#{port}"
 end
 
 def get_referer(env, fallback = "/")

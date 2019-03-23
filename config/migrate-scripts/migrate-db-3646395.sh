@@ -1,1 +1,5 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/9faf6d3272f6aeb400d9e40d6b12bc59
+#!/bin/sh
+
+psql invidious < config/sql/session_ids.sql
+psql invidious kemal -c "INSERT INTO session_ids (SELECT unnest(id), email, CURRENT_TIMESTAMP FROM users) ON CONFLICT (id) DO NOTHING"
+psql invidious kemal -c "ALTER TABLE users DROP COLUMN id"

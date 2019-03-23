@@ -1,24 +1,23 @@
 require "crypto/bcrypt/password"
 
-class User
+struct User
   module PreferencesConverter
     def self.from_rs(rs)
       begin
         Preferences.from_json(rs.read(String))
       rescue ex
-        DEFAULT_USER_PREFERENCES
+        Preferences.from_json("{}")
       end
     end
   end
 
-  add_mapping({
+  db_mapping({
     updated:       Time,
     notifications: Array(String),
     subscriptions: Array(String),
     email:         String,
     preferences:   {
       type:      Preferences,
-      default:   DEFAULT_USER_PREFERENCES,
       converter: PreferencesConverter,
     },
     password: String?,
@@ -27,29 +26,7 @@ class User
   })
 end
 
-DEFAULT_USER_PREFERENCES = Preferences.from_json({
-  "video_loop"         => false,
-  "autoplay"           => false,
-  "continue"           => false,
-  "listen"             => false,
-  "speed"              => 1.0,
-  "quality"            => "hd720",
-  "volume"             => 100,
-  "comments"           => ["youtube", ""],
-  "captions"           => ["", "", ""],
-  "related_videos"     => true,
-  "redirect_feed"      => false,
-  "locale"             => "en-US",
-  "dark_mode"          => false,
-  "thin_mode"          => false,
-  "max_results"        => 40,
-  "sort"               => "published",
-  "latest_only"        => false,
-  "unseen_only"        => false,
-  "notifications_only" => false,
-}.to_json)
-
-class Preferences
+struct Preferences
   module StringToArray
     def self.to_json(value : Array(String), json : JSON::Builder)
       json.array do
@@ -71,56 +48,63 @@ class Preferences
 
       result
     end
+
+    def self.to_yaml(value : Array(String), yaml : YAML::Nodes::Builder)
+      yaml.sequence do
+        value.each do |element|
+          yaml.scalar element
+        end
+      end
+    end
+
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Array(String)
+      begin
+        unless node.is_a?(YAML::Nodes::Sequence)
+          node.raise "Expected sequence, not #{node.class}"
+        end
+
+        result = [] of String
+        node.nodes.each do |item|
+          unless item.is_a?(YAML::Nodes::Scalar)
+            node.raise "Expected scalar, not #{item.class}"
+          end
+
+          result << item.value
+        end
+      rescue ex
+        if node.is_a?(YAML::Nodes::Scalar)
+          result = [node.value, ""]
+        else
+          result = ["", ""]
+        end
+      end
+
+      result
+    end
   end
 
-  JSON.mapping({
-    video_loop: Bool,
-    autoplay:   Bool,
-    continue:   {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.continue,
-    },
-    listen: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.listen,
-    },
-    speed:    Float32,
-    quality:  String,
-    volume:   Int32,
-    comments: {
-      type:      Array(String),
-      default:   DEFAULT_USER_PREFERENCES.comments,
-      converter: StringToArray,
-    },
-    captions: {
-      type:    Array(String),
-      default: DEFAULT_USER_PREFERENCES.captions,
-    },
-    redirect_feed: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.redirect_feed,
-    },
-    related_videos: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.related_videos,
-    },
-    dark_mode: Bool,
-    thin_mode: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.thin_mode,
-    },
-    max_results:        Int32,
-    sort:               String,
-    latest_only:        Bool,
-    unseen_only:        Bool,
-    notifications_only: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.notifications_only,
-    },
-    locale: {
-      type:    String,
-      default: DEFAULT_USER_PREFERENCES.locale,
-    },
+  json_mapping({
+    autoplay:           {type: Bool, default: CONFIG.default_user_preferences.autoplay},
+    captions:           {type: Array(String), default: CONFIG.default_user_preferences.captions, converter: StringToArray},
+    comments:           {type: Array(String), default: CONFIG.default_user_preferences.comments, converter: StringToArray},
+    continue:           {type: Bool, default: CONFIG.default_user_preferences.continue},
+    continue_autoplay:  {type: Bool, default: CONFIG.default_user_preferences.continue_autoplay},
+    dark_mode:          {type: Bool, default: CONFIG.default_user_preferences.dark_mode},
+    latest_only:        {type: Bool, default: CONFIG.default_user_preferences.latest_only},
+    listen:             {type: Bool, default: CONFIG.default_user_preferences.listen},
+    local:              {type: Bool, default: CONFIG.default_user_preferences.local},
+    locale:             {type: String, default: CONFIG.default_user_preferences.locale},
+    max_results:        {type: Int32, default: CONFIG.default_user_preferences.max_results},
+    notifications_only: {type: Bool, default: CONFIG.default_user_preferences.notifications_only},
+    quality:            {type: String, default: CONFIG.default_user_preferences.quality},
+    redirect_feed:      {type: Bool, default: CONFIG.default_user_preferences.redirect_feed},
+    related_videos:     {type: Bool, default: CONFIG.default_user_preferences.related_videos},
+    sort:               {type: String, default: CONFIG.default_user_preferences.sort},
+    speed:              {type: Float32, default: CONFIG.default_user_preferences.speed},
+    thin_mode:          {type: Bool, default: CONFIG.default_user_preferences.thin_mode},
+    unseen_only:        {type: Bool, default: CONFIG.default_user_preferences.unseen_only},
+    video_loop:         {type: Bool, default: CONFIG.default_user_preferences.video_loop},
+    volume:             {type: Int32, default: CONFIG.default_user_preferences.volume},
   })
 end
 
@@ -142,8 +126,8 @@ def get_user(sid, headers, db, refresh = true)
       ON CONFLICT (id) DO NOTHING", sid, user.email, Time.now)
 
       begin
-        view_name = "subscriptions_#{sha256(user.email)[0..7]}"
-        PG_DB.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
+        view_name = "subscriptions_#{sha256(user.email)}"
+        db.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
         SELECT * FROM channel_videos WHERE \
         ucid = ANY ((SELECT subscriptions FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')::text[]) \
         ORDER BY published DESC;")
@@ -164,8 +148,8 @@ def get_user(sid, headers, db, refresh = true)
     ON CONFLICT (id) DO NOTHING", sid, user.email, Time.now)
 
     begin
-      view_name = "subscriptions_#{sha256(user.email)[0..7]}"
-      PG_DB.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
+      view_name = "subscriptions_#{sha256(user.email)}"
+      db.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
       SELECT * FROM channel_videos WHERE \
       ucid = ANY ((SELECT subscriptions FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')::text[]) \
       ORDER BY published DESC;")
@@ -201,7 +185,7 @@ def fetch_user(sid, headers, db)
 
   token = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
 
-  user = User.new(Time.now, [] of String, channels, email, DEFAULT_USER_PREFERENCES, nil, token, [] of String)
+  user = User.new(Time.now, [] of String, channels, email, CONFIG.default_user_preferences, nil, token, [] of String)
   return user, sid
 end
 
@@ -209,68 +193,9 @@ def create_user(sid, email, password)
   password = Crypto::Bcrypt::Password.create(password, cost: 10)
   token = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
 
-  user = User.new(Time.now, [] of String, [] of String, email, DEFAULT_USER_PREFERENCES, password.to_s, token, [] of String)
+  user = User.new(Time.now, [] of String, [] of String, email, CONFIG.default_user_preferences, password.to_s, token, [] of String)
 
   return user, sid
-end
-
-def create_response(user_id, operation, key, db, expire = 6.hours)
-  expire = Time.now + expire
-  nonce = Random::Secure.hex(16)
-  db.exec("INSERT INTO nonces VALUES ($1, $2) ON CONFLICT DO NOTHING", nonce, expire)
-
-  challenge = "#{expire.to_unix}-#{nonce}-#{user_id}-#{operation}"
-  token = OpenSSL::HMAC.digest(:sha256, key, challenge)
-
-  challenge = Base64.urlsafe_encode(challenge)
-  token = Base64.urlsafe_encode(token)
-
-  return challenge, token
-end
-
-def validate_response(challenge, token, user_id, operation, key, db, locale)
-  if !challenge
-    raise translate(locale, "Hidden field \"challenge\" is a required field")
-  end
-
-  if !token
-    raise translate(locale, "Hidden field \"token\" is a required field")
-  end
-
-  challenge = Base64.decode_string(challenge)
-  if challenge.split("-").size == 4
-    expire, nonce, challenge_user_id, challenge_operation = challenge.split("-")
-
-    expire = expire.to_i?
-    expire ||= 0
-  else
-    raise translate(locale, "Invalid challenge")
-  end
-
-  challenge = OpenSSL::HMAC.digest(:sha256, HMAC_KEY, challenge)
-  challenge = Base64.urlsafe_encode(challenge)
-
-  if db.query_one?("SELECT EXISTS (SELECT true FROM nonces WHERE nonce = $1)", nonce, as: Bool)
-    db.exec("DELETE FROM nonces * WHERE nonce = $1", nonce)
-  else
-    raise translate(locale, "Invalid token")
-  end
-
-  if challenge != token
-    raise translate(locale, "Invalid token")
-  end
-
-  if challenge_operation != operation
-    raise translate(locale, "Invalid token")
-  end
-
-  if challenge_user_id != user_id
-    raise translate(locale, "Invalid user")
-  end
-
-  if expire < Time.now.to_unix
-    raise translate(locale, "Token is expired, please try again")
-  end
 end
 
 def generate_captcha(key, db)
@@ -291,7 +216,7 @@ def generate_captcha(key, db)
   clock_svg = <<-END_SVG
   <svg viewBox="0 0 100 100" width="200px">
   <circle cx="50" cy="50" r="45" fill="#eee" stroke="black" stroke-width="2"></circle>
-  
+
   <text x="69"     y="20.091" text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 1</text>
   <text x="82.909" y="34"     text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 2</text>
   <text x="88"     y="53"     text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 3</text>
@@ -323,7 +248,22 @@ def generate_captcha(key, db)
   answer = "#{hour}:#{minute.to_s.rjust(2, '0')}:#{second.to_s.rjust(2, '0')}"
   answer = OpenSSL::HMAC.hexdigest(:sha256, key, answer)
 
-  challenge, token = create_response(answer, "sign_in", key, db)
+  return {
+    question: image,
+    tokens:   {generate_response(answer, {":login"}, key, db, use_nonce: true)},
+  }
+end
 
-  return {image: image, challenge: challenge, token: token}
+def generate_text_captcha(key, db)
+  response = make_client(TEXTCAPTCHA_URL).get("/omarroth@protonmail.com.json").body
+  response = JSON.parse(response)
+
+  tokens = response["a"].as_a.map do |answer|
+    generate_response(answer.as_s, {":login"}, key, db, use_nonce: true)
+  end
+
+  return {
+    question: response["q"].as_s,
+    tokens:   tokens,
+  }
 end

@@ -1,9 +1,102 @@
-class Config
+require "./macros"
+
+struct Nonce
+  db_mapping({
+    nonce:  String,
+    expire: Time,
+  })
+end
+
+struct SessionId
+  db_mapping({
+    id:     String,
+    email:  String,
+    issued: String,
+  })
+end
+
+struct Annotation
+  db_mapping({
+    id:          String,
+    annotations: String,
+  })
+end
+
+struct ConfigPreferences
+  module StringToArray
+    def self.to_yaml(value : Array(String), yaml : YAML::Nodes::Builder)
+      yaml.sequence do
+        value.each do |element|
+          yaml.scalar element
+        end
+      end
+    end
+
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Array(String)
+      begin
+        unless node.is_a?(YAML::Nodes::Sequence)
+          node.raise "Expected sequence, not #{node.class}"
+        end
+
+        result = [] of String
+        node.nodes.each do |item|
+          unless item.is_a?(YAML::Nodes::Scalar)
+            node.raise "Expected scalar, not #{item.class}"
+          end
+
+          result << item.value
+        end
+      rescue ex
+        if node.is_a?(YAML::Nodes::Scalar)
+          result = [node.value, ""]
+        else
+          result = ["", ""]
+        end
+      end
+
+      result
+    end
+  end
+
+  yaml_mapping({
+    autoplay:           {type: Bool, default: false},
+    captions:           {type: Array(String), default: ["", "", ""], converter: StringToArray},
+    comments:           {type: Array(String), default: ["youtube", ""], converter: StringToArray},
+    continue:           {type: Bool, default: false},
+    continue_autoplay:  {type: Bool, default: true},
+    dark_mode:          {type: Bool, default: false},
+    latest_only:        {type: Bool, default: false},
+    listen:             {type: Bool, default: false},
+    local:              {type: Bool, default: false},
+    locale:             {type: String, default: "en-US"},
+    max_results:        {type: Int32, default: 40},
+    notifications_only: {type: Bool, default: false},
+    quality:            {type: String, default: "hd720"},
+    redirect_feed:      {type: Bool, default: false},
+    related_videos:     {type: Bool, default: true},
+    sort:               {type: String, default: "published"},
+    speed:              {type: Float32, default: 1.0_f32},
+    thin_mode:          {type: Bool, default: false},
+    unseen_only:        {type: Bool, default: false},
+    video_loop:         {type: Bool, default: false},
+    volume:             {type: Int32, default: 100},
+  })
+end
+
+struct Config
+  module ConfigPreferencesConverter
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Preferences
+      Preferences.new(*ConfigPreferences.new(ctx, node).to_tuple)
+    end
+
+    def self.to_yaml(value : Preferences, yaml : YAML::Nodes::Builder)
+      value.to_yaml(yaml)
+    end
+  end
+
   YAML.mapping({
-    crawl_threads:   Int32,      # Number of threads to use for finding new videos from YouTube (used to populate "top" page)
     channel_threads: Int32,      # Number of threads to use for crawling videos from channels (for updating subscriptions)
     feed_threads:    Int32,      # Number of threads to use for updating feeds
-    video_threads:   Int32,      # Number of threads to use for updating videos in cache (mostly non-functional)
     db:              NamedTuple( # Database configuration
 user: String,
       password: String,
@@ -11,62 +104,31 @@ user: String,
       port: Int32,
       dbname: String,
     ),
-    dl_api_key:   String?, # DetectLanguage API Key (used to filter non-English results from "top" page), mostly non-functional
-    https_only:   Bool?,   # Used to tell Invidious it is behind a proxy, so links to resources should be https://
-    hmac_key:     String?, # HMAC signing key for CSRF tokens
-    full_refresh: Bool,    # Used for crawling channels: threads should check all videos uploaded by a channel
-    domain:       String,  # Domain to be used for links to resources on the site where an absolute URL is required
+    full_refresh:             Bool,                                 # Used for crawling channels: threads should check all videos uploaded by a channel
+    https_only:               Bool?,                                # Used to tell Invidious it is behind a proxy, so links to resources should be https://
+    hmac_key:                 String?,                              # HMAC signing key for CSRF tokens and verifying pubsub subscriptions
+    domain:                   String?,                              # Domain to be used for links to resources on the site where an absolute URL is required
+    use_pubsub_feeds:         {type: Bool | Int32, default: false}, # Subscribe to channels using PubSubHubbub (requires domain, hmac_key)
+    default_home:             {type: String, default: "Top"},
+    feed_menu:                {type: Array(String), default: ["Popular", "Top", "Trending", "Subscriptions"]},
+    top_enabled:              {type: Bool, default: true},
+    captcha_enabled:          {type: Bool, default: true},
+    login_enabled:            {type: Bool, default: true},
+    registration_enabled:     {type: Bool, default: true},
+    statistics_enabled:       {type: Bool, default: false},
+    admins:                   {type: Array(String), default: [] of String},
+    external_port:            {type: Int32?, default: nil},
+    default_user_preferences: {type: Preferences,
+                               default: Preferences.new(*ConfigPreferences.from_yaml("").to_tuple),
+                               converter: ConfigPreferencesConverter,
+    },
+    dmca_content:      {type: Array(String), default: [] of String}, # For compliance with DMCA, disables download widget using list of video IDs
+    check_tables:      {type: Bool, default: false},                 # Check table integrity, automatically try to add any missing columns, create tables, etc.
+    cache_annotations: {type: Bool, default: false},                 # Cache annotations requested from IA, will not cache empty annotations or annotations that only contain cards
   })
 end
 
-class FilteredCompressHandler < Kemal::Handler
-  exclude ["/videoplayback", "/videoplayback/*", "/vi/*", "/api/*", "/ggpht/*"]
-
-  def call(env)
-    return call_next env if exclude_match? env
-
-    {% if flag?(:without_zlib) %}
-      call_next env
-    {% else %}
-      request_headers = env.request.headers
-
-      if request_headers.includes_word?("Accept-Encoding", "gzip")
-        env.response.headers["Content-Encoding"] = "gzip"
-        env.response.output = Gzip::Writer.new(env.response.output, sync_close: true)
-      elsif request_headers.includes_word?("Accept-Encoding", "deflate")
-        env.response.headers["Content-Encoding"] = "deflate"
-        env.response.output = Flate::Writer.new(env.response.output, sync_close: true)
-      end
-
-      call_next env
-    {% end %}
-  end
-end
-
-class APIHandler < Kemal::Handler
-  only ["/api/v1/*"]
-
-  def call(env)
-    return call_next env unless only_match? env
-
-    env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-    call_next env
-  end
-end
-
-class DenyFrame < Kemal::Handler
-  exclude ["/embed/*"]
-
-  def call(env)
-    return call_next env if exclude_match? env
-
-    env.response.headers["X-Frame-Options"] = "sameorigin"
-    call_next env
-  end
-end
-
-def rank_videos(db, n, filter, url)
+def rank_videos(db, n)
   top = [] of {Float64, String}
 
   db.query("SELECT id, wilson_score, published FROM videos WHERE views > 5000 ORDER BY published DESC LIMIT 1000") do |rs|
@@ -87,41 +149,7 @@ def rank_videos(db, n, filter, url)
   top.reverse!
   top = top.map { |a, b| b }
 
-  if filter
-    language_list = [] of String
-    top.each do |id|
-      if language_list.size == n
-        break
-      else
-        client = make_client(url)
-        begin
-          video = get_video(id, db)
-        rescue ex
-          next
-        end
-
-        if video.language
-          language = video.language
-        else
-          description = XML.parse(video.description)
-          content = [video.title, description.content].join(" ")
-          content = content[0, 10000]
-
-          results = DetectLanguage.detect(content)
-          language = results[0].language
-
-          db.exec("UPDATE videos SET language = $1 WHERE id = $2", language, id)
-        end
-
-        if language == "en"
-          language_list << id
-        end
-      end
-    end
-    return language_list
-  else
-    return top[0..n - 1]
-  end
+  return top[0..n - 1]
 end
 
 def login_req(login_form, f_req)
@@ -160,8 +188,8 @@ def html_to_content(description_html)
   return description_html, description
 end
 
-def extract_videos(nodeset, ucid = nil)
-  videos = extract_items(nodeset, ucid)
+def extract_videos(nodeset, ucid = nil, author_name = nil)
+  videos = extract_items(nodeset, ucid, author_name)
   videos.select! { |item| !item.is_a?(SearchChannel | SearchPlaylist) }
   videos.map { |video| video.as(SearchVideo) }
 end
@@ -222,7 +250,7 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
           video_count = video_count.rchop("+")
         end
 
-        video_count = video_count.to_i?
+        video_count = video_count.gsub(/\D/, "").to_i?
       end
       video_count ||= 0
 
@@ -249,13 +277,22 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         )
       end
 
+      playlist_thumbnail = node.xpath_node(%q(.//div/span/img)).try &.["data-thumb"]?
+      playlist_thumbnail ||= node.xpath_node(%q(.//div/span/img)).try &.["src"]
+      if !playlist_thumbnail || playlist_thumbnail.empty?
+        thumbnail_id = videos[0]?.try &.id
+      else
+        thumbnail_id = playlist_thumbnail.match(/\/vi\/(?<video_id>[a-zA-Z0-9_-]{11})\/\w+\.jpg/).try &.["video_id"]
+      end
+
       items << SearchPlaylist.new(
         title,
         plid,
         author,
         author_id,
         video_count,
-        videos
+        videos,
+        thumbnail_id
       )
     when .includes? "yt-lockup-channel"
       author = title.strip
@@ -265,12 +302,18 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
 
       author_thumbnail = node.xpath_node(%q(.//div/span/img)).try &.["data-thumb"]?
       author_thumbnail ||= node.xpath_node(%q(.//div/span/img)).try &.["src"]
+      if author_thumbnail
+        author_thumbnail = URI.parse(author_thumbnail)
+        author_thumbnail.scheme = "https"
+        author_thumbnail = author_thumbnail.to_s
+      end
+
       author_thumbnail ||= ""
 
-      subscriber_count = node.xpath_node(%q(.//span[contains(@class, "yt-subscriber-count")])).try &.["title"].delete(",").to_i?
+      subscriber_count = node.xpath_node(%q(.//span[contains(@class, "yt-subscriber-count")])).try &.["title"].gsub(/\D/, "").to_i?
       subscriber_count ||= 0
 
-      video_count = node.xpath_node(%q(.//ul[@class="yt-lockup-meta-info"]/li)).try &.content.split(" ")[0].delete(",").to_i?
+      video_count = node.xpath_node(%q(.//ul[@class="yt-lockup-meta-info"]/li)).try &.content.split(" ")[0].gsub(/\D/, "").to_i?
       video_count ||= 0
 
       items << SearchChannel.new(
@@ -333,6 +376,11 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         paid = true
       end
 
+      premiere_timestamp = node.xpath_node(%q(.//ul[@class="yt-lockup-meta-info"]/li/span[@class="localized-date"])).try &.["data-timestamp"]?.try &.to_i64
+      if premiere_timestamp
+        premiere_timestamp = Time.unix(premiere_timestamp)
+      end
+
       items << SearchVideo.new(
         title: title,
         id: id,
@@ -345,7 +393,8 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         length_seconds: length_seconds,
         live_now: live_now,
         paid: paid,
-        premium: premium
+        premium: premium,
+        premiere_timestamp: premiere_timestamp
       )
     end
   end
@@ -416,13 +465,28 @@ def extract_shelf_items(nodeset, ucid = nil, author_name = nil)
         playlist_title ||= ""
         plid ||= ""
 
+        playlist_thumbnail = child_node.xpath_node(%q(.//span/img)).try &.["data-thumb"]?
+        playlist_thumbnail ||= child_node.xpath_node(%q(.//span/img)).try &.["src"]
+        if !playlist_thumbnail || playlist_thumbnail.empty?
+          thumbnail_id = videos[0]?.try &.id
+        else
+          thumbnail_id = playlist_thumbnail.match(/\/vi\/(?<video_id>[a-zA-Z0-9_-]{11})\/\w+\.jpg/).try &.["video_id"]
+        end
+
+        video_count_label = child_node.xpath_node(%q(.//span[@class="formatted-video-count-label"]))
+        if video_count_label
+          video_count = video_count_label.content.gsub(/\D/, "").to_i?
+        end
+        video_count ||= 50
+
         items << SearchPlaylist.new(
           playlist_title,
           plid,
           author_name,
           ucid,
-          50,
-          Array(SearchPlaylistVideo).new
+          video_count,
+          Array(SearchPlaylistVideo).new,
+          thumbnail_id
         )
       end
     end
@@ -436,10 +500,128 @@ def extract_shelf_items(nodeset, ucid = nil, author_name = nil)
         author_name,
         ucid,
         videos.size,
-        videos
+        videos,
+        videos[0].try &.id
       )
     end
   end
 
   return items
+end
+
+def analyze_table(db, logger, table_name, struct_type = nil)
+  # Create table if it doesn't exist
+  begin
+    db.exec("SELECT * FROM #{table_name} LIMIT 0")
+  rescue ex
+    logger.write("CREATE TABLE #{table_name}\n")
+
+    db.using_connection do |conn|
+      conn.as(PG::Connection).exec_all(File.read("config/sql/#{table_name}.sql"))
+    end
+  end
+
+  if !struct_type
+    return
+  end
+
+  struct_array = struct_type.to_type_tuple
+  column_array = get_column_array(db, table_name)
+  column_types = File.read("config/sql/#{table_name}.sql").match(/CREATE TABLE public\.#{table_name}\n\((?<types>[\d\D]*?)\);/)
+    .try &.["types"].split(",").map { |line| line.strip }
+
+  if !column_types
+    return
+  end
+
+  struct_array.each_with_index do |name, i|
+    if name != column_array[i]?
+      if !column_array[i]?
+        new_column = column_types.select { |line| line.starts_with? name }[0]
+        logger.write("ALTER TABLE #{table_name} ADD COLUMN #{new_column}\n")
+        db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+        next
+      end
+
+      # Column doesn't exist
+      if !column_array.includes? name
+        new_column = column_types.select { |line| line.starts_with? name }[0]
+        db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+      end
+
+      # Column exists but in the wrong position, rotate
+      if struct_array.includes? column_array[i]
+        until name == column_array[i]
+          new_column = column_types.select { |line| line.starts_with? column_array[i] }[0]?.try &.gsub("#{column_array[i]}", "#{column_array[i]}_new")
+
+          # There's a column we didn't expect
+          if !new_column
+            logger.write("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]}\n")
+            db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+
+            column_array = get_column_array(db, table_name)
+            next
+          end
+
+          logger.write("ALTER TABLE #{table_name} ADD COLUMN #{new_column}\n")
+          db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+          logger.write("UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}\n")
+          db.exec("UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}")
+          logger.write("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE\n")
+          db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+          logger.write("ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}\n")
+          db.exec("ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}")
+
+          column_array = get_column_array(db, table_name)
+        end
+      else
+        logger.write("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE\n")
+        db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+      end
+    end
+  end
+end
+
+class PG::ResultSet
+  def field(index = @column_index)
+    @fields.not_nil![index]
+  end
+end
+
+def get_column_array(db, table_name)
+  column_array = [] of String
+  db.query("SELECT * FROM #{table_name} LIMIT 0") do |rs|
+    rs.column_count.times do |i|
+      column = rs.as(PG::ResultSet).field(i)
+      column_array << column.name
+    end
+  end
+
+  return column_array
+end
+
+def cache_annotation(db, id, annotations)
+  if !CONFIG.cache_annotations
+    return
+  end
+
+  body = XML.parse(annotations)
+  nodeset = body.xpath_nodes(%q(/document/annotations/annotation))
+
+  if nodeset == 0
+    return
+  end
+
+  has_legacy_annotations = false
+  nodeset.each do |node|
+    if !{"branding", "card", "drawer"}.includes? node["type"]?
+      has_legacy_annotations = true
+      break
+    end
+  end
+
+  if has_legacy_annotations
+    # TODO: Update on conflict?
+    db.exec("INSERT INTO annotations VALUES ($1, $2) ON CONFLICT DO NOTHING", id, annotations)
+  end
 end

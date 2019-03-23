@@ -1,5 +1,5 @@
-class PlaylistVideo
-  add_mapping({
+struct PlaylistVideo
+  db_mapping({
     title:          String,
     id:             String,
     author:         String,
@@ -8,11 +8,12 @@ class PlaylistVideo
     published:      Time,
     playlists:      Array(String),
     index:          Int32,
+    live_now:       Bool,
   })
 end
 
-class Playlist
-  add_mapping({
+struct Playlist
+  db_mapping({
     title:            String,
     id:               String,
     author:           String,
@@ -48,7 +49,7 @@ def fetch_playlist_videos(plid, page, video_count, continuation = nil, locale = 
     response = client.get(url)
     response = JSON.parse(response.body)
     if !response["content_html"]? || response["content_html"].as_s.empty?
-      raise translate(locale, "Playlist is empty")
+      raise translate(locale, "Empty playlist")
     end
 
     document = XML.parse_html(response["content_html"].as_s)
@@ -101,8 +102,10 @@ def extract_playlist(plid, nodeset, index)
     anchor = video.xpath_node(%q(.//td[@class="pl-video-time"]/div/div[1]))
     if anchor && !anchor.content.empty?
       length_seconds = decode_length_seconds(anchor.content)
+      live_now = false
     else
       length_seconds = 0
+      live_now = true
     end
 
     videos << PlaylistVideo.new(
@@ -114,6 +117,7 @@ def extract_playlist(plid, nodeset, index)
       published: Time.now,
       playlists: [plid],
       index: index + offset,
+      live_now: live_now
     )
   end
 
@@ -170,7 +174,7 @@ def fetch_playlist(plid, locale)
 
   response = client.get("/playlist?list=#{plid}&hl=en&disable_polymer=1")
   if response.status_code != 200
-    raise translate(locale, "Invalid playlist.")
+    raise translate(locale, "Not a playlist.")
   end
 
   body = response.body.gsub(/<button[^>]+><span[^>]+>\s*less\s*<img[^>]+>\n<\/span><\/button>/, "")
@@ -192,7 +196,7 @@ def fetch_playlist(plid, locale)
   author_thumbnail ||= ""
   ucid = anchor.xpath_node(%q(.//li[1]/a)).not_nil!["href"].split("/")[-1]
 
-  video_count = anchor.xpath_node(%q(.//li[2])).not_nil!.content.delete("videos, ").to_i
+  video_count = anchor.xpath_node(%q(.//li[2])).not_nil!.content.gsub(/\D/, "").to_i
   views = anchor.xpath_node(%q(.//li[3])).not_nil!.content.delete("No views, ")
   if views.empty?
     views = 0_i64
@@ -234,7 +238,10 @@ def template_playlist(playlist)
     html += <<-END_HTML
       <li class="pure-menu-item">
         <a href="/watch?v=#{video["videoId"]}&list=#{playlist["playlistId"]}">
-          <img style="width:100%;" src="/vi/#{video["videoId"]}/mqdefault.jpg">
+          <div class="thumbnail">
+              <img class="thumbnail" src="/vi/#{video["videoId"]}/mqdefault.jpg">
+              <p class="length">#{recode_length_seconds(video["lengthSeconds"].as_i)}</p>
+          </div>
           <p style="width:100%">#{video["title"]}</p>
           <p>
               <b style="width: 100%">#{video["author"]}</b>

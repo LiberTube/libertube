@@ -1,14 +1,15 @@
 <% content_for "header" do %>
 <meta name="description" content="<%= translate(locale, "An alternative front-end to YouTube") %>">
-<title><%= translate(locale, "Trending") %> - Invidious</title>
+<title><% if config.default_home != "Trending" %><%= translate(locale, "Trending") %> - <% end %>Invidious</title>
 <% end %>
 
 <%= rendered "components/feed_menu" %>
 
 <div class="pure-g h-box">
-    <div class="pure-u-2-3">
-        <form class="pure-form pure-form-aligned" action="/feed/trending" method="get">
-        </form>
+    <div style="align-self:flex-end" class="pure-u-2-3">
+        <% if plid %>
+        <a href="/playlist?list=<%= plid %>"><%= translate(locale, "View as playlist") %></a>
+        <% end %>
     </div>
     <div class="pure-u-1-3">
         <div class="pure-g" style="text-align:right;">

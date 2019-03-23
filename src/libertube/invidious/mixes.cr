@@ -1,5 +1,5 @@
-class MixVideo
-  add_mapping({
+struct MixVideo
+  db_mapping({
     title:          String,
     id:             String,
     author:         String,
@@ -10,8 +10,8 @@ class MixVideo
   })
 end
 
-class Mix
-  add_mapping({
+struct Mix
+  db_mapping({
     title:  String,
     id:     String,
     videos: Array(MixVideo),
@@ -99,7 +99,10 @@ def template_mix(mix)
     html += <<-END_HTML
       <li class="pure-menu-item">
         <a href="/watch?v=#{video["videoId"]}&list=#{mix["mixId"]}">
-          <img style="width:100%;" src="/vi/#{video["videoId"]}/mqdefault.jpg">
+          <div class="thumbnail">
+              <img class="thumbnail" src="/vi/#{video["videoId"]}/mqdefault.jpg">
+              <p class="length">#{recode_length_seconds(video["lengthSeconds"].as_i)}</p>
+          </div>
           <p style="width:100%">#{video["title"]}</p>
           <p>
               <b style="width: 100%">#{video["author"]}</b>
