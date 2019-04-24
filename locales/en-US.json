@@ -1,6 +1,12 @@
 {
-    "`x` subscribers": "`x` subscribers",
-    "`x` videos": "`x` videos",
+    "`x` subscribers": {
+        "(\\D|^)1(\\D|$)": "`x` subscriber",
+        "": "`x` subscribers"
+    },
+    "`x` videos": {
+        "(\\D|^)1(\\D|$)": "`x` video",
+        "": "`x` videos"
+    },
     "LIVE": "LIVE",
     "Shared `x` ago": "Shared `x` ago",
     "Unsubscribe": "Unsubscribe",
@@ -65,10 +71,12 @@
     "Default captions: ": "Default captions: ",
     "Fallback captions: ": "Fallback captions: ",
     "Show related videos? ": "Show related videos? ",
+    "Show annotations by default? ": "Show annotations by default? ",
     "Visual preferences": "Visual preferences",
     "Dark mode: ": "Dark mode: ",
     "Thin mode: ": "Thin mode: ",
     "Subscription preferences": "Subscription preferences",
+    "Show annotations by default for subscribed channels? ": "Show annotations by default for subscribed channels? ",
     "Redirect homepage to feed: ": "Redirect homepage to feed: ",
     "Number of videos shown in feed: ": "Number of videos shown in feed: ",
     "Sort videos by: ": "Sort videos by: ",
@@ -102,13 +110,22 @@
     "Subscription manager": "Subscription manager",
     "Token manager": "Token manager",
     "Token": "Token",
-    "`x` subscriptions": "`x` subscriptions",
-    "`x` tokens": "`x` tokens",
+    "`x` subscriptions": {
+        "(\\D|^)1(\\D|$)": "`x` subscription",
+        "": "`x` subscriptions"
+    },
+    "`x` tokens": {
+        "(\\D|^)1(\\D|$)": "`x` token",
+        "": "`x` tokens"
+    },
     "Import/export": "Import/export",
     "unsubscribe": "unsubscribe",
     "revoke": "revoke",
     "Subscriptions": "Subscriptions",
-    "`x` unseen notifications": "`x` unseen notifications",
+    "`x` unseen notifications": {
+        "(\\D|^)1(\\D|$)": "`x` unseen notification",
+        "": "`x` unseen notifications"
+    },
     "search": "search",
     "Log out": "Log out",
     "Released under the AGPLv3 by Omar Roth.": "Released under the AGPLv3 by Omar Roth.",
@@ -118,6 +135,8 @@
     "Trending": "Trending",
     "Unlisted": "Unlisted",
     "Watch on YouTube": "Watch on YouTube",
+    "Hide annotations": "Hide annotations",
+    "Show annotations": "Show annotations",
     "Genre: ": "Genre: ",
     "License: ": "License: ",
     "Family friendly? ": "Family friendly? ",
@@ -126,7 +145,10 @@
     "Whitelisted regions: ": "Whitelisted regions: ",
     "Blacklisted regions: ": "Blacklisted regions: ",
     "Shared `x`": "Shared `x`",
-    "`x` views": "`x` views",
+    "`x` views": {
+        "(\\D|^)1(\\D|$)": "`x` views",
+        "": "`x` views"
+    },
     "Premieres in `x`": "Premieres in `x`",
     "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.": "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.",
     "View YouTube comments": "View YouTube comments",
@@ -156,10 +178,16 @@
     "This channel does not exist.": "This channel does not exist.",
     "Could not get channel info.": "Could not get channel info.",
     "Could not fetch comments": "Could not fetch comments",
-    "View `x` replies": "View `x` replies",
+    "View `x` replies": {
+        "(\\D|^)1(\\D|$)": "View `x` reply",
+        "": "View `x` replies"
+    },
     "`x` ago": "`x` ago",
     "Load more": "Load more",
-    "`x` points": "`x` points",
+    "`x` points": {
+        "(\\D|^)1(\\D|$)": "`x` point",
+        "": "`x` points"
+    },
     "Could not create mix.": "Could not create mix.",
     "Empty playlist": "Empty playlist",
     "Not a playlist.": "Not a playlist.",
@@ -277,13 +305,34 @@
     "Yiddish": "Yiddish",
     "Yoruba": "Yoruba",
     "Zulu": "Zulu",
-    "`x` years": "`x` years",
-    "`x` months": "`x` months",
-    "`x` weeks": "`x` weeks",
-    "`x` days": "`x` days",
-    "`x` hours": "`x` hours",
-    "`x` minutes": "`x` minutes",
-    "`x` seconds": "`x` seconds",
+    "`x` years": {
+        "(\\D|^)1(\\D|$)": "`x` year",
+        "": "`x` years"
+    },
+    "`x` months": {
+        "(\\D|^)1(\\D|$)": "`x` month",
+        "": "`x` months"
+    },
+    "`x` weeks": {
+        "(\\D|^)1(\\D|$)": "`x` week",
+        "": "`x` weeks"
+    },
+    "`x` days": {
+        "(\\D|^)1(\\D|$)": "`x` day",
+        "": "`x` days"
+    },
+    "`x` hours": {
+        "(\\D|^)1(\\D|$)": "`x` hour",
+        "": "`x` hours"
+    },
+    "`x` minutes": {
+        "(\\D|^)1(\\D|$)": "`x` minute",
+        "": "`x` minutes"
+    },
+    "`x` seconds": {
+        "(\\D|^)1(\\D|$)": "`x` second",
+        "": "`x` seconds"
+    },
     "Fallback comments: ": "Fallback comments: ",
     "Popular": "Popular",
     "Top": "Top",

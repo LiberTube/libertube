@@ -1,1 +1,7 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/c1b6e6444e641231e97cc25219e39f9c
+#!/bin/sh
+
+psql invidious kemal -c "ALTER TABLE channel_videos DROP COLUMN live_now CASCADE"
+psql invidious kemal -c "ALTER TABLE channel_videos DROP COLUMN premiere_timestamp CASCADE"
+
+psql invidious kemal -c "ALTER TABLE channel_videos ADD COLUMN live_now bool"
+psql invidious kemal -c "ALTER TABLE channel_videos ADD COLUMN premiere_timestamp timestamptz"

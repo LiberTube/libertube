@@ -241,6 +241,28 @@ VIDEO_FORMATS = {
   "251" => {"ext" => "webm", "format" => "DASH audio", "acodec" => "opus", "abr" => 160},
 }
 
+struct VideoPreferences
+  json_mapping({
+    annotations:        Bool,
+    autoplay:           Bool,
+    continue:           Bool,
+    continue_autoplay:  Bool,
+    controls:           Bool,
+    listen:             Bool,
+    local:              Bool,
+    preferred_captions: Array(String),
+    quality:            String,
+    raw:                Bool,
+    region:             String?,
+    related_videos:     Bool,
+    speed:              (Float32 | Float64),
+    video_end:          (Float64 | Int32),
+    video_loop:         Bool,
+    video_start:        (Float64 | Int32),
+    volume:             Int32,
+  })
+end
+
 struct Video
   property player_json : JSON::Any?
 
@@ -259,11 +281,13 @@ struct Video
           generate_thumbnails(json, self.id, config, kemal_config)
         end
         json.field "storyboards" do
-          generate_storyboards(json, self.storyboards, config, kemal_config)
+          generate_storyboards(json, self.id, self.storyboards, config, kemal_config)
         end
 
-        json.field "description", html_to_content(self.description).last
-        json.field "descriptionHtml", html_to_content(self.description).first
+        description_html, description = html_to_content(self.description)
+
+        json.field "description", description
+        json.field "descriptionHtml", description_html
         json.field "published", self.published.to_unix
         json.field "publishedText", translate(locale, "`x` ago", recode_date(self.published, locale))
         json.field "keywords", self.keywords
@@ -1197,6 +1221,7 @@ def itag_to_metadata?(itag : String)
 end
 
 def process_video_params(query, preferences)
+  annotations = query["iv_load_policy"]?.try &.to_i?
   autoplay = query["autoplay"]?.try &.to_i?
   continue = query["continue"]?.try &.to_i?
   continue_autoplay = query["continue_autoplay"]?.try &.to_i?
@@ -1212,6 +1237,7 @@ def process_video_params(query, preferences)
 
   if preferences
     # region ||= preferences.region
+    annotations ||= preferences.annotations.to_unsafe
     autoplay ||= preferences.autoplay.to_unsafe
     continue ||= preferences.continue.to_unsafe
     continue_autoplay ||= preferences.continue_autoplay.to_unsafe
@@ -1225,6 +1251,7 @@ def process_video_params(query, preferences)
     volume ||= preferences.volume
   end
 
+  annotations ||= CONFIG.default_user_preferences.annotations.to_unsafe
   autoplay ||= CONFIG.default_user_preferences.autoplay.to_unsafe
   continue ||= CONFIG.default_user_preferences.continue.to_unsafe
   continue_autoplay ||= CONFIG.default_user_preferences.continue_autoplay.to_unsafe
@@ -1237,6 +1264,7 @@ def process_video_params(query, preferences)
   video_loop ||= CONFIG.default_user_preferences.video_loop.to_unsafe
   volume ||= CONFIG.default_user_preferences.volume
 
+  annotations = annotations == 1
   autoplay = autoplay == 1
   continue = continue == 1
   continue_autoplay = continue_autoplay == 1
@@ -1270,24 +1298,25 @@ def process_video_params(query, preferences)
   controls ||= 1
   controls = controls >= 1
 
-  params = {
-    autoplay:           autoplay,
-    continue:           continue,
-    continue_autoplay:  continue_autoplay,
-    controls:           controls,
-    listen:             listen,
-    local:              local,
+  params = VideoPreferences.new(
+    annotations: annotations,
+    autoplay: autoplay,
+    continue: continue,
+    continue_autoplay: continue_autoplay,
+    controls: controls,
+    listen: listen,
+    local: local,
     preferred_captions: preferred_captions,
-    quality:            quality,
-    raw:                raw,
-    region:             region,
-    related_videos:     related_videos,
-    speed:              speed,
-    video_end:          video_end,
-    video_loop:         video_loop,
-    video_start:        video_start,
-    volume:             volume,
-  }
+    quality: quality,
+    raw: raw,
+    region: region,
+    related_videos: related_videos,
+    speed: speed,
+    video_end: video_end,
+    video_loop: video_loop,
+    video_start: video_start,
+    volume: volume,
+  )
 
   return params
 end
@@ -1319,11 +1348,12 @@ def generate_thumbnails(json, id, config, kemal_config)
   end
 end
 
-def generate_storyboards(json, storyboards, config, kemal_config)
+def generate_storyboards(json, id, storyboards, config, kemal_config)
   json.array do
     storyboards.each do |storyboard|
       json.object do
-        json.field "url", storyboard[:url]
+        json.field "url", "/api/v1/storyboards/#{id}?width=#{storyboard[:width]}&height=#{storyboard[:height]}"
+        json.field "templateUrl", storyboard[:url]
         json.field "width", storyboard[:width]
         json.field "height", storyboard[:height]
         json.field "count", storyboard[:count]

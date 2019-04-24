@@ -59,27 +59,29 @@ struct ConfigPreferences
   end
 
   yaml_mapping({
-    autoplay:           {type: Bool, default: false},
-    captions:           {type: Array(String), default: ["", "", ""], converter: StringToArray},
-    comments:           {type: Array(String), default: ["youtube", ""], converter: StringToArray},
-    continue:           {type: Bool, default: false},
-    continue_autoplay:  {type: Bool, default: true},
-    dark_mode:          {type: Bool, default: false},
-    latest_only:        {type: Bool, default: false},
-    listen:             {type: Bool, default: false},
-    local:              {type: Bool, default: false},
-    locale:             {type: String, default: "en-US"},
-    max_results:        {type: Int32, default: 40},
-    notifications_only: {type: Bool, default: false},
-    quality:            {type: String, default: "hd720"},
-    redirect_feed:      {type: Bool, default: false},
-    related_videos:     {type: Bool, default: true},
-    sort:               {type: String, default: "published"},
-    speed:              {type: Float32, default: 1.0_f32},
-    thin_mode:          {type: Bool, default: false},
-    unseen_only:        {type: Bool, default: false},
-    video_loop:         {type: Bool, default: false},
-    volume:             {type: Int32, default: 100},
+    annotations:            {type: Bool, default: false},
+    annotations_subscribed: {type: Bool, default: false},
+    autoplay:               {type: Bool, default: false},
+    captions:               {type: Array(String), default: ["", "", ""], converter: StringToArray},
+    comments:               {type: Array(String), default: ["youtube", ""], converter: StringToArray},
+    continue:               {type: Bool, default: false},
+    continue_autoplay:      {type: Bool, default: true},
+    dark_mode:              {type: Bool, default: false},
+    latest_only:            {type: Bool, default: false},
+    listen:                 {type: Bool, default: false},
+    local:                  {type: Bool, default: false},
+    locale:                 {type: String, default: "en-US"},
+    max_results:            {type: Int32, default: 40},
+    notifications_only:     {type: Bool, default: false},
+    quality:                {type: String, default: "hd720"},
+    redirect_feed:          {type: Bool, default: false},
+    related_videos:         {type: Bool, default: true},
+    sort:                   {type: String, default: "published"},
+    speed:                  {type: Float32, default: 1.0_f32},
+    thin_mode:              {type: Bool, default: false},
+    unseen_only:            {type: Bool, default: false},
+    video_loop:             {type: Bool, default: false},
+    volume:                 {type: Int32, default: 100},
   })
 end
 
@@ -125,6 +127,7 @@ user: String,
     dmca_content:      {type: Array(String), default: [] of String}, # For compliance with DMCA, disables download widget using list of video IDs
     check_tables:      {type: Bool, default: false},                 # Check table integrity, automatically try to add any missing columns, create tables, etc.
     cache_annotations: {type: Bool, default: false},                 # Cache annotations requested from IA, will not cache empty annotations or annotations that only contain cards
+    banner:            {type: String?, default: nil},                # Optional banner to be displayed along top of page for announcements, etc.
   })
 end
 

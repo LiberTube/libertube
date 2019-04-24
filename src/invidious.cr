@@ -48,6 +48,7 @@ REDDIT_URL      = URI.parse("https://www.reddit.com")
 TEXTCAPTCHA_URL = URI.parse("http://textcaptcha.com")
 YT_URL          = URI.parse("https://www.youtube.com")
 CHARS_SAFE      = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+TEST_IDS        = {"AgbeGFYluEA", "BaW_jenozKc", "a9LDPn-MO4I", "ddFvjfvPnqk", "iqKdEhx-dD4"}
 CURRENT_BRANCH  = {{ "#{`git branch | sed -n '/\* /s///p'`.strip}" }}
 CURRENT_COMMIT  = {{ "#{`git rev-list HEAD --max-count=1 --abbrev-commit`.strip}" }}
 CURRENT_VERSION = {{ "#{`git describe --tags --abbrev=0`.strip}" }}
@@ -187,7 +188,7 @@ before_all do |env|
   env.response.headers["Referrer-Policy"] = "same-origin"
 
   if Kemal.config.ssl || config.https_only
-    env.response.headers["Strict-Transport-Security"] = "max-age=604800; includeSubDomains"
+    env.response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
   end
 
   begin
@@ -337,8 +338,8 @@ get "/watch" do |env|
 
   preferences = env.get("preferences").as(Preferences)
 
-  if env.get? "user"
-    user = env.get("user").as(User)
+  user = env.get?("user").try &.as(User)
+  if user
     subscriptions = user.subscriptions
     watched = user.watched
   end
@@ -348,7 +349,7 @@ get "/watch" do |env|
   env.params.query.delete_all("listen")
 
   begin
-    video = get_video(id, PG_DB, proxies, region: params[:region])
+    video = get_video(id, PG_DB, proxies, region: params.region)
   rescue ex : VideoRedirect
     next env.redirect "/watch?v=#{ex.message}"
   rescue ex
@@ -356,6 +357,13 @@ get "/watch" do |env|
     logger.write("#{id} : #{ex.message}\n")
     next templated "error"
   end
+
+  if preferences.annotations_subscribed &&
+     subscriptions.includes?(video.ucid) &&
+     (env.params.query["iv_load_policy"]? || "1") == "1"
+    params.annotations = true
+  end
+  env.params.query.delete_all("iv_load_policy")
 
   if watched && !watched.includes? id
     PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
@@ -403,7 +411,7 @@ get "/watch" do |env|
   fmt_stream = video.fmt_stream(decrypt_function)
   adaptive_fmts = video.adaptive_fmts(decrypt_function)
 
-  if params[:local]
+  if params.local
     fmt_stream.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
     adaptive_fmts.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
   end
@@ -414,12 +422,12 @@ get "/watch" do |env|
   captions = video.captions
 
   preferred_captions = captions.select { |caption|
-    params[:preferred_captions].includes?(caption.name.simpleText) ||
-      params[:preferred_captions].includes?(caption.languageCode.split("-")[0])
+    params.preferred_captions.includes?(caption.name.simpleText) ||
+      params.preferred_captions.includes?(caption.languageCode.split("-")[0])
   }
   preferred_captions.sort_by! { |caption|
-    (params[:preferred_captions].index(caption.name.simpleText) ||
-      params[:preferred_captions].index(caption.languageCode.split("-")[0])).not_nil!
+    (params.preferred_captions.index(caption.name.simpleText) ||
+      params.preferred_captions.index(caption.languageCode.split("-")[0])).not_nil!
   }
   captions = captions - preferred_captions
 
@@ -440,11 +448,11 @@ get "/watch" do |env|
 
   thumbnail = "/vi/#{video.id}/maxres.jpg"
 
-  if params[:raw]
+  if params.raw
     url = fmt_stream[0]["url"]
 
     fmt_stream.each do |fmt|
-      if fmt["label"].split(" - ")[0] == params[:quality]
+      if fmt["label"].split(" - ")[0] == params.quality
         url = fmt["url"]
       end
     end
@@ -532,8 +540,15 @@ get "/embed/:id" do |env|
 
   params = process_video_params(env.params.query, preferences)
 
+  user = env.get?("user").try &.as(User)
+  if user
+    subscriptions = user.subscriptions
+    watched = user.watched
+  end
+  subscriptions ||= [] of String
+
   begin
-    video = get_video(id, PG_DB, proxies, region: params[:region])
+    video = get_video(id, PG_DB, proxies, region: params.region)
   rescue ex : VideoRedirect
     next env.redirect "/embed/#{ex.message}"
   rescue ex
@@ -541,10 +556,20 @@ get "/embed/:id" do |env|
     next templated "error"
   end
 
+  if preferences.annotations_subscribed &&
+     subscriptions.includes?(video.ucid) &&
+     (env.params.query["iv_load_policy"]? || "1") == "1"
+    params.annotations = true
+  end
+
+  if watched && !watched.includes? id
+    PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
+  end
+
   fmt_stream = video.fmt_stream(decrypt_function)
   adaptive_fmts = video.adaptive_fmts(decrypt_function)
 
-  if params[:local]
+  if params.local
     fmt_stream.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
     adaptive_fmts.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
   end
@@ -555,12 +580,12 @@ get "/embed/:id" do |env|
   captions = video.captions
 
   preferred_captions = captions.select { |caption|
-    params[:preferred_captions].includes?(caption.name.simpleText) ||
-      params[:preferred_captions].includes?(caption.languageCode.split("-")[0])
+    params.preferred_captions.includes?(caption.name.simpleText) ||
+      params.preferred_captions.includes?(caption.languageCode.split("-")[0])
   }
   preferred_captions.sort_by! { |caption|
-    (params[:preferred_captions].index(caption.name.simpleText) ||
-      params[:preferred_captions].index(caption.languageCode.split("-")[0])).not_nil!
+    (params.preferred_captions.index(caption.name.simpleText) ||
+      params.preferred_captions.index(caption.languageCode.split("-")[0])).not_nil!
   }
   captions = captions - preferred_captions
 
@@ -581,11 +606,11 @@ get "/embed/:id" do |env|
 
   thumbnail = "/vi/#{video.id}/maxres.jpg"
 
-  if params[:raw]
+  if params.raw
     url = fmt_stream[0]["url"]
 
     fmt_stream.each do |fmt|
-      if fmt["label"].split(" - ")[0] == params[:quality]
+      if fmt["label"].split(" - ")[0] == params.quality
         url = fmt["url"]
       end
     end
@@ -1235,6 +1260,14 @@ post "/preferences" do |env|
   video_loop ||= "off"
   video_loop = video_loop == "on"
 
+  annotations = env.params.body["annotations"]?.try &.as(String)
+  annotations ||= "off"
+  annotations = annotations == "on"
+
+  annotations_subscribed = env.params.body["annotations_subscribed"]?.try &.as(String)
+  annotations_subscribed ||= "off"
+  annotations_subscribed = annotations_subscribed == "on"
+
   autoplay = env.params.body["autoplay"]?.try &.as(String)
   autoplay ||= "off"
   autoplay = autoplay == "on"
@@ -1312,27 +1345,29 @@ post "/preferences" do |env|
   notifications_only = notifications_only == "on"
 
   preferences = {
-    "video_loop"         => video_loop,
-    "autoplay"           => autoplay,
-    "continue"           => continue,
-    "continue_autoplay"  => continue_autoplay,
-    "listen"             => listen,
-    "local"              => local,
-    "speed"              => speed,
-    "quality"            => quality,
-    "volume"             => volume,
-    "comments"           => comments,
-    "captions"           => captions,
-    "related_videos"     => related_videos,
-    "redirect_feed"      => redirect_feed,
-    "locale"             => locale,
-    "dark_mode"          => dark_mode,
-    "thin_mode"          => thin_mode,
-    "max_results"        => max_results,
-    "sort"               => sort,
-    "latest_only"        => latest_only,
-    "unseen_only"        => unseen_only,
-    "notifications_only" => notifications_only,
+    "video_loop"             => video_loop,
+    "annotations"            => annotations,
+    "annotations_subscribed" => annotations_subscribed,
+    "autoplay"               => autoplay,
+    "continue"               => continue,
+    "continue_autoplay"      => continue_autoplay,
+    "listen"                 => listen,
+    "local"                  => local,
+    "speed"                  => speed,
+    "quality"                => quality,
+    "volume"                 => volume,
+    "comments"               => comments,
+    "captions"               => captions,
+    "related_videos"         => related_videos,
+    "redirect_feed"          => redirect_feed,
+    "locale"                 => locale,
+    "dark_mode"              => dark_mode,
+    "thin_mode"              => thin_mode,
+    "max_results"            => max_results,
+    "sort"                   => sort,
+    "latest_only"            => latest_only,
+    "unseen_only"            => unseen_only,
+    "notifications_only"     => notifications_only,
   }.to_json
 
   if user = env.get? "user"
@@ -2817,6 +2852,42 @@ end
 
 # Channels
 
+{"/channel/:ucid/live", "/user/:user/live", "/c/:user/live"}.each do |route|
+  get route do |env|
+    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+    client = make_client(YT_URL)
+
+    # Appears to be a bug in routing, having several routes configured
+    # as `/a/:a`, `/b/:a`, `/c/:a` results in 404
+    value = env.request.resource.split("/")[2]
+    body = ""
+    {"channel", "user", "c"}.each do |type|
+      response = client.get("/#{type}/#{value}/live?disable_polymer=1")
+      if response.status_code == 200
+        body = response.body
+      end
+    end
+
+    video_id = body.match(/'VIDEO_ID': "(?<id>[a-zA-Z0-9_-]{11})"/).try &.["id"]?
+    if video_id
+      params = [] of String
+      env.params.query.each do |k, v|
+        params << "#{k}=#{v}"
+      end
+      params = params.join("&")
+
+      url = "/watch?v=#{video_id}"
+      if !params.empty?
+        url += "&#{params}"
+      end
+
+      env.redirect url
+    else
+      env.redirect "/channel/#{value}"
+    end
+  end
+end
+
 # YouTube appears to let users set a "brand" URL that
 # is different from their username, so we convert that here
 get "/c/:user" do |env|
@@ -2982,6 +3053,86 @@ get "/api/v1/stats" do |env|
   statistics.to_json
 end
 
+# YouTube provides "storyboards", which are sprites containing of x * y
+# preview thumbnails for individual scenes in a video.
+# See https://support.jwplayer.com/articles/how-to-add-preview-thumbnails
+get "/api/v1/storyboards/:id" do |env|
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  env.response.content_type = "application/json"
+
+  id = env.params.url["id"]
+  region = env.params.query["region"]?
+
+  client = make_client(YT_URL)
+  begin
+    video = get_video(id, PG_DB, proxies, region: region)
+  rescue ex : VideoRedirect
+    next env.redirect "/api/v1/storyboards/#{ex.message}"
+  rescue ex
+    env.response.status_code = 500
+    next
+  end
+
+  storyboards = video.storyboards
+
+  width = env.params.query["width"]?
+  height = env.params.query["height"]?
+
+  if !width && !height
+    response = JSON.build do |json|
+      json.object do
+        json.field "storyboards" do
+          generate_storyboards(json, id, storyboards, config, Kemal.config)
+        end
+      end
+    end
+
+    next response
+  end
+
+  env.response.content_type = "text/vtt"
+
+  storyboard = storyboards.select { |storyboard| width == "#{storyboard[:width]}" || height == "#{storyboard[:height]}" }
+
+  if storyboard.empty?
+    env.response.status_code = 404
+    next
+  else
+    storyboard = storyboard[0]
+  end
+
+  webvtt = <<-END_VTT
+  WEBVTT
+
+
+  END_VTT
+
+  start_time = 0.milliseconds
+  end_time = storyboard[:interval].milliseconds
+
+  storyboard[:storyboard_count].times do |i|
+    host_url = make_host_url(config, Kemal.config)
+    url = storyboard[:url].gsub("$M", i).gsub("https://i9.ytimg.com", host_url)
+
+    storyboard[:storyboard_height].times do |j|
+      storyboard[:storyboard_width].times do |k|
+        webvtt += <<-END_CUE
+        #{start_time}.000 --> #{end_time}.000
+        #{url}#xywh=#{storyboard[:width] * k},#{storyboard[:height] * j},#{storyboard[:width]},#{storyboard[:height]}
+
+
+        END_CUE
+
+        start_time += storyboard[:interval].milliseconds
+        end_time += storyboard[:interval].milliseconds
+      end
+    end
+  end
+
+  webvtt
+end
+
 get "/api/v1/captions/:id" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -3074,7 +3225,7 @@ get "/api/v1/captions/:id" do |env|
       text = "<v #{md["name"]}>#{md["text"]}</v>"
     end
 
-    webvtt = webvtt + <<-END_CUE
+    webvtt += <<-END_CUE
     #{start_time} --> #{end_time}
     #{text}
 
@@ -3392,29 +3543,13 @@ get "/api/v1/popular" do |env|
 
   env.response.content_type = "application/json"
 
-  videos = JSON.build do |json|
+  JSON.build do |json|
     json.array do
       popular_videos.each do |video|
-        json.object do
-          json.field "title", video.title
-          json.field "videoId", video.id
-          json.field "videoThumbnails" do
-            generate_thumbnails(json, video.id, config, Kemal.config)
-          end
-
-          json.field "lengthSeconds", video.length_seconds
-
-          json.field "author", video.author
-          json.field "authorId", video.ucid
-          json.field "authorUrl", "/channel/#{video.ucid}"
-          json.field "published", video.published.to_unix
-          json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published, locale))
-        end
+        video.to_json(locale, config, Kemal.config, json)
       end
     end
   end
-
-  videos
 end
 
 get "/api/v1/top" do |env|
@@ -3537,9 +3672,9 @@ get "/api/v1/channels/:ucid" do |env|
   metadata.each do |item|
     case item.content
     when .includes? "views"
-      total_views = item.content.delete("views •,").to_i64
+      total_views = item.content.gsub(/\D/, "").to_i64
     when .includes? "subscribers"
-      sub_count = item.content.delete("subscribers").delete(",").to_i64
+      sub_count = item.content.delete("subscribers").gsub(/\D/, "").to_i64
     when .includes? "Joined"
       joined = Time.parse(item.content.lchop("Joined "), "%b %-d, %Y", Time::Location.local)
     end
@@ -3667,7 +3802,7 @@ get "/api/v1/channels/:ucid" do |env|
   channel_info
 end
 
-["/api/v1/channels/:ucid/videos", "/api/v1/channels/videos/:ucid"].each do |route|
+{"/api/v1/channels/:ucid/videos", "/api/v1/channels/videos/:ucid"}.each do |route|
   get route do |env|
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -3736,7 +3871,7 @@ end
   end
 end
 
-["/api/v1/channels/:ucid/latest", "/api/v1/channels/latest/:ucid"].each do |route|
+{"/api/v1/channels/:ucid/latest", "/api/v1/channels/latest/:ucid"}.each do |route|
   get route do |env|
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -3752,7 +3887,7 @@ end
       next error_message
     end
 
-    response = JSON.build do |json|
+    JSON.build do |json|
       json.array do
         videos.each do |video|
           json.object do
@@ -3780,12 +3915,10 @@ end
         end
       end
     end
-
-    response
   end
 end
 
-["/api/v1/channels/:ucid/playlists", "/api/v1/channels/playlists/:ucid"].each do |route|
+{"/api/v1/channels/:ucid/playlists", "/api/v1/channels/playlists/:ucid"}.each do |route|
   get route do |env|
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -4259,10 +4392,75 @@ get "/api/v1/auth/notifications" do |env|
   topics = env.params.query["topics"]?.try &.split(",").uniq.first(1000)
   topics ||= [] of String
 
+  since = env.params.query["since"]?.try &.to_i?
+
   begin
     id = 0
 
+    if topics.includes? "debug"
+      spawn do
+        loop do
+          time_span = [0, 0, 0, 0]
+          time_span[rand(4)] = rand(30) + 5
+          published = Time.now - Time::Span.new(time_span[0], time_span[1], time_span[2], time_span[3])
+          video_id = TEST_IDS[rand(TEST_IDS.size)]
+
+          video = get_video(video_id, PG_DB, proxies)
+          video.published = published
+          response = JSON.parse(video.to_json(locale, config, Kemal.config, decrypt_function))
+
+          if fields_text = env.params.query["fields"]?
+            begin
+              JSONFilter.filter(response, fields_text)
+            rescue ex
+              env.response.status_code = 400
+              response = {"error" => ex.message}
+            end
+          end
+
+          env.response.puts "id: #{id}"
+          env.response.puts "data: #{response.to_json}"
+          env.response.puts
+          env.response.flush
+
+          id += 1
+
+          sleep 1.minute
+        end
+      end
+    end
+
     spawn do
+      if since
+        topics.try &.each do |topic|
+          case topic
+          when .match(/UC[A-Za-z0-9_-]{22}/)
+            PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid = $1 AND published > $2 ORDER BY published DESC LIMIT 15",
+              topic, Time.unix(since.not_nil!), as: ChannelVideo).each do |video|
+              response = JSON.parse(video.to_json(locale, config, Kemal.config))
+
+              if fields_text = env.params.query["fields"]?
+                begin
+                  JSONFilter.filter(response, fields_text)
+                rescue ex
+                  env.response.status_code = 400
+                  response = {"error" => ex.message}
+                end
+              end
+
+              env.response.puts "id: #{id}"
+              env.response.puts "data: #{response.to_json}"
+              env.response.puts
+              env.response.flush
+
+              id += 1
+            end
+          else
+            # TODO
+          end
+        end
+      end
+
       PG.connect_listen(PG_URL, "notifications") do |event|
         notification = JSON.parse(event.payload)
         topic = notification["topic"].as_s
@@ -4304,15 +4502,26 @@ get "/api/v1/auth/notifications" do |env|
   end
 end
 
-# TODO
-# get "/api/v1/auth/preferences" do |env|
-# ...
-# end
+get "/api/v1/auth/preferences" do |env|
+  env.response.content_type = "application/json"
+  user = env.get("user").as(User)
+  user.preferences.to_json
+end
 
-# TODO
-# post "/api/v1/auth/preferences" do |env|
-# ...
-# end
+post "/api/v1/auth/preferences" do |env|
+  env.response.content_type = "application/json"
+  user = env.get("user").as(User)
+
+  begin
+    preferences = Preferences.from_json(env.request.body || "{}")
+  rescue
+    preferences = user.preferences
+  end
+
+  PG_DB.exec("UPDATE users SET preferences = $1 WHERE email = $2", preferences.to_json, user.email)
+
+  env.response.status_code = 204
+end
 
 get "/api/v1/auth/subscriptions" do |env|
   env.response.content_type = "application/json"
@@ -4925,6 +5134,13 @@ get "/ggpht/*" do |env|
   end
 end
 
+options "/sb/:id/:storyboard/:index" do |env|
+  env.response.headers.delete("Content-Type")
+  env.response.headers["Access-Control-Allow-Origin"] = "*"
+  env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+end
+
 get "/sb/:id/:storyboard/:index" do |env|
   id = env.params.url["id"]
   storyboard = env.params.url["storyboard"]
@@ -5105,7 +5321,7 @@ if Kemal.config.ssl
         redirect_url += "?#{env.request.query}"
       end
 
-      env.response.headers["Strict-Transport-Security"] = "max-age=604800; includeSubDomains"
+      env.response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
       env.response.headers["Location"] = redirect_url
       env.response.status_code = 301
     end

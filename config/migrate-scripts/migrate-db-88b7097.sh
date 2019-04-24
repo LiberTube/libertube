@@ -1,1 +1,3 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/1ad8bfcabfaaca362d7df287ad0da747
+#!/bin/sh
+
+psql invidious kemal -c "ALTER TABLE channel_videos ADD COLUMN premiere_timestamp timestamptz;"

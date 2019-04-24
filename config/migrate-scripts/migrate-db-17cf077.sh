@@ -1,1 +1,4 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/c466cce5bbc27fd2641dba6e5aced6d5
+#!/bin/sh
+
+psql invidious kemal -c "ALTER TABLE channels ADD COLUMN subscribed bool;"
+psql invidious kemal -c "UPDATE channels SET subscribed = false;"
