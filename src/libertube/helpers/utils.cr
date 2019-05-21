@@ -18,24 +18,13 @@ def elapsed_text(elapsed)
   "#{(millis * 1000).round(2)}µs"
 end
 
-def make_client(url : URI, proxies = {} of String => Array({ip: String, port: Int32}), region = nil)
-  context = nil
-
-  if url.scheme == "https"
-    context = OpenSSL::SSL::Context::Client.new
-    context.add_options(
-      OpenSSL::SSL::Options::ALL |
-      OpenSSL::SSL::Options::NO_SSL_V2 |
-      OpenSSL::SSL::Options::NO_SSL_V3
-    )
-  end
-
-  client = HTTPClient.new(url, context)
-  client.read_timeout = 10.seconds
-  client.connect_timeout = 10.seconds
+def make_client(url : URI, region = nil)
+  client = HTTPClient.new(url)
+  client.read_timeout = 15.seconds
+  client.connect_timeout = 15.seconds
 
   if region
-    proxies[region]?.try &.sample(40).each do |proxy|
+    PROXY_LIST[region]?.try &.sample(40).each do |proxy|
       begin
         proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
         client.set_proxy(proxy)
@@ -64,8 +53,8 @@ def recode_length_seconds(time)
     time = time.seconds
     text = "#{time.minutes.to_s.rjust(2, '0')}:#{time.seconds.to_s.rjust(2, '0')}"
 
-    if time.hours > 0
-      text = "#{time.hours.to_s.rjust(2, '0')}:#{text}"
+    if time.total_hours.to_i > 0
+      text = "#{time.total_hours.to_i.to_s.rjust(2, '0')}:#{text}"
     end
 
     text = text.lchop('0')
@@ -90,7 +79,7 @@ def decode_time(string)
     millis = /(?<millis>\d+)ms/.match(string).try &.["millis"].try &.to_f
     millis ||= 0
 
-    time = hours * 3600 + minutes * 60 + seconds + millis / 1000
+    time = hours * 3600 + minutes * 60 + seconds + millis // 1000
   end
 
   return time
@@ -99,7 +88,7 @@ end
 def decode_date(string : String)
   # String matches 'YYYY'
   if string.match(/^\d{4}/)
-    return Time.new(string.to_i, 1, 1)
+    return Time.utc(string.to_i, 1, 1)
   end
 
   # Try to parse as format Jul 10, 2000
@@ -110,9 +99,9 @@ def decode_date(string : String)
 
   case string
   when "today"
-    return Time.now
+    return Time.utc
   when "yesterday"
-    return Time.now - 1.day
+    return Time.utc - 1.day
   end
 
   # String matches format "20 hours ago", "4 months ago"...
@@ -138,18 +127,18 @@ def decode_date(string : String)
     raise "Could not parse #{string}"
   end
 
-  return Time.now - delta
+  return Time.utc - delta
 end
 
 def recode_date(time : Time, locale)
-  span = Time.now - time
+  span = Time.utc - time
 
   if span.total_days > 365.0
-    span = translate(locale, "`x` years", (span.total_days.to_i / 365).to_s)
+    span = translate(locale, "`x` years", (span.total_days.to_i // 365).to_s)
   elsif span.total_days > 30.0
-    span = translate(locale, "`x` months", (span.total_days.to_i / 30).to_s)
+    span = translate(locale, "`x` months", (span.total_days.to_i // 30).to_s)
   elsif span.total_days > 7.0
-    span = translate(locale, "`x` weeks", (span.total_days.to_i / 7).to_s)
+    span = translate(locale, "`x` weeks", (span.total_days.to_i // 7).to_s)
   elsif span.total_hours > 24.0
     span = translate(locale, "`x` days", (span.total_days.to_i).to_s)
   elsif span.total_minutes > 60.0
@@ -194,11 +183,11 @@ def number_to_short_text(number)
 
   text = text.rchop(".0")
 
-  if number / 1_000_000_000 != 0
+  if number // 1_000_000_000 != 0
     text += "B"
-  elsif number / 1_000_000 != 0
+  elsif number // 1_000_000 != 0
     text += "M"
-  elsif number / 1000 != 0
+  elsif number // 1000 != 0
     text += "K"
   end
 
@@ -243,7 +232,7 @@ def make_host_url(config, kemal_config)
   return "#{scheme}#{host}#{port}"
 end
 
-def get_referer(env, fallback = "/")
+def get_referer(env, fallback = "/", unroll = true)
   referer = env.params.query["referer"]?
   referer ||= env.request.headers["referer"]?
   referer ||= fallback
@@ -251,16 +240,18 @@ def get_referer(env, fallback = "/")
   referer = URI.parse(referer)
 
   # "Unroll" nested referrers
-  loop do
-    if referer.query
-      params = HTTP::Params.parse(referer.query.not_nil!)
-      if params["referer"]?
-        referer = URI.parse(URI.unescape(params["referer"]))
+  if unroll
+    loop do
+      if referer.query
+        params = HTTP::Params.parse(referer.query.not_nil!)
+        if params["referer"]?
+          referer = URI.parse(URI.unescape(params["referer"]))
+        else
+          break
+        end
       else
         break
       end
-    else
-      break
     end
   end
 
@@ -324,4 +315,35 @@ def sha256(text)
   digest = OpenSSL::Digest.new("SHA256")
   digest << text
   return digest.hexdigest
+end
+
+def subscribe_pubsub(topic, key, config)
+  case topic
+  when .match(/^UC[A-Za-z0-9_-]{22}$/)
+    topic = "channel_id=#{topic}"
+  when .match(/^(PL|LL|EC|UU|FL|UL|OLAK5uy_)[0-9A-Za-z-_]{10,}$/)
+    # There's a couple missing from the above regex, namely TL and RD, which
+    # don't have feeds
+    topic = "playlist_id=#{topic}"
+  else
+    # TODO
+  end
+
+  client = make_client(PUBSUB_URL)
+  time = Time.utc.to_unix.to_s
+  nonce = Random::Secure.hex(4)
+  signature = "#{time}:#{nonce}"
+
+  host_url = make_host_url(config, Kemal.config)
+
+  body = {
+    "hub.callback"      => "#{host_url}/feed/webhook/v1:#{time}:#{nonce}:#{OpenSSL::HMAC.hexdigest(:sha1, key, signature)}",
+    "hub.topic"         => "https://www.youtube.com/xml/feeds/videos.xml?#{topic}",
+    "hub.verify"        => "async",
+    "hub.mode"          => "subscribe",
+    "hub.lease_seconds" => "432000",
+    "hub.secret"        => key.to_s,
+  }
+
+  return client.post("/subscribe", form: body)
 end

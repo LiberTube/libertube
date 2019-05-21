@@ -33,6 +33,11 @@ class Kemal::RouteHandler
       raise Kemal::Exceptions::CustomException.new(context)
     end
 
+    if context.request.method == "HEAD" &&
+       context.request.path.ends_with? ".jpg"
+      context.response.headers["Content-Type"] = "image/jpeg"
+    end
+
     context.response.print(content)
     context
   end
@@ -58,7 +63,7 @@ end
 
 class FilteredCompressHandler < Kemal::Handler
   exclude ["/videoplayback", "/videoplayback/*", "/vi/*", "/ggpht/*", "/api/v1/auth/notifications"]
-  exclude ["/data_control"], "POST"
+  exclude ["/api/v1/auth/notifications", "/data_control"], "POST"
 
   def call(env)
     return call_next env if exclude_match? env
@@ -134,7 +139,8 @@ class APIHandler < Kemal::Handler
   {% for method in %w(GET POST PUT HEAD DELETE PATCH OPTIONS) %}
   only ["/api/v1/*"], {{method}}
   {% end %}
-  exclude ["/api/v1/auth/notifications"]
+  exclude ["/api/v1/auth/notifications"], "GET"
+  exclude ["/api/v1/auth/notifications"], "POST"
 
   def call(env)
     return call_next env unless only_match? env
@@ -194,10 +200,28 @@ class DenyFrame < Kemal::Handler
   end
 end
 
-# Temp fix for https://github.com/crystal-lang/crystal/issues/7383
+# Temp fixes for https://github.com/crystal-lang/crystal/issues/7383
+class HTTP::UnknownLengthContent
+  def read_byte
+    ensure_send_continue
+    if @io.is_a?(OpenSSL::SSL::Socket::Client)
+      return if @io.as(OpenSSL::SSL::Socket::Client).@in_buffer_rem.empty?
+    end
+    @io.read_byte
+  end
+end
+
 class HTTP::Client
   private def handle_response(response)
-    # close unless response.keep_alive?
+    if @socket.is_a?(OpenSSL::SSL::Socket::Client)
+      close unless response.keep_alive? || @socket.as(OpenSSL::SSL::Socket::Client).@in_buffer_rem.empty?
+      if @socket.as(OpenSSL::SSL::Socket::Client).@in_buffer_rem.empty?
+        @socket = nil
+      end
+    else
+      close unless response.keep_alive?
+    end
+
     response
   end
 end

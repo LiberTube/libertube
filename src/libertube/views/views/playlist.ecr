@@ -15,15 +15,25 @@
 </div>
 
 <div class="pure-g h-box">
-    <div class="pure-u-1 pure-u-md-1-4">
-        <a href="/channel/<%= playlist.ucid %>">
-            <b><%= playlist.author %></b>
+    <div class="pure-u-1-3">
+        <a href="https://www.youtube.com/playlist?list=<%= playlist.id %>">
+            <%= translate(locale, "View playlist on YouTube") %>
         </a>
+        <div class="pure-u-1 pure-md-1-3">
+            <a href="/channel/<%= playlist.ucid %>">
+                <b><%= playlist.author %></b>
+            </a>
+        </div>
     </div>
+    <div class="pure-u-1-2"></div>
 </div>
 
 <div class="h-box">
     <p><%= playlist.description_html %></p>
+</div>
+
+<div class="h-box">
+    <hr>
 </div>
 
 <div class="pure-g">
@@ -36,7 +46,7 @@
 
 <div class="pure-g h-box">
     <div class="pure-u-1 pure-u-lg-1-5">
-        <% if page >= 2 %>
+        <% if page > 1 %>
             <a href="/playlist?list=<%= playlist.id %>&page=<%= page - 1 %>">
                 <%= translate(locale, "Previous page") %>
             </a>

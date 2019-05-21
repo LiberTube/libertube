@@ -1,4 +1,32 @@
 struct PlaylistVideo
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "title", self.title
+      json.field "videoId", self.id
+
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", "/channel/#{self.ucid}"
+
+      json.field "videoThumbnails" do
+        generate_thumbnails(json, self.id, config, kemal_config)
+      end
+
+      json.field "index", self.index
+      json.field "lengthSeconds", self.length_seconds
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
   db_mapping({
     title:          String,
     id:             String,
@@ -6,7 +34,7 @@ struct PlaylistVideo
     ucid:           String,
     length_seconds: Int32,
     published:      Time,
-    playlists:      Array(String),
+    plid:           String,
     index:          Int32,
     live_now:       Bool,
   })
@@ -19,7 +47,6 @@ struct Playlist
     author:           String,
     author_thumbnail: String,
     ucid:             String,
-    description:      String,
     description_html: String,
     video_count:      Int32,
     views:            Int64,
@@ -114,8 +141,8 @@ def extract_playlist(plid, nodeset, index)
       author: author,
       ucid: ucid,
       length_seconds: length_seconds,
-      published: Time.now,
-      playlists: [plid],
+      published: Time.utc,
+      plid: plid,
       index: index + offset,
       live_now: live_now
     )
@@ -186,9 +213,8 @@ def fetch_playlist(plid, locale)
   end
   title = title.content.strip(" \n")
 
-  description_html = document.xpath_node(%q(//span[@class="pl-header-description-text"]/div/div[1]))
-  description_html ||= document.xpath_node(%q(//span[@class="pl-header-description-text"]))
-  description_html, description = html_to_content(description_html)
+  description_html = document.xpath_node(%q(//span[@class="pl-header-description-text"]/div/div[1])).try &.to_s ||
+                     document.xpath_node(%q(//span[@class="pl-header-description-text"])).try &.to_s || ""
 
   # YouTube allows anonymous playlists, so most of this can be empty or optional
   anchor = document.xpath_node(%q(//ul[@class="pl-header-details"]))
@@ -208,7 +234,7 @@ def fetch_playlist(plid, locale)
   if updated
     updated = decode_date(updated)
   else
-    updated = Time.now
+    updated = Time.utc
   end
 
   playlist = Playlist.new(
@@ -217,7 +243,6 @@ def fetch_playlist(plid, locale)
     author: author,
     author_thumbnail: author_thumbnail,
     ucid: ucid,
-    description: description,
     description_html: description_html,
     video_count: video_count,
     views: views,
