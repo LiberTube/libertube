@@ -54,6 +54,7 @@ MAX_ITEMS_PER_PAGE = 1500
 
 REQUEST_HEADERS_WHITELIST  = {"Accept", "Accept-Encoding", "Cache-Control", "Connection", "Content-Length", "If-None-Match", "Range"}
 RESPONSE_HEADERS_BLACKLIST = {"Access-Control-Allow-Origin", "Alt-Svc", "Server"}
+HTTP_CHUNK_SIZE            = 10485760 # ~10MB
 
 CURRENT_BRANCH  = {{ "#{`git branch | sed -n '/\* /s///p'`.strip}" }}
 CURRENT_COMMIT  = {{ "#{`git rev-list HEAD --max-count=1 --abbrev-commit`.strip}" }}
@@ -122,7 +123,6 @@ Kemal::CLI.new ARGV
 
 # Check table integrity
 if CONFIG.check_tables
-  analyze_table(PG_DB, logger, "channels", InvidiousChannel)
   analyze_table(PG_DB, logger, "channel_videos", ChannelVideo)
   analyze_table(PG_DB, logger, "nonces", Nonce)
   analyze_table(PG_DB, logger, "session_ids", SessionId)
@@ -482,6 +482,8 @@ get "/watch" do |env|
   video.description_html = replace_links(video.description_html)
 
   host_url = make_host_url(config, Kemal.config)
+  host_params = env.request.query_params
+  host_params.delete_all("v")
 
   if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
     hlsvp = video.player_response["streamingData"]["hlsManifestUrl"].as_s
@@ -656,6 +658,8 @@ get "/embed/:id" do |env|
   video.description_html = replace_links(video.description_html)
 
   host_url = make_host_url(config, Kemal.config)
+  host_params = env.request.query_params
+  host_params.delete_all("v")
 
   if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
     hlsvp = video.player_response["streamingData"]["hlsManifestUrl"].as_s
@@ -2908,7 +2912,7 @@ get "/channel/:ucid" do |env|
     sort_options = {"newest", "oldest", "popular"}
     sort_by ||= "newest"
 
-    items, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
+    items, count = get_60_videos(channel.ucid, page, channel.auto_generated, sort_by)
     items.select! { |item| !item.paid }
 
     env.set "search", "channel:#{channel.ucid} "
@@ -3274,9 +3278,9 @@ get "/api/v1/insights/:id" do |env|
 
   client = make_client(YT_URL)
   headers = HTTP::Headers.new
-  response = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1")
+  html = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1")
 
-  headers["cookie"] = response.cookies.add_request_headers(headers)["cookie"]
+  headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
   headers["content-type"] = "application/x-www-form-urlencoded"
 
   headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
@@ -3286,7 +3290,9 @@ get "/api/v1/insights/:id" do |env|
   headers["x-youtube-client-name"] = "1"
   headers["x-youtube-client-version"] = "2.20180719"
 
-  session_token = response.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).try &.["session_token"]? || ""
+  body = html.body
+  session_token = body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
+
   post_req = {
     session_token: session_token,
   }
@@ -3542,7 +3548,7 @@ get "/api/v1/channels/:ucid" do |env|
     count = 0
   else
     begin
-      videos, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
+      videos, count = get_60_videos(channel.ucid, page, channel.auto_generated, sort_by)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 500
@@ -3567,14 +3573,14 @@ get "/api/v1/channels/:ucid" do |env|
             }
             qualities.each do |quality|
               json.object do
-                json.field "url", channel.banner.not_nil!.gsub("=w1060-", "=w#{quality[:width]}-")
+                json.field "url", channel.banner.not_nil!.gsub("=w1060", "=w#{quality[:width]}")
                 json.field "width", quality[:width]
                 json.field "height", quality[:height]
               end
             end
 
             json.object do
-              json.field "url", channel.banner.not_nil!.split("=w1060-")[0]
+              json.field "url", channel.banner.not_nil!.rchop("=w1060-fcrop64=1,00005a57ffffa5a8-nd-c0xffffffff-rj-k-no")
               json.field "width", 512
               json.field "height", 288
             end
@@ -3667,7 +3673,7 @@ end
     end
 
     begin
-      videos, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
+      videos, count = get_60_videos(channel.ucid, page, channel.auto_generated, sort_by)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 500
@@ -3750,28 +3756,6 @@ end
   end
 end
 
-{"/api/v1/channels/:ucid/comments", "/api/v1/channels/comments/:ucid"}.each do |route|
-  get route do |env|
-    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
-
-    env.response.content_type = "application/json"
-
-    ucid = env.params.url["ucid"]
-
-    continuation = env.params.query["continuation"]?
-
-    # sort_by = env.params.query["sort_by"]?.try &.downcase
-
-    begin
-      fetch_channel_community(ucid, continuation, locale, config, Kemal.config)
-    rescue ex
-      env.response.status_code = 400
-      error_message = {"error" => ex.message}.to_json
-      next error_message
-    end
-  end
-end
-
 get "/api/v1/channels/search/:ucid" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -3826,8 +3810,11 @@ get "/api/v1/search" do |env|
     search_params = produce_search_params(sort_by, date, content_type, duration, features)
   rescue ex
     env.response.status_code = 400
-    error_message = {"error" => ex.message}.to_json
-    next error_message
+    next JSON.build do |json|
+      json.object do
+        json.field "error", ex.message
+      end
+    end
   end
 
   count, search_results = search(query, page, search_params, region).as(Tuple)
@@ -3837,42 +3824,6 @@ get "/api/v1/search" do |env|
         item.to_json(locale, config, Kemal.config, json)
       end
     end
-  end
-end
-
-get "/api/v1/search/suggestions" do |env|
-  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
-  region = env.params.query["region"]?
-
-  env.response.content_type = "application/json"
-
-  query = env.params.query["q"]?
-  query ||= ""
-
-  begin
-    client = make_client(URI.parse("https://suggestqueries.google.com"))
-    response = client.get("/complete/search?hl=en&gl=#{region}&client=youtube&ds=yt&q=#{URI.escape(query)}&callback=suggestCallback").body
-
-    body = response[35..-2]
-    body = JSON.parse(body).as_a
-    suggestions = body[1].as_a[0..-2]
-
-    JSON.build do |json|
-      json.object do
-        json.field "query", body[0].as_s
-        json.field "suggestions" do
-          json.array do
-            suggestions.each do |suggestion|
-              json.string suggestion[0].as_s
-            end
-          end
-        end
-      end
-    end
-  rescue ex
-    env.response.status_code = 500
-    error_message = {"error" => ex.message}.to_json
-    next error_message
   end
 end
 
@@ -4639,39 +4590,55 @@ get "/videoplayback" do |env|
     next
   end
 
-  client = make_client(URI.parse(host), region)
   begin
-    client.get(url, headers) do |response|
-      env.response.status_code = response.status_code
+    range_begin, range_end = parse_range(env.request.headers["Range"]?)
+    (range_begin...range_end).each_slice(HTTP_CHUNK_SIZE) do |slice|
+      headers["Range"] = "bytes=#{slice[0]}-#{slice[-1]}"
+      begin
+        client = make_client(URI.parse(host), region)
+        client.get(url, headers) do |response|
+          content_range = response.headers["Content-Range"].lchop("bytes ")
+          content_size = content_range.split("/")[-1].to_i
 
-      response.headers.each do |key, value|
-        if !RESPONSE_HEADERS_BLACKLIST.includes? key
-          env.response.headers[key] = value
+          # Write headers for first chunk
+          if content_range.split("-")[0].to_i == range_begin
+            if !env.request.headers["Range"]? && response.status_code == 206
+              env.response.status_code = 200
+            else
+              env.response.status_code = response.status_code
+            end
+
+            response.headers.each do |key, value|
+              if !RESPONSE_HEADERS_BLACKLIST.includes?(key) && key != "Content-Range"
+                env.response.headers[key] = value
+              end
+            end
+
+            reported_end = range_end ? range_end : content_size
+            env.response.content_length = reported_end - range_begin
+
+            if env.request.headers["Range"]?
+              env.response.headers["Content-Range"] = "bytes #{range_begin}-#{reported_end - 1}/#{content_size}"
+            end
+
+            env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+            if title = query_params["title"]?
+              # https://blog.fastmail.com/2011/06/24/download-non-english-filenames/
+              env.response.headers["Content-Disposition"] = "attachment; filename=\"#{URI.escape(title)}\"; filename*=UTF-8''#{URI.escape(title)}"
+            end
+          end
+
+          proxy_file(response, env)
+        end
+      rescue ex
+        # FIXME: Potential bug in HTTP::Client
+        if ex.message == "Error reading socket: Connection reset by peer"
+          next
+        else
+          raise ex
         end
       end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      if response.headers["Location"]?
-        url = URI.parse(response.headers["Location"])
-        host = url.host
-
-        url = url.full_path
-        url += "&host=#{host}"
-
-        if region
-          url += "&region=#{region}"
-        end
-
-        next env.redirect url
-      end
-
-      if title = query_params["title"]?
-        # https://blog.fastmail.com/2011/06/24/download-non-english-filenames/
-        env.response.headers["Content-Disposition"] = "attachment; filename=\"#{URI.escape(title)}\"; filename*=UTF-8''#{URI.escape(title)}"
-      end
-
-      proxy_file(response, env)
     end
   rescue ex
   end

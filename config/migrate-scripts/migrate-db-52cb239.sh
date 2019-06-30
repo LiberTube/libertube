@@ -1,1 +1,3 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/49722a32568303b041b5f6210a1d3682
+#!/bin/sh
+
+psql invidious kemal -c "ALTER TABLE channel_videos ADD COLUMN views bigint;"

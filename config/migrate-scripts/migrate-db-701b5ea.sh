@@ -1,1 +1,3 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/93bf697ae66eb56ae24b1a57eb234837
+#!/bin/sh
+
+psql invidious kemal -c "ALTER TABLE users ADD COLUMN feed_needs_update boolean"
