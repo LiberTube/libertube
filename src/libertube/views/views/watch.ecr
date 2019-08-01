@@ -30,7 +30,7 @@
 var video_data = {
     id: '<%= video.id %>',
     plid: '<%= plid %>',
-    length_seconds: <%= video.info["length_seconds"].to_f %>,
+    length_seconds: <%= video.length_seconds.to_f %>,
     play_next: <%= !rvs.empty? && !plid && params.continue %>,
     next_video: '<%= rvs.select { |rv| rv["id"]? }[0]?.try &.["id"] %>',
     youtube_comments_text: '<%= HTML.escape(translate(locale, "View YouTube comments")) %>',
@@ -98,7 +98,7 @@ var video_data = {
                 <% end %>
             </p>
 
-            <% if CONFIG.dmca_content.includes? video.id %>
+            <% if CONFIG.dmca_content.includes?(video.id) || CONFIG.disabled?("downloads") %>
                 <p><%= translate(locale, "Download is disabled.") %></p>
             <% else %>
                 <form class="pure-form pure-form-stacked" action="/latest_version" method="get" rel="noopener" target="_blank">
@@ -165,7 +165,7 @@ var video_data = {
 
     <div class="pure-u-1 <% if params.related_videos || plid %>pure-u-lg-3-5<% else %>pure-u-md-4-5<% end %>">
         <div class="h-box">
-            <a href="/channel/<%= video.ucid %>">
+            <a href="/channel/<%= video.ucid %>" style="display:block;width:fit-content;width:-moz-fit-content">
                 <div class="channel-profile">
                     <img src="/ggpht<%= URI.parse(video.author_thumbnail).full_path %>">
                     <span><%= video.author %></span>

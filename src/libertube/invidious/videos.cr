@@ -182,7 +182,7 @@ VIDEO_FORMATS = {
   "135" => {"ext" => "mp4", "height" => 480, "format" => "DASH video", "vcodec" => "h264"},
   "136" => {"ext" => "mp4", "height" => 720, "format" => "DASH video", "vcodec" => "h264"},
   "137" => {"ext" => "mp4", "height" => 1080, "format" => "DASH video", "vcodec" => "h264"},
-  "138" => {"ext" => "mp4", "format" => "DASH video", "vcodec" => "h264"}, # Height can vary (https=>//github.com/rg3/youtube-dl/issues/4559)
+  "138" => {"ext" => "mp4", "format" => "DASH video", "vcodec" => "h264"}, # Height can vary (https://github.com/ytdl-org/youtube-dl/issues/4559)
   "160" => {"ext" => "mp4", "height" => 144, "format" => "DASH video", "vcodec" => "h264"},
   "212" => {"ext" => "mp4", "height" => 480, "format" => "DASH video", "vcodec" => "h264"},
   "264" => {"ext" => "mp4", "height" => 1440, "format" => "DASH video", "vcodec" => "h264"},
@@ -239,6 +239,12 @@ VIDEO_FORMATS = {
   "249" => {"ext" => "webm", "format" => "DASH audio", "acodec" => "opus", "abr" => 50},
   "250" => {"ext" => "webm", "format" => "DASH audio", "acodec" => "opus", "abr" => 70},
   "251" => {"ext" => "webm", "format" => "DASH audio", "acodec" => "opus", "abr" => 160},
+
+  # av01 video only formats sometimes served with "unknown" codecs
+  "394" => {"ext" => "mp4", "height" => 144, "vcodec" => "av01.0.05M.08"},
+  "395" => {"ext" => "mp4", "height" => 240, "vcodec" => "av01.0.05M.08"},
+  "396" => {"ext" => "mp4", "height" => 360, "vcodec" => "av01.0.05M.08"},
+  "397" => {"ext" => "mp4", "height" => 480, "vcodec" => "av01.0.05M.08"},
 }
 
 struct VideoPreferences
@@ -313,7 +319,7 @@ struct Video
 
           qualities.each do |quality|
             json.object do
-              json.field "url", self.author_thumbnail.gsub("=s48-", "=s#{quality}-")
+              json.field "url", self.author_thumbnail.gsub(/=s\d+/, "=s#{quality}")
               json.field "width", quality
               json.field "height", quality
             end
@@ -323,7 +329,7 @@ struct Video
 
       json.field "subCountText", self.sub_count_text
 
-      json.field "lengthSeconds", self.info["length_seconds"].to_i
+      json.field "lengthSeconds", self.length_seconds
       json.field "allowRatings", self.allow_ratings
       json.field "rating", self.info["avg_rating"].to_f32
       json.field "isListed", self.is_listed
@@ -557,7 +563,14 @@ struct Video
         fmt["clen"] = fmt_stream["contentLength"]?.try &.as_s || "0"
         fmt["bitrate"] = fmt_stream["bitrate"]?.try &.as_i.to_s || "0"
         fmt["itag"] = fmt_stream["itag"].as_i.to_s
-        fmt["url"] = fmt_stream["url"].as_s
+        if fmt_stream["url"]?
+          fmt["url"] = fmt_stream["url"].as_s
+        end
+        if fmt_stream["cipher"]?
+          HTTP::Params.parse(fmt_stream["cipher"].as_s).each do |key, value|
+            fmt[key] = value
+          end
+        end
         fmt["quality"] = fmt_stream["quality"].as_s
 
         if fmt_stream["width"]?
@@ -629,8 +642,14 @@ struct Video
         fmt["clen"] = adaptive_fmt["contentLength"]?.try &.as_s || "0"
         fmt["bitrate"] = adaptive_fmt["bitrate"]?.try &.as_i.to_s || "0"
         fmt["itag"] = adaptive_fmt["itag"].as_i.to_s
-        fmt["url"] = adaptive_fmt["url"].as_s
-
+        if adaptive_fmt["url"]?
+          fmt["url"] = adaptive_fmt["url"].as_s
+        end
+        if adaptive_fmt["cipher"]?
+          HTTP::Params.parse(adaptive_fmt["cipher"].as_s).each do |key, value|
+            fmt[key] = value
+          end
+        end
         if index = adaptive_fmt["indexRange"]?
           fmt["index"] = "#{index["start"]}-#{index["end"]}"
         end
@@ -821,7 +840,7 @@ struct Video
   end
 
   def length_seconds
-    return self.info["length_seconds"].to_i
+    self.player_response["videoDetails"]["lengthSeconds"].as_s.to_i
   end
 
   db_mapping({
@@ -919,7 +938,7 @@ def extract_polymer_config(body, html)
     end
   end
 
-  initial_data = JSON.parse(body.match(/window\["ytInitialData"\] = (?<info>.*?);\n/).try &.["info"] || "{}")
+  initial_data = extract_initial_data(body)
 
   primary_results = initial_data["contents"]?
     .try &.["twoColumnWatchNextResults"]?
@@ -1156,17 +1175,19 @@ def fetch_video(id, region)
     end
   end
 
-  if info["errorcode"]?.try &.== "2"
+  if info["errorcode"]?.try &.== "2" || !info["player_response"]
     raise "Video unavailable."
   end
 
-  if !info["title"]?
-    raise "Video unavailable."
+  if info["reason"]? && !info["player_response"]["videoDetails"]?
+    raise info["reason"]
   end
 
-  title = info["title"]
-  author = info["author"]? || ""
-  ucid = info["ucid"]? || ""
+  player_json = JSON.parse(info["player_response"])
+
+  title = player_json["videoDetails"]["title"].as_s
+  author = player_json["videoDetails"]["author"]?.try &.as_s || ""
+  ucid = player_json["videoDetails"]["channelId"]?.try &.as_s || ""
 
   views = html.xpath_node(%q(//meta[@itemprop="interactionCount"]))
     .try &.["content"].to_i64? || 0_i64
@@ -1218,7 +1239,7 @@ def fetch_video(id, region)
 
   license = html.xpath_node(%q(//h4[contains(text(),"License")]/parent::*/ul/li)).try &.content || ""
   sub_count_text = html.xpath_node(%q(//span[contains(@class, "yt-subscriber-count")])).try &.["title"]? || "0"
-  author_thumbnail = html.xpath_node(%(//span[@class="yt-thumb-clip"]/img)).try &.["data-thumb"]? || ""
+  author_thumbnail = html.xpath_node(%(//span[@class="yt-thumb-clip"]/img)).try &.["data-thumb"]?.try &.gsub(/^\/\//, "https://") || ""
 
   video = Video.new(id, info, Time.utc, title, views, likes, dislikes, wilson_score, published, description_html,
     nil, author, ucid, allowed_regions, is_family_friendly, genre, genre_url, license, sub_count_text, author_thumbnail)
@@ -1285,6 +1306,14 @@ def process_video_params(query, preferences)
   local = local == 1
   related_videos = related_videos == 1
   video_loop = video_loop == 1
+
+  if CONFIG.disabled?("dash") && quality == "dash"
+    quality = "high"
+  end
+
+  if CONFIG.disabled?("local") && local
+    local = false
+  end
 
   if query["t"]?
     video_start = decode_time(query["t"])

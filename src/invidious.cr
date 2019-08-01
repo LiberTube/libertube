@@ -80,12 +80,14 @@ LOCALES = {
   "es"    => load_locale("es"),
   "eu"    => load_locale("eu"),
   "fr"    => load_locale("fr"),
+  "is"    => load_locale("is"),
   "it"    => load_locale("it"),
   "nb_NO" => load_locale("nb_NO"),
   "nl"    => load_locale("nl"),
   "pl"    => load_locale("pl"),
   "ru"    => load_locale("ru"),
   "uk"    => load_locale("uk"),
+  "zh-CN" => load_locale("zh-CN"),
 }
 
 config = CONFIG
@@ -123,6 +125,7 @@ Kemal::CLI.new ARGV
 
 # Check table integrity
 if CONFIG.check_tables
+  analyze_table(PG_DB, logger, "channels", InvidiousChannel)
   analyze_table(PG_DB, logger, "channel_videos", ChannelVideo)
   analyze_table(PG_DB, logger, "nonces", Nonce)
   analyze_table(PG_DB, logger, "session_ids", SessionId)
@@ -482,8 +485,6 @@ get "/watch" do |env|
   video.description_html = replace_links(video.description_html)
 
   host_url = make_host_url(config, Kemal.config)
-  host_params = env.request.query_params
-  host_params.delete_all("v")
 
   if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
     hlsvp = video.player_response["streamingData"]["hlsManifestUrl"].as_s
@@ -520,7 +521,11 @@ get "/watch" do |env|
   end
 
   rating = video.info["avg_rating"].to_f64
-  engagement = ((video.dislikes.to_f + video.likes.to_f)/video.views * 100)
+  if video.views > 0
+    engagement = ((video.dislikes.to_f + video.likes.to_f)/video.views * 100)
+  else
+    engagement = 0
+  end
 
   playability_status = video.player_response["playabilityStatus"]?
   if playability_status && playability_status["status"] == "LIVE_STREAM_OFFLINE" && !video.premiere_timestamp
@@ -529,6 +534,30 @@ get "/watch" do |env|
   reason ||= ""
 
   templated "watch"
+end
+
+get "/embed/" do |env|
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  if plid = env.params.query["list"]?
+    begin
+      videos = fetch_playlist_videos(plid, 1, 1, locale: locale)
+    rescue ex
+      error_message = ex.message
+      env.response.status_code = 500
+      next templated "error"
+    end
+
+    url = "/embed/#{videos[0].id}?#{env.params.query}"
+
+    if env.params.query.size > 0
+      url += "?#{env.params.query}"
+    end
+  else
+    url = "/"
+  end
+
+  env.redirect url
 end
 
 get "/embed/:id" do |env|
@@ -558,7 +587,8 @@ get "/embed/:id" do |env|
 
   # YouTube embed supports `videoseries` with either `list=PLID`
   # or `playlist=VIDEO_ID,VIDEO_ID`
-  if id == "videoseries"
+  case id
+  when "videoseries"
     url = ""
 
     if plid
@@ -583,7 +613,26 @@ get "/embed/:id" do |env|
     end
 
     next env.redirect url
-  elsif id.size > 11
+  when "live_stream"
+    client = make_client(YT_URL)
+    response = client.get("/embed/live_stream?channel=#{env.params.query["channel"]? || ""}")
+    video_id = response.body.match(/"video_id":"(?<video_id>[a-zA-Z0-9_-]{11})"/).try &.["video_id"]
+
+    env.params.query.delete_all("channel")
+
+    if !video_id || video_id == "live_stream"
+      error_message = "Video is unavailable."
+      next templated "error"
+    end
+
+    url = "/embed/#{video_id}"
+
+    if env.params.query.size > 0
+      url += "?#{env.params.query}"
+    end
+
+    next env.redirect url
+  when id.size > 11
     url = "/embed/#{id[0, 11]}"
 
     if env.params.query.size > 0
@@ -619,9 +668,9 @@ get "/embed/:id" do |env|
     params.annotations = true
   end
 
-  if watched && !watched.includes? id
-    PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
-  end
+  # if watched && !watched.includes? id
+  #   PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
+  # end
 
   if notifications && notifications.includes? id
     PG_DB.exec("UPDATE users SET notifications = array_remove(notifications, $1) WHERE email = $2", id, user.as(User).email)
@@ -658,8 +707,6 @@ get "/embed/:id" do |env|
   video.description_html = replace_links(video.description_html)
 
   host_url = make_host_url(config, Kemal.config)
-  host_params = env.request.query_params
-  host_params.delete_all("v")
 
   if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
     hlsvp = video.player_response["streamingData"]["hlsManifestUrl"].as_s
@@ -860,6 +907,7 @@ get "/search" do |env|
     count, videos = search(search_query, page, search_params, region).as(Tuple)
   end
 
+  env.set "search", query
   templated "search"
 end
 
@@ -893,6 +941,7 @@ get "/login" do |env|
 
   tfa = env.params.query["tfa"]?
   tfa ||= false
+  prompt = ""
 
   templated "login"
 end
@@ -924,20 +973,18 @@ post "/login" do |env|
     begin
       client = make_client(LOGIN_URL)
       headers = HTTP::Headers.new
-      headers["Content-Type"] = "application/x-www-form-urlencoded;charset=utf-8"
-      headers["Google-Accounts-XSRF"] = "1"
-      headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.80 Safari/537.36"
-      headers["X-Same-Domain"] = "1"
 
-      login_page = client.get("/ServiceLogin?flowName=GlifWebSignIn&flowEntry=ServiceLogin&cid=1&navigationDirection=forward")
+      login_page = client.get("/ServiceLogin")
       headers = login_page.cookies.add_request_headers(headers)
 
       lookup_req = {
         email, nil, [] of String, nil, "US", nil, nil, 2, false, true,
         {nil, nil,
-         {2, 1, nil, 1, "https://accounts.google.com/ServiceLogin?passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3D%252F%26action_handle_signin%3Dtrue%26hl%3Den%26app%3Ddesktop%26feature%3Dsign_in_button&hl=en&service=youtube&uilel=3&requestPath=%2FServiceLogin&Page=PasswordSeparationSignIn", nil, [] of String, 4, [] of String, "GlifWebSignIn"},
+         {2, 1, nil, 1,
+          "https://accounts.google.com/ServiceLogin?passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3D%252F%26action_handle_signin%3Dtrue%26hl%3Den%26app%3Ddesktop%26feature%3Dsign_in_button&hl=en&service=youtube&uilel=3&requestPath=%2FServiceLogin&Page=PasswordSeparationSignIn",
+          nil, [] of String, 4},
          1,
-         {nil, nil, [] of String, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, [] of String, nil, nil, nil, [] of String, [] of String},
+         {nil, nil, [] of String},
          nil, nil, nil, true,
         },
         email,
@@ -945,8 +992,10 @@ post "/login" do |env|
 
       traceback << "Getting lookup..."
 
+      headers["Content-Type"] = "application/x-www-form-urlencoded;charset=utf-8"
+      headers["Google-Accounts-XSRF"] = "1"
+
       response = client.post("/_/signin/sl/lookup", headers, login_req(lookup_req))
-      headers = response.cookies.add_request_headers(headers)
       lookup_results = JSON.parse(response.body[5..-1])
 
       traceback << "done, returned #{response.status_code}.<br/>"
@@ -959,9 +1008,11 @@ post "/login" do |env|
          {password, nil, true},
         },
         {nil, nil,
-         {2, 1, nil, 1, "https://accounts.google.com/ServiceLogin?passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3D%252F%26action_handle_signin%3Dtrue%26hl%3Den%26app%3Ddesktop%26feature%3Dsign_in_button&hl=en&service=youtube&uilel=3&requestPath=%2FServiceLogin&Page=PasswordSeparationSignIn", nil, [] of String, 4, [] of String, "GlifWebSignIn"},
+         {2, 1, nil, 1,
+          "https://accounts.google.com/ServiceLogin?passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3D%252F%26action_handle_signin%3Dtrue%26hl%3Den%26app%3Ddesktop%26feature%3Dsign_in_button&hl=en&service=youtube&uilel=3&requestPath=%2FServiceLogin&Page=PasswordSeparationSignIn",
+          nil, [] of String, 4},
          1,
-         {nil, nil, [] of String, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, [] of String, nil, nil, nil, [] of String, [] of String},
+         {nil, nil, [] of String},
          nil, nil, nil, true,
         },
       }.to_json
@@ -988,15 +1039,22 @@ post "/login" do |env|
         next templated "error"
       end
 
-      if challenge_results[0][-1]?.try &.[0]?.try &.as_a?
-        traceback << "User has 2FA.<br/>"
+      prompt_type = challenge_results[0][-1]?.try &.[0].as_a?.try &.[0][2]?
+      if {"TWO_STEP_VERIFICATION", "LOGIN_CHALLENGE"}.includes? prompt_type
+        traceback << "Handling prompt #{prompt_type}.<br/>"
+        case prompt_type
+        when "TWO_STEP_VERIFICATION"
+          prompt_type = 2
+        when "LOGIN_CHALLENGE"
+          prompt_type = 4
+        end
 
         # Prefer Authenticator app and SMS over unsupported protocols
-        if challenge_results[0][-1][0][0][8] != 6 && challenge_results[0][-1][0][0][8] != 9
-          tfa = challenge_results[0][-1][0].as_a.select { |auth_type| auth_type[8] == 6 || auth_type[8] == 9 }[0]
+        if !{6, 9, 12, 15}.includes?(challenge_results[0][-1][0][0][8]) && prompt_type == 4
+          tfa = challenge_results[0][-1][0].as_a.select { |auth_type| {6, 9, 12, 15}.includes? auth_type[8] }[0]
 
           traceback << "Selecting challenge #{tfa[8]}..."
-          select_challenge = {2, nil, nil, nil, {tfa[8]}}.to_json
+          select_challenge = {prompt_type, nil, nil, nil, {tfa[8]}}.to_json
 
           tl = challenge_results[1][2]
 
@@ -1010,62 +1068,84 @@ post "/login" do |env|
           tfa = challenge_results[0][-1][0][0]
         end
 
-        if tfa[2] == "TWO_STEP_VERIFICATION"
-          if tfa[5] == "QUOTA_EXCEEDED"
-            error_message = translate(locale, "Quota exceeded, try again in a few hours")
-            env.response.status_code = 423
-            next templated "error"
-          end
-
-          if !tfa_code
-            account_type = "google"
-            captcha_type = "image"
-            tfa = true
-            captcha = nil
-            next templated "login"
-          end
-
-          tl = challenge_results[1][2]
-
-          request_type = tfa[8]
-          case request_type
-          when 6
-            # Authenticator app
-            tfa_req = {
-              user_hash, nil, 2, nil,
-              {6, nil, nil, nil, nil,
-               {tfa_code, false},
-              },
-            }.to_json
-          when 9
-            # Voice or text message
-            tfa_req = {
-              user_hash, nil, 2, nil,
-              {9, nil, nil, nil, nil, nil, nil, nil,
-               {nil, tfa_code, false, 2},
-              },
-            }.to_json
-          else
-            error_message = translate(locale, "Unable to log in, make sure two-factor authentication (Authenticator or SMS) is turned on.")
-            env.response.status_code = 500
-            next templated "error"
-          end
-
-          traceback << "Submitting challenge..."
-
-          response = client.post("/_/signin/challenge?hl=en&TL=#{tl}", headers, login_req(tfa_req))
-          headers = response.cookies.add_request_headers(headers)
-          challenge_results = JSON.parse(response.body[5..-1])
-
-          if (challenge_results[0][-1]?.try &.[5] == "INCORRECT_ANSWER_ENTERED") ||
-             (challenge_results[0][-1]?.try &.[5] == "INVALID_INPUT")
-            error_message = translate(locale, "Invalid TFA code")
-            env.response.status_code = 401
-            next templated "error"
-          end
-
-          traceback << "done.<br/>"
+        if tfa[5] == "QUOTA_EXCEEDED"
+          error_message = translate(locale, "Quota exceeded, try again in a few hours")
+          env.response.status_code = 423
+          next templated "error"
         end
+
+        if !tfa_code
+          account_type = "google"
+          captcha_type = "image"
+
+          case tfa[8]
+          when 6, 9
+            prompt = "Google verification code"
+          when 12
+            prompt = "Login verification, recovery email: #{tfa[-1][tfa[-1].as_h.keys[0]][0]}"
+          when 15
+            prompt = "Login verification, security question: #{tfa[-1][tfa[-1].as_h.keys[0]][0]}"
+          else
+            prompt = "Google verification code"
+          end
+
+          tfa = true
+          captcha = nil
+          next templated "login"
+        end
+
+        tl = challenge_results[1][2]
+
+        request_type = tfa[8]
+        case request_type
+        when 6 # Authenticator app
+          tfa_req = {
+            user_hash, nil, 2, nil,
+            {6, nil, nil, nil, nil,
+             {tfa_code, false},
+            },
+          }.to_json
+        when 9 # Voice or text message
+          tfa_req = {
+            user_hash, nil, 2, nil,
+            {9, nil, nil, nil, nil, nil, nil, nil,
+             {nil, tfa_code, false, 2},
+            },
+          }.to_json
+        when 12 # Recovery email
+          tfa_req = {
+            user_hash, nil, 4, nil,
+            {12, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+             {tfa_code},
+            },
+          }.to_json
+        when 15 # Security question
+          tfa_req = {
+            user_hash, nil, 5, nil,
+            {15, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+             {tfa_code},
+            },
+          }.to_json
+        else
+          error_message = translate(locale, "Unable to log in, make sure two-factor authentication (Authenticator or SMS) is turned on.")
+          env.response.status_code = 500
+          next templated "error"
+        end
+
+        traceback << "Submitting challenge..."
+
+        response = client.post("/_/signin/challenge?hl=en&TL=#{tl}", headers, login_req(tfa_req))
+        headers = response.cookies.add_request_headers(headers)
+        challenge_results = JSON.parse(response.body[5..-1])
+
+        if (challenge_results[0][-1]?.try &.[5] == "INCORRECT_ANSWER_ENTERED") ||
+           (challenge_results[0][-1]?.try &.[5] == "INVALID_INPUT")
+          error_message = translate(locale, "Invalid TFA code")
+          env.response.status_code = 401
+          next templated "error"
+        end
+
+        traceback << "done.<br/>"
       end
 
       traceback << "Logging in..."
@@ -1079,8 +1159,7 @@ post "/login" do |env|
         end
 
         # TODO: Occasionally there will be a second page after login confirming
-        # the user's phone number, which we will likely choke on.
-        # if location.includes? "SmsAuthInterstitial"
+        # the user's phone number ("/b/0/SmsAuthInterstitial"), which we currently choke on.
 
         login = client.get(location, headers)
         headers = login.cookies.add_request_headers(headers)
@@ -1224,6 +1303,7 @@ post "/login" do |env|
 
           account_type = "invidious"
           tfa = false
+          prompt = ""
 
           if captcha_type == "image"
             captcha = generate_captcha(HMAC_KEY, PG_DB)
@@ -1284,10 +1364,7 @@ post "/login" do |env|
       PG_DB.exec("INSERT INTO session_ids VALUES ($1, $2, $3)", sid, email, Time.utc)
 
       view_name = "subscriptions_#{sha256(user.email)}"
-      PG_DB.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
-        SELECT * FROM channel_videos WHERE
-        ucid IN (SELECT unnest(subscriptions) FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')
-        ORDER BY published DESC")
+      PG_DB.exec("CREATE MATERIALIZED VIEW #{view_name} AS #{MATERIALIZED_VIEW_SQL.call(user.email)}")
 
       if Kemal.config.ssl || config.https_only
         secure = true
@@ -1326,25 +1403,27 @@ post "/signout" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    token = env.params.body["csrf_token"]?
+  if !user
+    next env.redirect referer
+  end
 
-    begin
-      validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
-    rescue ex
-      error_message = ex.message
-      env.response.status_code = 400
-      next templated "error"
-    end
+  user = user.as(User)
+  sid = sid.as(String)
+  token = env.params.body["csrf_token"]?
 
-    PG_DB.exec("DELETE FROM session_ids * WHERE id = $1", sid)
+  begin
+    validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
+  rescue ex
+    error_message = ex.message
+    env.response.status_code = 400
+    next templated "error"
+  end
 
-    env.request.cookies.each do |cookie|
-      cookie.expires = Time.utc(1990, 1, 1)
-      env.response.cookies << cookie
-    end
+  PG_DB.exec("DELETE FROM session_ids * WHERE id = $1", sid)
+
+  env.request.cookies.each do |cookie|
+    cookie.expires = Time.utc(1990, 1, 1)
+    env.response.cookies << cookie
   end
 
   env.redirect referer
@@ -1892,13 +1971,13 @@ get "/data_control" do |env|
   user = env.get? "user"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-
-    templated "data_control"
-  else
-    env.redirect referer
+  if !user
+    next env.redirect referer
   end
+
+  user = user.as(User)
+
+  templated "data_control"
 end
 
 post "/data_control" do |env|
@@ -2051,15 +2130,15 @@ get "/change_password" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    csrf_token = generate_response(sid, {":change_password"}, HMAC_KEY, PG_DB)
-
-    templated "change_password"
-  else
-    env.redirect referer
+  if !user
+    next env.redirect referer
   end
+
+  user = user.as(User)
+  sid = sid.as(String)
+  csrf_token = generate_response(sid, {":change_password"}, HMAC_KEY, PG_DB)
+
+  templated "change_password"
 end
 
 post "/change_password" do |env|
@@ -2069,63 +2148,65 @@ post "/change_password" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    token = env.params.body["csrf_token"]?
-
-    # We don't store passwords for Google accounts
-    if !user.password
-      error_message = "Cannot change password for Google accounts"
-      env.response.status_code = 400
-      next templated "error"
-    end
-
-    begin
-      validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
-    rescue ex
-      error_message = ex.message
-      env.response.status_code = 400
-      next templated "error"
-    end
-
-    password = env.params.body["password"]?
-    if !password
-      error_message = translate(locale, "Password is a required field")
-      env.response.status_code = 401
-      next templated "error"
-    end
-
-    new_passwords = env.params.body.select { |k, v| k.match(/^new_password\[\d+\]$/) }.map { |k, v| v }
-
-    if new_passwords.size <= 1 || new_passwords.uniq.size != 1
-      error_message = translate(locale, "New passwords must match")
-      env.response.status_code = 400
-      next templated "error"
-    end
-
-    new_password = new_passwords.uniq[0]
-    if new_password.empty?
-      error_message = translate(locale, "Password cannot be empty")
-      env.response.status_code = 401
-      next templated "error"
-    end
-
-    if new_password.bytesize > 55
-      error_message = translate(locale, "Password should not be longer than 55 characters")
-      env.response.status_code = 400
-      next templated "error"
-    end
-
-    if !Crypto::Bcrypt::Password.new(user.password.not_nil!).verify(password.byte_slice(0, 55))
-      error_message = translate(locale, "Incorrect password")
-      env.response.status_code = 401
-      next templated "error"
-    end
-
-    new_password = Crypto::Bcrypt::Password.create(new_password, cost: 10)
-    PG_DB.exec("UPDATE users SET password = $1 WHERE email = $2", new_password.to_s, user.email)
+  if !user
+    next env.redirect referer
   end
+
+  user = user.as(User)
+  sid = sid.as(String)
+  token = env.params.body["csrf_token"]?
+
+  # We don't store passwords for Google accounts
+  if !user.password
+    error_message = "Cannot change password for Google accounts"
+    env.response.status_code = 400
+    next templated "error"
+  end
+
+  begin
+    validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
+  rescue ex
+    error_message = ex.message
+    env.response.status_code = 400
+    next templated "error"
+  end
+
+  password = env.params.body["password"]?
+  if !password
+    error_message = translate(locale, "Password is a required field")
+    env.response.status_code = 401
+    next templated "error"
+  end
+
+  new_passwords = env.params.body.select { |k, v| k.match(/^new_password\[\d+\]$/) }.map { |k, v| v }
+
+  if new_passwords.size <= 1 || new_passwords.uniq.size != 1
+    error_message = translate(locale, "New passwords must match")
+    env.response.status_code = 400
+    next templated "error"
+  end
+
+  new_password = new_passwords.uniq[0]
+  if new_password.empty?
+    error_message = translate(locale, "Password cannot be empty")
+    env.response.status_code = 401
+    next templated "error"
+  end
+
+  if new_password.bytesize > 55
+    error_message = translate(locale, "Password should not be longer than 55 characters")
+    env.response.status_code = 400
+    next templated "error"
+  end
+
+  if !Crypto::Bcrypt::Password.new(user.password.not_nil!).verify(password.byte_slice(0, 55))
+    error_message = translate(locale, "Incorrect password")
+    env.response.status_code = 401
+    next templated "error"
+  end
+
+  new_password = Crypto::Bcrypt::Password.create(new_password, cost: 10)
+  PG_DB.exec("UPDATE users SET password = $1 WHERE email = $2", new_password.to_s, user.email)
 
   env.redirect referer
 end
@@ -2137,15 +2218,15 @@ get "/delete_account" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    csrf_token = generate_response(sid, {":delete_account"}, HMAC_KEY, PG_DB)
-
-    templated "delete_account"
-  else
-    env.redirect referer
+  if !user
+    next env.redirect referer
   end
+
+  user = user.as(User)
+  sid = sid.as(String)
+  csrf_token = generate_response(sid, {":delete_account"}, HMAC_KEY, PG_DB)
+
+  templated "delete_account"
 end
 
 post "/delete_account" do |env|
@@ -2155,28 +2236,30 @@ post "/delete_account" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    token = env.params.body["csrf_token"]?
+  if !user
+    next env.redirect referer
+  end
 
-    begin
-      validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
-    rescue ex
-      error_message = ex.message
-      env.response.status_code = 400
-      next templated "error"
-    end
+  user = user.as(User)
+  sid = sid.as(String)
+  token = env.params.body["csrf_token"]?
 
-    view_name = "subscriptions_#{sha256(user.email)}"
-    PG_DB.exec("DELETE FROM users * WHERE email = $1", user.email)
-    PG_DB.exec("DELETE FROM session_ids * WHERE email = $1", user.email)
-    PG_DB.exec("DROP MATERIALIZED VIEW #{view_name}")
+  begin
+    validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
+  rescue ex
+    error_message = ex.message
+    env.response.status_code = 400
+    next templated "error"
+  end
 
-    env.request.cookies.each do |cookie|
-      cookie.expires = Time.utc(1990, 1, 1)
-      env.response.cookies << cookie
-    end
+  view_name = "subscriptions_#{sha256(user.email)}"
+  PG_DB.exec("DELETE FROM users * WHERE email = $1", user.email)
+  PG_DB.exec("DELETE FROM session_ids * WHERE email = $1", user.email)
+  PG_DB.exec("DROP MATERIALIZED VIEW #{view_name}")
+
+  env.request.cookies.each do |cookie|
+    cookie.expires = Time.utc(1990, 1, 1)
+    env.response.cookies << cookie
   end
 
   env.redirect referer
@@ -2189,15 +2272,15 @@ get "/clear_watch_history" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    csrf_token = generate_response(sid, {":clear_watch_history"}, HMAC_KEY, PG_DB)
-
-    templated "clear_watch_history"
-  else
-    env.redirect referer
+  if !user
+    next env.redirect referer
   end
+
+  user = user.as(User)
+  sid = sid.as(String)
+  csrf_token = generate_response(sid, {":clear_watch_history"}, HMAC_KEY, PG_DB)
+
+  templated "clear_watch_history"
 end
 
 post "/clear_watch_history" do |env|
@@ -2207,22 +2290,23 @@ post "/clear_watch_history" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    token = env.params.body["csrf_token"]?
-
-    begin
-      validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
-    rescue ex
-      error_message = ex.message
-      env.response.status_code = 400
-      next templated "error"
-    end
-
-    PG_DB.exec("UPDATE users SET watched = '{}' WHERE email = $1", user.email)
+  if !user
+    next env.redirect referer
   end
 
+  user = user.as(User)
+  sid = sid.as(String)
+  token = env.params.body["csrf_token"]?
+
+  begin
+    validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
+  rescue ex
+    error_message = ex.message
+    env.response.status_code = 400
+    next templated "error"
+  end
+
+  PG_DB.exec("UPDATE users SET watched = '{}' WHERE email = $1", user.email)
   env.redirect referer
 end
 
@@ -2233,25 +2317,25 @@ get "/authorize_token" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = user.as(User)
-    sid = sid.as(String)
-    csrf_token = generate_response(sid, {":authorize_token"}, HMAC_KEY, PG_DB)
-
-    scopes = env.params.query["scopes"]?.try &.split(",")
-    scopes ||= [] of String
-
-    callback_url = env.params.query["callback_url"]?
-    if callback_url
-      callback_url = URI.parse(callback_url)
-    end
-
-    expire = env.params.query["expire"]?.try &.to_i?
-
-    templated "authorize_token"
-  else
-    env.redirect referer
+  if !user
+    next env.redirect referer
   end
+
+  user = user.as(User)
+  sid = sid.as(String)
+  csrf_token = generate_response(sid, {":authorize_token"}, HMAC_KEY, PG_DB)
+
+  scopes = env.params.query["scopes"]?.try &.split(",")
+  scopes ||= [] of String
+
+  callback_url = env.params.query["callback_url"]?
+  if callback_url
+    callback_url = URI.parse(callback_url)
+  end
+
+  expire = env.params.query["expire"]?.try &.to_i?
+
+  templated "authorize_token"
 end
 
 post "/authorize_token" do |env|
@@ -2261,44 +2345,46 @@ post "/authorize_token" do |env|
   sid = env.get? "sid"
   referer = get_referer(env)
 
-  if user
-    user = env.get("user").as(User)
-    sid = sid.as(String)
-    token = env.params.body["csrf_token"]?
+  if !user
+    next env.redirect referer
+  end
 
-    begin
-      validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
-    rescue ex
-      error_message = ex.message
-      env.response.status_code = 400
-      next templated "error"
-    end
+  user = env.get("user").as(User)
+  sid = sid.as(String)
+  token = env.params.body["csrf_token"]?
 
-    scopes = env.params.body.select { |k, v| k.match(/^scopes\[\d+\]$/) }.map { |k, v| v }
-    callback_url = env.params.body["callbackUrl"]?
-    expire = env.params.body["expire"]?.try &.to_i?
+  begin
+    validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
+  rescue ex
+    error_message = ex.message
+    env.response.status_code = 400
+    next templated "error"
+  end
 
-    access_token = generate_token(user.email, scopes, expire, HMAC_KEY, PG_DB)
+  scopes = env.params.body.select { |k, v| k.match(/^scopes\[\d+\]$/) }.map { |k, v| v }
+  callback_url = env.params.body["callbackUrl"]?
+  expire = env.params.body["expire"]?.try &.to_i?
 
-    if callback_url
-      access_token = URI.escape(access_token)
-      url = URI.parse(callback_url)
+  access_token = generate_token(user.email, scopes, expire, HMAC_KEY, PG_DB)
 
-      if url.query
-        query = HTTP::Params.parse(url.query.not_nil!)
-      else
-        query = HTTP::Params.new
-      end
+  if callback_url
+    access_token = URI.escape(access_token)
+    url = URI.parse(callback_url)
 
-      query["token"] = access_token
-      url.query = query.to_s
-
-      env.redirect url.to_s
+    if url.query
+      query = HTTP::Params.parse(url.query.not_nil!)
     else
-      csrf_token = ""
-      env.set "access_token", access_token
-      templated "authorize_token"
+      query = HTTP::Params.new
     end
+
+    query["token"] = access_token
+    url.query = query.to_s
+
+    env.redirect url.to_s
+  else
+    csrf_token = ""
+    env.set "access_token", access_token
+    templated "authorize_token"
   end
 end
 
@@ -2661,9 +2747,18 @@ end
 get "/feed/webhook/:token" do |env|
   verify_token = env.params.url["token"]
 
-  mode = env.params.query["hub.mode"]
-  topic = env.params.query["hub.topic"]
-  challenge = env.params.query["hub.challenge"]
+  mode = env.params.query["hub.mode"]?
+  topic = env.params.query["hub.topic"]?
+  challenge = env.params.query["hub.challenge"]?
+
+  if !mode || !topic || !challenge
+    env.response.status_code = 400
+    next
+  else
+    mode = mode.not_nil!
+    topic = topic.not_nil!
+    challenge = challenge.not_nil!
+  end
 
   case verify_token
   when .starts_with? "v1"
@@ -2866,6 +2961,16 @@ get "/user/:user/videos" do |env|
   env.redirect "/channel/#{user}/videos"
 end
 
+get "/user/:user/about" do |env|
+  user = env.params.url["user"]
+  env.redirect "/channel/#{user}"
+end
+
+get "/channel:ucid/about" do |env|
+  ucid = env.params.url["ucid"]
+  env.redirect "/channel/#{ucid}"
+end
+
 get "/channel/:ucid" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -2912,7 +3017,7 @@ get "/channel/:ucid" do |env|
     sort_options = {"newest", "oldest", "popular"}
     sort_by ||= "newest"
 
-    items, count = get_60_videos(channel.ucid, page, channel.auto_generated, sort_by)
+    items, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
     items.select! { |item| !item.paid }
 
     env.set "search", "channel:#{channel.ucid} "
@@ -2970,7 +3075,49 @@ get "/channel/:ucid/playlists" do |env|
   items = items.map { |item| item.as(SearchPlaylist) }
   items.each { |item| item.author = "" }
 
+  env.set "search", "channel:#{channel.ucid} "
   templated "playlists"
+end
+
+get "/channel/:ucid/community" do |env|
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  user = env.get? "user"
+  if user
+    user = user.as(User)
+    subscriptions = user.subscriptions
+  end
+  subscriptions ||= [] of String
+
+  ucid = env.params.url["ucid"]
+
+  thin_mode = env.params.query["thin_mode"]? || env.get("preferences").as(Preferences).thin_mode
+  thin_mode = thin_mode == "true"
+
+  continuation = env.params.query["continuation"]?
+  # sort_by = env.params.query["sort_by"]?.try &.downcase
+
+  begin
+    channel = get_about_info(ucid, locale)
+  rescue ex
+    error_message = ex.message
+    env.response.status_code = 500
+    next templated "error"
+  end
+
+  if !channel.tabs.includes? "community"
+    next env.redirect "/channel/#{channel.ucid}"
+  end
+
+  begin
+    items = JSON.parse(fetch_channel_community(ucid, continuation, locale, config, Kemal.config, "json", thin_mode))
+  rescue ex
+    env.response.status_code = 500
+    error_message = ex.message
+  end
+
+  env.set "search", "channel:#{channel.ucid} "
+  templated "community"
 end
 
 # API Endpoints
@@ -3278,9 +3425,9 @@ get "/api/v1/insights/:id" do |env|
 
   client = make_client(YT_URL)
   headers = HTTP::Headers.new
-  html = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1")
+  response = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1")
 
-  headers["cookie"] = html.cookies.add_request_headers(headers)["cookie"]
+  headers["cookie"] = response.cookies.add_request_headers(headers)["cookie"]
   headers["content-type"] = "application/x-www-form-urlencoded"
 
   headers["x-client-data"] = "CIi2yQEIpbbJAQipncoBCNedygEIqKPKAQ=="
@@ -3290,9 +3437,7 @@ get "/api/v1/insights/:id" do |env|
   headers["x-youtube-client-name"] = "1"
   headers["x-youtube-client-version"] = "2.20180719"
 
-  body = html.body
-  session_token = body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).not_nil!["session_token"]
-
+  session_token = response.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/).try &.["session_token"]? || ""
   post_req = {
     session_token: session_token,
   }
@@ -3508,7 +3653,7 @@ get "/api/v1/top" do |env|
             generate_thumbnails(json, video.id, config, Kemal.config)
           end
 
-          json.field "lengthSeconds", video.info["length_seconds"].to_i
+          json.field "lengthSeconds", video.length_seconds
           json.field "viewCount", video.views
 
           json.field "author", video.author
@@ -3548,7 +3693,7 @@ get "/api/v1/channels/:ucid" do |env|
     count = 0
   else
     begin
-      videos, count = get_60_videos(channel.ucid, page, channel.auto_generated, sort_by)
+      videos, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 500
@@ -3573,14 +3718,14 @@ get "/api/v1/channels/:ucid" do |env|
             }
             qualities.each do |quality|
               json.object do
-                json.field "url", channel.banner.not_nil!.gsub("=w1060", "=w#{quality[:width]}")
+                json.field "url", channel.banner.not_nil!.gsub("=w1060-", "=w#{quality[:width]}-")
                 json.field "width", quality[:width]
                 json.field "height", quality[:height]
               end
             end
 
             json.object do
-              json.field "url", channel.banner.not_nil!.rchop("=w1060-fcrop64=1,00005a57ffffa5a8-nd-c0xffffffff-rj-k-no")
+              json.field "url", channel.banner.not_nil!.split("=w1060-")[0]
               json.field "width", 512
               json.field "height", 288
             end
@@ -3594,7 +3739,7 @@ get "/api/v1/channels/:ucid" do |env|
 
           qualities.each do |quality|
             json.object do
-              json.field "url", channel.author_thumbnail.gsub("=s100-", "=s#{quality}-")
+              json.field "url", channel.author_thumbnail.gsub(/=\d+/, "=s#{quality}")
               json.field "width", quality
               json.field "height", quality
             end
@@ -3636,7 +3781,7 @@ get "/api/v1/channels/:ucid" do |env|
 
                   qualities.each do |quality|
                     json.object do
-                      json.field "url", related_channel.author_thumbnail.gsub("=s48-", "=s#{quality}-")
+                      json.field "url", related_channel.author_thumbnail.gsub(/=\d+/, "=s#{quality}")
                       json.field "width", quality
                       json.field "height", quality
                     end
@@ -3673,7 +3818,7 @@ end
     end
 
     begin
-      videos, count = get_60_videos(channel.ucid, page, channel.auto_generated, sort_by)
+      videos, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 500
@@ -3756,6 +3901,33 @@ end
   end
 end
 
+{"/api/v1/channels/:ucid/comments", "/api/v1/channels/comments/:ucid"}.each do |route|
+  get route do |env|
+    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+    env.response.content_type = "application/json"
+
+    ucid = env.params.url["ucid"]
+
+    thin_mode = env.params.query["thin_mode"]?
+    thin_mode = thin_mode == "true"
+
+    format = env.params.query["format"]?
+    format ||= "json"
+
+    continuation = env.params.query["continuation"]?
+    # sort_by = env.params.query["sort_by"]?.try &.downcase
+
+    begin
+      fetch_channel_community(ucid, continuation, locale, config, Kemal.config, format, thin_mode)
+    rescue ex
+      env.response.status_code = 400
+      error_message = {"error" => ex.message}.to_json
+      next error_message
+    end
+  end
+end
+
 get "/api/v1/channels/search/:ucid" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -3810,11 +3982,8 @@ get "/api/v1/search" do |env|
     search_params = produce_search_params(sort_by, date, content_type, duration, features)
   rescue ex
     env.response.status_code = 400
-    next JSON.build do |json|
-      json.object do
-        json.field "error", ex.message
-      end
-    end
+    error_message = {"error" => ex.message}.to_json
+    next error_message
   end
 
   count, search_results = search(query, page, search_params, region).as(Tuple)
@@ -3824,6 +3993,42 @@ get "/api/v1/search" do |env|
         item.to_json(locale, config, Kemal.config, json)
       end
     end
+  end
+end
+
+get "/api/v1/search/suggestions" do |env|
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+  region = env.params.query["region"]?
+
+  env.response.content_type = "application/json"
+
+  query = env.params.query["q"]?
+  query ||= ""
+
+  begin
+    client = make_client(URI.parse("https://suggestqueries.google.com"))
+    response = client.get("/complete/search?hl=en&gl=#{region}&client=youtube&ds=yt&q=#{URI.escape(query)}&callback=suggestCallback").body
+
+    body = response[35..-2]
+    body = JSON.parse(body).as_a
+    suggestions = body[1].as_a[0..-2]
+
+    JSON.build do |json|
+      json.object do
+        json.field "query", body[0].as_s
+        json.field "suggestions" do
+          json.array do
+            suggestions.each do |suggestion|
+              json.string suggestion[0].as_s
+            end
+          end
+        end
+      end
+    end
+  rescue ex
+    env.response.status_code = 500
+    error_message = {"error" => ex.message}.to_json
+    next error_message
   end
 end
 
@@ -3874,7 +4079,7 @@ get "/api/v1/playlists/:plid" do |env|
 
           qualities.each do |quality|
             json.object do
-              json.field "url", playlist.author_thumbnail.gsub("=s100-", "=s#{quality}-")
+              json.field "url", playlist.author_thumbnail.gsub(/=\d+/, "=s#{quality}")
               json.field "width", quality
               json.field "height", quality
             end
@@ -4270,7 +4475,7 @@ get "/api/manifest/dash/id/:id" do |env|
       url = url.rchop("</BaseURL>")
 
       if local
-        url = URI.parse(url).full_path.lchop("/")
+        url = URI.parse(url).full_path
       end
 
       "<BaseURL>#{url}</BaseURL>"
@@ -4283,7 +4488,7 @@ get "/api/manifest/dash/id/:id" do |env|
 
   if local
     adaptive_fmts.each do |fmt|
-      fmt["url"] = URI.parse(fmt["url"]).full_path.lchop("/")
+      fmt["url"] = URI.parse(fmt["url"]).full_path
     end
   end
 
@@ -4293,13 +4498,18 @@ get "/api/manifest/dash/id/:id" do |env|
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("MPD", "xmlns": "urn:mpeg:dash:schema:mpd:2011",
       "profiles": "urn:mpeg:dash:profile:full:2011", minBufferTime: "PT1.5S", type: "static",
-      mediaPresentationDuration: "PT#{video.info["length_seconds"]}S") do
+      mediaPresentationDuration: "PT#{video.length_seconds}S") do
       xml.element("Period") do
         i = 0
 
         {"audio/mp4", "audio/webm"}.each do |mime_type|
+          mime_streams = audio_streams.select { |stream| stream["type"].starts_with? mime_type }
+          if mime_streams.empty?
+            next
+          end
+
           xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true) do
-            audio_streams.select { |stream| stream["type"].starts_with? mime_type }.each do |fmt|
+            mime_streams.each do |fmt|
               codecs = fmt["type"].split("codecs=")[1].strip('"')
               bandwidth = fmt["bitrate"].to_i * 1000
               itag = fmt["itag"]
@@ -4320,9 +4530,14 @@ get "/api/manifest/dash/id/:id" do |env|
         end
 
         {"video/mp4", "video/webm"}.each do |mime_type|
+          mime_streams = video_streams.select { |stream| stream["type"].starts_with? mime_type }
+          if mime_streams.empty?
+            next
+          end
+
           heights = [] of Int32
           xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true, scanType: "progressive") do
-            video_streams.select { |stream| stream["type"].starts_with? mime_type }.each do |fmt|
+            mime_streams.each do |fmt|
               codecs = fmt["type"].split("codecs=")[1].strip('"')
               bandwidth = fmt["bitrate"]
               itag = fmt["itag"]
@@ -4397,13 +4612,41 @@ get "/api/manifest/hls_playlist/*" do |env|
   manifest = manifest.body
 
   if local
-    manifest = manifest.gsub("https://www.youtube.com", host_url)
-    manifest = manifest.gsub(/https:\/\/r\d---.{11}\.c\.youtube\.com/, host_url)
-    manifest = manifest.gsub("seg.ts", "seg.ts?local=true")
-  end
+    manifest = manifest.gsub(/^https:\/\/r\d---.{11}\.c\.youtube\.com[^\n]*/m) do |match|
+      path = URI.parse(match).path
 
-  fvip = manifest.match(/hls_chunk_host\/r(?<fvip>\d+)---/).not_nil!["fvip"]
-  manifest = manifest.gsub("seg.ts", "seg.ts/fvip/#{fvip}")
+      path = path.lchop("/videoplayback/")
+      path = path.rchop("/")
+
+      path = path.gsub(/mime\/\w+\/\w+/) do |mimetype|
+        mimetype = mimetype.split("/")
+        mimetype[0] + "/" + mimetype[1] + "%2F" + mimetype[2]
+      end
+
+      path = path.split("/")
+
+      raw_params = {} of String => Array(String)
+      path.each_slice(2) do |pair|
+        key, value = pair
+        value = URI.unescape(value)
+
+        if raw_params[key]?
+          raw_params[key] << value
+        else
+          raw_params[key] = [value]
+        end
+      end
+
+      raw_params = HTTP::Params.new(raw_params)
+      if fvip = raw_params["hls_chunk_host"].match(/r(?<fvip>\d+)---/)
+        raw_params["fvip"] = fvip["fvip"]
+      end
+
+      raw_params["local"] = "true"
+
+      "#{host_url}/videoplayback?#{raw_params}"
+    end
+  end
 
   manifest
 end
@@ -4590,18 +4833,77 @@ get "/videoplayback" do |env|
     next
   end
 
-  begin
-    range_begin, range_end = parse_range(env.request.headers["Range"]?)
-    (range_begin...range_end).each_slice(HTTP_CHUNK_SIZE) do |slice|
-      headers["Range"] = "bytes=#{slice[0]}-#{slice[-1]}"
+  if url.includes? "&file=seg.ts"
+    if CONFIG.disabled?("livestreams")
+      env.response.status_code = 403
+      error_message = "Administrator has disabled this endpoint."
+      next templated "error"
+    end
+
+    begin
+      client = make_client(URI.parse(host), region)
+      client.get(url, headers) do |response|
+        response.headers.each do |key, value|
+          if !RESPONSE_HEADERS_BLACKLIST.includes?(key)
+            env.response.headers[key] = value
+          end
+        end
+
+        env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+        if location = response.headers["Location"]?
+          location = URI.parse(location)
+          location = "#{location.full_path}&host=#{location.host}"
+
+          if region
+            location += "&region=#{region}"
+          end
+
+          next env.redirect location
+        end
+
+        IO.copy(response.body_io, env.response)
+      end
+    rescue ex
+    end
+  else
+    if query_params["title"]? && CONFIG.disabled?("downloads") ||
+       CONFIG.disabled?("dash")
+      env.response.status_code = 403
+      error_message = "Administrator has disabled this endpoint."
+      next templated "error"
+    end
+
+    content_length = nil
+    first_chunk = true
+    range_start, range_end = parse_range(env.request.headers["Range"]?)
+    chunk_start = range_start
+    chunk_end = range_end
+
+    if !chunk_end || chunk_end - chunk_start > HTTP_CHUNK_SIZE
+      chunk_end = chunk_start + HTTP_CHUNK_SIZE - 1
+    end
+
+    # TODO: Record bytes written so we can restart after a chunk fails
+    while true
+      if !range_end && content_length
+        range_end = content_length
+      end
+
+      if range_end && chunk_start > range_end
+        break
+      end
+
+      if range_end && chunk_end > range_end
+        chunk_end = range_end
+      end
+
+      headers["Range"] = "bytes=#{chunk_start}-#{chunk_end}"
+
       begin
         client = make_client(URI.parse(host), region)
         client.get(url, headers) do |response|
-          content_range = response.headers["Content-Range"].lchop("bytes ")
-          content_size = content_range.split("/")[-1].to_i
-
-          # Write headers for first chunk
-          if content_range.split("-")[0].to_i == range_begin
+          if first_chunk
             if !env.request.headers["Range"]? && response.status_code == 206
               env.response.status_code = 200
             else
@@ -4614,33 +4916,48 @@ get "/videoplayback" do |env|
               end
             end
 
-            reported_end = range_end ? range_end : content_size
-            env.response.content_length = reported_end - range_begin
-
-            if env.request.headers["Range"]?
-              env.response.headers["Content-Range"] = "bytes #{range_begin}-#{reported_end - 1}/#{content_size}"
-            end
-
             env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+            if location = response.headers["Location"]?
+              location = URI.parse(location)
+              location = "#{location.full_path}&host=#{location.host}"
+
+              if region
+                location += "&region=#{region}"
+              end
+
+              env.redirect location
+              break
+            end
 
             if title = query_params["title"]?
               # https://blog.fastmail.com/2011/06/24/download-non-english-filenames/
               env.response.headers["Content-Disposition"] = "attachment; filename=\"#{URI.escape(title)}\"; filename*=UTF-8''#{URI.escape(title)}"
+            end
+
+            if !response.headers.includes_word?("Transfer-Encoding", "chunked")
+              content_length = response.headers["Content-Range"].split("/")[-1].to_i64
+              if env.request.headers["Range"]?
+                env.response.headers["Content-Range"] = "bytes #{range_start}-#{range_end || (content_length - 1)}/#{content_length}"
+                env.response.content_length = ((range_end.try &.+ 1) || content_length) - range_start
+              else
+                env.response.content_length = content_length
+              end
             end
           end
 
           proxy_file(response, env)
         end
       rescue ex
-        # FIXME: Potential bug in HTTP::Client
-        if ex.message == "Error reading socket: Connection reset by peer"
-          next
-        else
-          raise ex
+        if ex.message != "Error reading socket: Connection reset by peer"
+          break
         end
       end
+
+      chunk_start = chunk_end + 1
+      chunk_end += HTTP_CHUNK_SIZE
+      first_chunk = false
     end
-  rescue ex
   end
 end
 
@@ -4662,17 +4979,19 @@ get "/ggpht/*" do |env|
 
   begin
     client.get(url, headers) do |response|
+      env.response.status_code = response.status_code
       response.headers.each do |key, value|
         if !RESPONSE_HEADERS_BLACKLIST.includes? key
           env.response.headers[key] = value
         end
       end
 
-      if response.status_code == 304
+      env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+      if response.status_code >= 300
+        env.response.headers.delete("Transfer-Encoding")
         break
       end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
 
       proxy_file(response, env)
     end
@@ -4717,11 +5036,12 @@ get "/sb/:id/:storyboard/:index" do |env|
         end
       end
 
-      if response.status_code >= 400
+      env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+      if response.status_code >= 300
+        env.response.headers.delete("Transfer-Encoding")
         break
       end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
 
       proxy_file(response, env)
     end
@@ -4762,11 +5082,12 @@ get "/vi/:id/:name" do |env|
         end
       end
 
-      if response.status_code == 304
+      env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+      if response.status_code >= 300 && response.status_code != 404
+        env.response.headers.delete("Transfer-Encoding")
         break
       end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
 
       proxy_file(response, env)
     end

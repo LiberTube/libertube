@@ -87,12 +87,53 @@ end
 
 struct Config
   module ConfigPreferencesConverter
+    def self.to_yaml(value : Preferences, yaml : YAML::Nodes::Builder)
+      value.to_yaml(yaml)
+    end
+
     def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Preferences
       Preferences.new(*ConfigPreferences.new(ctx, node).to_tuple)
     end
+  end
 
-    def self.to_yaml(value : Preferences, yaml : YAML::Nodes::Builder)
-      value.to_yaml(yaml)
+  module FamilyConverter
+    def self.to_yaml(value : Socket::Family, yaml : YAML::Nodes::Builder)
+      case value
+      when Socket::Family::UNSPEC
+        yaml.scalar nil
+      when Socket::Family::INET
+        yaml.scalar "ipv4"
+      when Socket::Family::INET6
+        yaml.scalar "ipv6"
+      end
+    end
+
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Socket::Family
+      if node.is_a?(YAML::Nodes::Scalar)
+        case node.value.downcase
+        when "ipv4"
+          Socket::Family::INET
+        when "ipv6"
+          Socket::Family::INET6
+        else
+          Socket::Family::UNSPEC
+        end
+      else
+        node.raise "Expected scalar, not #{node.class}"
+      end
+    end
+  end
+
+  def disabled?(option)
+    case disabled = CONFIG.disable_proxy
+    when Bool
+      return disabled
+    when Array
+      if disabled.includes? option
+        return true
+      else
+        return false
+      end
     end
   end
 
@@ -118,11 +159,13 @@ struct Config
                                default: Preferences.new(*ConfigPreferences.from_yaml("").to_tuple),
                                converter: ConfigPreferencesConverter,
     },
-    dmca_content:      {type: Array(String), default: [] of String}, # For compliance with DMCA, disables download widget using list of video IDs
-    check_tables:      {type: Bool, default: false},                 # Check table integrity, automatically try to add any missing columns, create tables, etc.
-    cache_annotations: {type: Bool, default: false},                 # Cache annotations requested from IA, will not cache empty annotations or annotations that only contain cards
-    banner:            {type: String?, default: nil},                # Optional banner to be displayed along top of page for announcements, etc.
-    hsts:              {type: Bool?, default: true},                 # Enables 'Strict-Transport-Security'. Ensure that `domain` and all subdomains are served securely
+    dmca_content:      {type: Array(String), default: [] of String},                                        # For compliance with DMCA, disables download widget using list of video IDs
+    check_tables:      {type: Bool, default: false},                                                        # Check table integrity, automatically try to add any missing columns, create tables, etc.
+    cache_annotations: {type: Bool, default: false},                                                        # Cache annotations requested from IA, will not cache empty annotations or annotations that only contain cards
+    banner:            {type: String?, default: nil},                                                       # Optional banner to be displayed along top of page for announcements, etc.
+    hsts:              {type: Bool?, default: true},                                                        # Enables 'Strict-Transport-Security'. Ensure that `domain` and all subdomains are served securely
+    disable_proxy:     {type: Bool? | Array(String)?, default: false},                                      # Disable proxying server-wide: options: 'dash', 'livestreams', 'downloads', 'local'
+    force_resolve:     {type: Socket::Family, default: Socket::Family::UNSPEC, converter: FamilyConverter}, # Connect to YouTube over 'ipv6', 'ipv4'. Will sometimes resolve fix issues with rate-limiting (see https://github.com/ytdl-org/youtube-dl/issues/21729)
   })
 end
 
@@ -162,25 +205,24 @@ end
 
 def login_req(f_req)
   data = {
-    # "azt"             => "",
-    # "bgHash"          => "",
-
     # Unfortunately there's not much information available on `bgRequest`; part of Google's BotGuard
-    # Generally this is much longer (>1250 characters), similar to Amazon's `metaData1`
-    # (see https://github.com/omarroth/audible.cr/blob/master/src/audible/crypto.cr#L43).
+    # Generally this is much longer (>1250 characters), see also
+    # https://github.com/ytdl-org/youtube-dl/commit/baf67a604d912722b0fe03a40e9dc5349a2208cb .
     # For now this can be empty.
-    "bgRequest"       => %|["identifier","!AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]|,
+    "bgRequest"       => %|["identifier",""]|,
+    "pstMsg"          => "1",
+    "checkConnection" => "youtube",
+    "checkedDomains"  => "youtube",
+    "hl"              => "en",
+    "deviceinfo"      => %|[null,null,null,[],null,"US",null,null,[],"GlifWebSignIn",null,[null,null,[]]]|,
+    "f.req"           => f_req,
     "flowName"        => "GlifWebSignIn",
     "flowEntry"       => "ServiceLogin",
-    "continue"        => "https://accounts.google.com/ManageAccount",
-    "f.req"           => f_req,
-    "cookiesDisabled" => "false",
-    "deviceinfo"      => %([null,null,null,[],null,"US",null,null,[],"GlifWebSignIn",null,[null,null,[],null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,[],null,null,null,[],[]]]),
-    "gmscoreversion"  => "undefined",
-    "checkConnection" => "youtube:303:1",
-    "checkedDomains"  => "youtube",
-    "pstMsg"          => "1",
-
+    # "cookiesDisabled" => "false",
+    # "gmscoreversion"  => "undefined",
+    # "continue"        => "https://accounts.google.com/ManageAccount",
+    # "azt"             => "",
+    # "bgHash"          => "",
   }
 
   return HTTP::Params.encode(data)
@@ -637,33 +679,6 @@ def cache_annotation(db, id, annotations)
   end
 end
 
-def proxy_file(response, env)
-  if !response.body_io?
-    return
-  end
-
-  if response.headers.includes_word?("Content-Encoding", "gzip")
-    Gzip::Writer.open(env.response) do |deflate|
-      copy_in_chunks(response.body_io, deflate)
-    end
-  elsif response.headers.includes_word?("Content-Encoding", "deflate")
-    Flate::Writer.open(env.response) do |deflate|
-      copy_in_chunks(response.body_io, deflate)
-    end
-  else
-    copy_in_chunks(response.body_io, env.response)
-  end
-end
-
-# https://stackoverflow.com/a/44802810 <3
-def copy_in_chunks(input, output, chunk_size = 8192)
-  size = 1
-  while size > 0
-    size = IO.copy(input, output, chunk_size)
-    Fiber.yield
-  end
-end
-
 def create_notification_stream(env, config, kemal_config, decrypt_function, topics, connection_channel)
   connection = Channel(PQ::Notification).new(8)
   connection_channel.send({true, connection})
@@ -795,5 +810,90 @@ def create_notification_stream(env, config, kemal_config, decrypt_function, topi
   rescue ex
   ensure
     connection_channel.send({false, connection})
+  end
+end
+
+def extract_initial_data(body)
+  initial_data = body.match(/window\["ytInitialData"\] = (?<info>.*?);\n/).try &.["info"] || "{}"
+  if initial_data.starts_with?("JSON.parse(\"")
+    return JSON.parse(JSON.parse(%({"initial_data":"#{initial_data[12..-3]}"}))["initial_data"].as_s)
+  else
+    return JSON.parse(initial_data)
+  end
+end
+
+def proxy_file(response, env)
+  if response.headers.includes_word?("Content-Encoding", "gzip")
+    Gzip::Writer.open(env.response) do |deflate|
+      response.pipe(deflate)
+    end
+  elsif response.headers.includes_word?("Content-Encoding", "deflate")
+    Flate::Writer.open(env.response) do |deflate|
+      response.pipe(deflate)
+    end
+  else
+    response.pipe(env.response)
+  end
+end
+
+class HTTP::Client::Response
+  def pipe(io)
+    HTTP.serialize_body(io, headers, @body, @body_io, @version)
+  end
+end
+
+# Supports serialize_body without first writing headers
+module HTTP
+  def self.serialize_body(io, headers, body, body_io, version)
+    if body
+      io << body
+    elsif body_io
+      content_length = content_length(headers)
+      if content_length
+        copied = IO.copy(body_io, io)
+        if copied != content_length
+          raise ArgumentError.new("Content-Length header is #{content_length} but body had #{copied} bytes")
+        end
+      elsif Client::Response.supports_chunked?(version)
+        headers["Transfer-Encoding"] = "chunked"
+        serialize_chunked_body(io, body_io)
+      else
+        io << body
+      end
+    end
+  end
+end
+
+class HTTP::Client
+  property family : Socket::Family = Socket::Family::UNSPEC
+
+  private def socket
+    socket = @socket
+    return socket if socket
+
+    hostname = @host.starts_with?('[') && @host.ends_with?(']') ? @host[1..-2] : @host
+    socket = TCPSocket.new hostname, @port, @dns_timeout, @connect_timeout, @family
+    socket.read_timeout = @read_timeout if @read_timeout
+    socket.sync = false
+
+    {% if !flag?(:without_openssl) %}
+      if tls = @tls
+        socket = OpenSSL::SSL::Socket::Client.new(socket, context: tls, sync_close: true, hostname: @host)
+      end
+    {% end %}
+
+    @socket = socket
+  end
+end
+
+class TCPSocket
+  def initialize(host, port, dns_timeout = nil, connect_timeout = nil, family = Socket::Family::UNSPEC)
+    Addrinfo.tcp(host, port, timeout: dns_timeout, family: family) do |addrinfo|
+      super(addrinfo.family, addrinfo.type, addrinfo.protocol)
+      connect(addrinfo, timeout: connect_timeout) do |error|
+        close
+        error
+      end
+    end
   end
 end

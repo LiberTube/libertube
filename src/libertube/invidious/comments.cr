@@ -22,6 +22,7 @@ class RedditComment
     replies:     RedditThing | String,
     score:       Int32,
     depth:       Int32,
+    permalink:   String,
     created_utc: {
       type:      Time,
       converter: RedditComment::TimeConverter,
@@ -63,7 +64,7 @@ def fetch_youtube_comments(id, db, continuation, format, locale, thin_mode, regi
   ctoken = produce_comment_continuation(id, cursor: "", sort_by: sort_by)
   continuation ||= ctoken
 
-  if !continuation || !session_token
+  if !continuation || continuation.empty? || !session_token
     if format == "json"
       return {"comments" => [] of String}.to_json
     else
@@ -111,7 +112,7 @@ def fetch_youtube_comments(id, db, continuation, format, locale, thin_mode, regi
     end
   end
 
-  comments = JSON.build do |json|
+  response = JSON.build do |json|
     json.object do
       if body["header"]?
         count_text = body["header"]["commentsHeaderRenderer"]["countText"]
@@ -177,8 +178,10 @@ def fetch_youtube_comments(id, db, continuation, format, locale, thin_mode, regi
 
               json.field "content", html_to_content(content_html)
               json.field "contentHtml", content_html
+
               json.field "published", published.to_unix
               json.field "publishedText", translate(locale, "`x` ago", recode_date(published, locale))
+
               json.field "likeCount", node_comment["likeCount"]
               json.field "commentId", node_comment["commentId"]
               json.field "authorIsChannelOwner", node_comment["authorIsChannelOwner"]
@@ -220,15 +223,15 @@ def fetch_youtube_comments(id, db, continuation, format, locale, thin_mode, regi
   end
 
   if format == "html"
-    comments = JSON.parse(comments)
-    content_html = template_youtube_comments(comments, locale, thin_mode)
+    response = JSON.parse(response)
+    content_html = template_youtube_comments(response, locale, thin_mode)
 
-    comments = JSON.build do |json|
+    response = JSON.build do |json|
       json.object do
         json.field "contentHtml", content_html
 
-        if comments["commentCount"]?
-          json.field "commentCount", comments["commentCount"]
+        if response["commentCount"]?
+          json.field "commentCount", response["commentCount"]
         else
           json.field "commentCount", 0
         end
@@ -236,7 +239,7 @@ def fetch_youtube_comments(id, db, continuation, format, locale, thin_mode, regi
     end
   end
 
-  return comments
+  return response
 end
 
 def fetch_reddit_comments(id, sort_by = "confidence")
@@ -273,56 +276,110 @@ def fetch_reddit_comments(id, sort_by = "confidence")
 end
 
 def template_youtube_comments(comments, locale, thin_mode)
-  html = ""
-
-  root = comments["comments"].as_a
-  root.each do |child|
-    if child["replies"]?
-      replies_html = <<-END_HTML
-      <div id="replies" class="pure-g">
-        <div class="pure-u-1-24"></div>
-        <div class="pure-u-23-24">
-          <p>
-            <a href="javascript:void(0)" data-continuation="#{child["replies"]["continuation"]}"
-              onclick="get_youtube_replies(this)">#{translate(locale, "View `x` replies", child["replies"]["replyCount"].to_s)}</a>
-          </p>
+  String.build do |html|
+    root = comments["comments"].as_a
+    root.each do |child|
+      if child["replies"]?
+        replies_html = <<-END_HTML
+        <div id="replies" class="pure-g">
+          <div class="pure-u-1-24"></div>
+          <div class="pure-u-23-24">
+            <p>
+              <a href="javascript:void(0)" data-continuation="#{child["replies"]["continuation"]}"
+                onclick="get_youtube_replies(this)">#{translate(locale, "View `x` replies", number_with_separator(child["replies"]["replyCount"]))}</a>
+            </p>
+          </div>
         </div>
-      </div>
-      END_HTML
-    end
-
-    if !thin_mode
-      author_thumbnail = "/ggpht#{URI.parse(child["authorThumbnails"][-1]["url"].as_s).full_path}"
-    else
-      author_thumbnail = ""
-    end
-
-    html += <<-END_HTML
-    <div class="pure-g">
-      <div class="pure-u-4-24 pure-u-md-2-24">
-        <img style="width:90%;padding-right:1em;padding-top:1em" src="#{author_thumbnail}">
-      </div>
-      <div class="pure-u-20-24 pure-u-md-22-24">
-        <p>
-          <b>
-            <a class="#{child["authorIsChannelOwner"] == true ? "channel-owner" : ""}" href="#{child["authorUrl"]}">#{child["author"]}</a>
-          </b>
-          <p style="white-space:pre-wrap">#{child["contentHtml"]}</p>
-          <span title="#{Time.unix(child["published"].as_i64).to_s(translate(locale, "%A %B %-d, %Y"))}">#{translate(locale, "`x` ago", recode_date(Time.unix(child["published"].as_i64), locale))} #{child["isEdited"] == true ? translate(locale, "(edited)") : ""}</span>
-          |
-          <a href="https://www.youtube.com/watch?v=#{comments["videoId"]}&lc=#{child["commentId"]}" title="#{translate(locale, "YouTube comment permalink")}">[YT]</a>
-          |
-          <i class="icon ion-ios-thumbs-up"></i> #{number_with_separator(child["likeCount"])}
-    END_HTML
-
-    if child["creatorHeart"]?
-      if !thin_mode
-        creator_thumbnail = "/ggpht#{URI.parse(child["creatorHeart"]["creatorThumbnail"].as_s).full_path}"
-      else
-        creator_thumbnail = ""
+        END_HTML
       end
 
-      html += <<-END_HTML
+      if !thin_mode
+        author_thumbnail = "/ggpht#{URI.parse(child["authorThumbnails"][-1]["url"].as_s).full_path}"
+      else
+        author_thumbnail = ""
+      end
+
+      html << <<-END_HTML
+      <div class="pure-g" style="width:100%">
+        <div class="channel-profile pure-u-4-24 pure-u-md-2-24">
+          <img style="padding-right:1em;padding-top:1em;width:90%" src="#{author_thumbnail}">
+        </div>
+        <div class="pure-u-20-24 pure-u-md-22-24">
+          <p>
+            <b>
+              <a class="#{child["authorIsChannelOwner"] == true ? "channel-owner" : ""}" href="#{child["authorUrl"]}">#{child["author"]}</a>
+            </b>
+            <p style="white-space:pre-wrap">#{child["contentHtml"]}</p>
+      END_HTML
+
+      if child["attachment"]?
+        attachment = child["attachment"]
+
+        case attachment["type"]
+        when "image"
+          attachment = attachment["imageThumbnails"][1]
+
+          html << <<-END_HTML
+          <div class="pure-g">
+            <div class="pure-u-1 pure-u-md-1-2">
+              <img style="width:100%" src="/ggpht#{URI.parse(attachment["url"].as_s).full_path}">
+            </div>
+          </div>
+          END_HTML
+        when "video"
+          html << <<-END_HTML
+            <div class="pure-g">
+              <div class="pure-u-1 pure-u-md-1-2">
+                <div style="position:relative;width:100%;height:0;padding-bottom:56.25%;margin-bottom:5px">
+          END_HTML
+
+          if attachment["error"]?
+            html << <<-END_HTML
+              <p>#{attachment["error"]}</p>
+            END_HTML
+          else
+            html << <<-END_HTML
+              <iframe id='ivplayer' type='text/html' style='position:absolute;width:100%;height:100%;left:0;top:0' src='/embed/#{attachment["videoId"]?}?autoplay=0' frameborder='0'></iframe>
+            END_HTML
+          end
+
+          html << <<-END_HTML
+                </div>
+              </div>
+            </div>
+          END_HTML
+        end
+      end
+
+      html << <<-END_HTML
+        <span title="#{Time.unix(child["published"].as_i64).to_s(translate(locale, "%A %B %-d, %Y"))}">#{translate(locale, "`x` ago", recode_date(Time.unix(child["published"].as_i64), locale))} #{child["isEdited"] == true ? translate(locale, "(edited)") : ""}</span>
+        |
+      END_HTML
+
+      if comments["videoId"]?
+        html << <<-END_HTML
+          <a href="https://www.youtube.com/watch?v=#{comments["videoId"]}&lc=#{child["commentId"]}" title="#{translate(locale, "YouTube comment permalink")}">[YT]</a>
+          |
+        END_HTML
+      elsif comments["authorId"]?
+        html << <<-END_HTML
+          <a href="https://www.youtube.com/channel/#{comments["authorId"]}/community?lb=#{child["commentId"]}" title="#{translate(locale, "YouTube comment permalink")}">[YT]</a>
+          |
+        END_HTML
+      end
+
+      html << <<-END_HTML
+        <i class="icon ion-ios-thumbs-up"></i> #{number_with_separator(child["likeCount"])}
+      END_HTML
+
+      if child["creatorHeart"]?
+        if !thin_mode
+          creator_thumbnail = "/ggpht#{URI.parse(child["creatorHeart"]["creatorThumbnail"].as_s).full_path}"
+        else
+          creator_thumbnail = ""
+        end
+
+        html << <<-END_HTML
           <span class="creator-heart-container" title="#{translate(locale, "`x` marked it with a ❤", child["creatorHeart"]["creatorName"].as_s)}">
               <div class="creator-heart">
                   <img class="creator-heart-background-hearted" src="#{creator_thumbnail}"></img>
@@ -331,84 +388,77 @@ def template_youtube_comments(comments, locale, thin_mode)
                   </div>
               </div>
           </span>
+        END_HTML
+      end
+
+      html << <<-END_HTML
+          </p>
+          #{replies_html}
+        </div>
+      </div>
       END_HTML
     end
 
-    html += <<-END_HTML
-        </p>
-        #{replies_html}
+    if comments["continuation"]?
+      html << <<-END_HTML
+      <div class="pure-g">
+        <div class="pure-u-1">
+          <p>
+            <a href="javascript:void(0)" data-continuation="#{comments["continuation"]}"
+              onclick="get_youtube_replies(this, true)">#{translate(locale, "Load more")}</a>
+          </p>
+        </div>
       </div>
-    </div>
-    END_HTML
+      END_HTML
+    end
   end
-
-  if comments["continuation"]?
-    html += <<-END_HTML
-    <div class="pure-g">
-      <div class="pure-u-1">
-        <p>
-          <a href="javascript:void(0)" data-continuation="#{comments["continuation"]}"
-            onclick="get_youtube_replies(this, true)">#{translate(locale, "Load more")}</a>
-        </p>
-      </div>
-    </div>
-    END_HTML
-  end
-
-  return html
 end
 
 def template_reddit_comments(root, locale)
-  html = ""
-  root.each do |child|
-    if child.data.is_a?(RedditComment)
-      child = child.data.as(RedditComment)
-      author = child.author
-      score = child.score
-      body_html = HTML.unescape(child.body_html)
+  String.build do |html|
+    root.each do |child|
+      if child.data.is_a?(RedditComment)
+        child = child.data.as(RedditComment)
+        body_html = HTML.unescape(child.body_html)
 
-      replies_html = ""
-      if child.replies.is_a?(RedditThing)
-        replies = child.replies.as(RedditThing)
-        replies_html = template_reddit_comments(replies.data.as(RedditListing).children, locale)
-      end
+        replies_html = ""
+        if child.replies.is_a?(RedditThing)
+          replies = child.replies.as(RedditThing)
+          replies_html = template_reddit_comments(replies.data.as(RedditListing).children, locale)
+        end
 
-      content = <<-END_HTML
-      <p>
-        <a href="javascript:void(0)" onclick="toggle_parent(this)">[ - ]</a>
-        <b><a href="https://www.reddit.com/user/#{author}">#{author}</a></b>
-        #{translate(locale, "`x` points", number_with_separator(score))}
-        #{translate(locale, "`x` ago", recode_date(child.created_utc, locale))}
-      </p>
-      <div>
-      #{body_html}
-      #{replies_html}
-      </div>
-      END_HTML
-
-      if child.depth > 0
-        html += <<-END_HTML
+        if child.depth > 0
+          html << <<-END_HTML
           <div class="pure-g">
           <div class="pure-u-1-24">
           </div>
           <div class="pure-u-23-24">
-          #{content}
-          </div>
-          </div>
-        END_HTML
-      else
-        html += <<-END_HTML
+          END_HTML
+        else
+          html << <<-END_HTML
           <div class="pure-g">
           <div class="pure-u-1">
-          #{content}
-          </div>
-          </div>
+          END_HTML
+        end
+
+        html << <<-END_HTML
+        <p>
+          <a href="javascript:void(0)" onclick="toggle_parent(this)">[ - ]</a>
+          <b><a href="https://www.reddit.com/user/#{child.author}">#{child.author}</a></b>
+          #{translate(locale, "`x` points", number_with_separator(child.score))}
+          <span title="#{child.created_utc.to_s(translate(locale, "%a %B %-d %T %Y UTC"))}">#{translate(locale, "`x` ago", recode_date(child.created_utc, locale))}</span>
+          <a href="https://www.reddit.com#{child.permalink}" title="#{translate(locale, "permalink")}">#{translate(locale, "permalink")}</a>
+          </p>
+          <div>
+          #{body_html}
+          #{replies_html}
+        </div>
+        </div>
+        </div>
         END_HTML
       end
     end
   end
-
-  return html
 end
 
 def replace_links(html)
@@ -508,114 +558,111 @@ def content_to_comment_html(content)
     end
 
     text
-  end.join.rchop('\ufeff')
+  end.join("").delete('\ufeff')
 
   return comment_html
 end
 
 def produce_comment_continuation(video_id, cursor = "", sort_by = "top")
-  continuation = IO::Memory.new
+  data = IO::Memory.new
 
-  continuation.write(Bytes[0x12, 0x26])
+  data.write Bytes[0x12, 0x26]
 
-  continuation.write(Bytes[0x12, video_id.size])
-  continuation.print(video_id)
+  data.write_byte 0x12
+  VarInt.to_io(data, video_id.bytesize)
+  data.print video_id
 
-  continuation.write(Bytes[0xc0, 0x01, 0x01])
-  continuation.write(Bytes[0xc8, 0x01, 0x01])
-  continuation.write(Bytes[0xe0, 0x01, 0x01])
+  data.write Bytes[0xc0, 0x01, 0x01]
+  data.write Bytes[0xc8, 0x01, 0x01]
+  data.write Bytes[0xe0, 0x01, 0x01]
 
-  continuation.write(Bytes[0xa2, 0x02, 0x0d])
-  continuation.write(Bytes[0x28, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
+  data.write Bytes[0xa2, 0x02, 0x0d]
+  data.write Bytes[0x28, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
 
-  continuation.write(Bytes[0x40, 0x00])
-  continuation.write(Bytes[0x18, 0x06])
+  data.write Bytes[0x40, 0x00]
+  data.write Bytes[0x18, 0x06]
 
   if cursor.empty?
-    continuation.write(Bytes[0x32])
-    continuation.write(write_var_int(video_id.size + 8))
+    data.write Bytes[0x32]
+    VarInt.to_io(data, cursor.bytesize + video_id.bytesize + 8)
 
-    continuation.write(Bytes[0x22, video_id.size + 4])
-    continuation.write(Bytes[0x22, video_id.size])
-    continuation.print(video_id)
+    data.write Bytes[0x22, video_id.bytesize + 4]
+    data.write Bytes[0x22, video_id.bytesize]
+    data.print video_id
 
     case sort_by
     when "top"
-      continuation.write(Bytes[0x30, 0x00])
+      data.write Bytes[0x30, 0x00]
     when "new", "newest"
-      continuation.write(Bytes[0x30, 0x01])
+      data.write Bytes[0x30, 0x01]
     end
 
-    continuation.write(Bytes[0x78, 0x02])
+    data.write(Bytes[0x78, 0x02])
   else
-    continuation.write(Bytes[0x32])
-    continuation.write(write_var_int(cursor.size + video_id.size + 11))
+    data.write Bytes[0x32]
+    VarInt.to_io(data, cursor.bytesize + video_id.bytesize + 11)
 
-    continuation.write(Bytes[0x0a])
-    continuation.write(write_var_int(cursor.size))
-    continuation.print(cursor)
+    data.write_byte 0x0a
+    VarInt.to_io(data, cursor.bytesize)
+    data.print cursor
 
-    continuation.write(Bytes[0x22, video_id.size + 4])
-    continuation.write(Bytes[0x22, video_id.size])
-    continuation.print(video_id)
+    data.write Bytes[0x22, video_id.bytesize + 4]
+    data.write Bytes[0x22, video_id.bytesize]
+    data.print video_id
 
     case sort_by
     when "top"
-      continuation.write(Bytes[0x30, 0x00])
+      data.write Bytes[0x30, 0x00]
     when "new", "newest"
-      continuation.write(Bytes[0x30, 0x01])
+      data.write Bytes[0x30, 0x01]
     end
 
-    continuation.write(Bytes[0x28, 0x14])
+    data.write Bytes[0x28, 0x14]
   end
 
-  continuation.rewind
-  continuation = continuation.gets_to_end
-
-  continuation = Base64.urlsafe_encode(continuation.to_slice)
+  continuation = Base64.urlsafe_encode(data)
   continuation = URI.escape(continuation)
 
   return continuation
 end
 
 def produce_comment_reply_continuation(video_id, ucid, comment_id)
-  continuation = IO::Memory.new
+  data = IO::Memory.new
 
-  continuation.write(Bytes[0x12, 0x26])
+  data.write Bytes[0x12, 0x26]
 
-  continuation.write(Bytes[0x12, video_id.size])
-  continuation.print(video_id)
+  data.write_byte 0x12
+  VarInt.to_io(data, video_id.size)
+  data.print video_id
 
-  continuation.write(Bytes[0xc0, 0x01, 0x01])
-  continuation.write(Bytes[0xc8, 0x01, 0x01])
-  continuation.write(Bytes[0xe0, 0x01, 0x01])
+  data.write Bytes[0xc0, 0x01, 0x01]
+  data.write Bytes[0xc8, 0x01, 0x01]
+  data.write Bytes[0xe0, 0x01, 0x01]
 
-  continuation.write(Bytes[0xa2, 0x02, 0x0d])
-  continuation.write(Bytes[0x28, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
+  data.write Bytes[0xa2, 0x02, 0x0d]
+  data.write Bytes[0x28, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
 
-  continuation.write(Bytes[0x40, 0x00])
-  continuation.write(Bytes[0x18, 0x06])
+  data.write Bytes[0x40, 0x00]
+  data.write Bytes[0x18, 0x06]
 
-  continuation.write(Bytes[0x32, ucid.size + video_id.size + comment_id.size + 16])
-  continuation.write(Bytes[0x1a, ucid.size + video_id.size + comment_id.size + 14])
+  data.write(Bytes[0x32, ucid.size + video_id.size + comment_id.size + 16])
+  data.write(Bytes[0x1a, ucid.size + video_id.size + comment_id.size + 14])
 
-  continuation.write(Bytes[0x12, comment_id.size])
-  continuation.print(comment_id)
+  data.write_byte 0x12
+  VarInt.to_io(data, comment_id.size)
+  data.print comment_id
 
-  continuation.write(Bytes[0x22, 0x02, 0x08, 0x00]) # ??
+  data.write(Bytes[0x22, 0x02, 0x08, 0x00]) # ??
 
-  continuation.write(Bytes[ucid.size + video_id.size + 7])
-  continuation.write(Bytes[ucid.size])
-  continuation.print(ucid)
-  continuation.write(Bytes[0x32, video_id.size])
-  continuation.print(video_id)
-  continuation.write(Bytes[0x40, 0x01])
-  continuation.write(Bytes[0x48, 0x0a])
+  data.write(Bytes[ucid.size + video_id.size + 7])
+  data.write(Bytes[ucid.size])
+  data.print(ucid)
+  data.write(Bytes[0x32, video_id.size])
+  data.print(video_id)
+  data.write(Bytes[0x40, 0x01])
+  data.write(Bytes[0x48, 0x0a])
 
-  continuation.rewind
-  continuation = continuation.gets_to_end
-
-  continuation = Base64.urlsafe_encode(continuation.to_slice)
+  continuation = Base64.urlsafe_encode(data.to_slice)
   continuation = URI.escape(continuation)
 
   return continuation
