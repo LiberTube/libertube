@@ -108,33 +108,7 @@ CAPTION_LANGUAGES = {
   "Zulu",
 }
 
-REGIONS        = {"AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"}
-BYPASS_REGIONS = {
-  "GB",
-  "DE",
-  "FR",
-  "IN",
-  "CN",
-  "RU",
-  "CA",
-  "JP",
-  "IT",
-  "TH",
-  "ES",
-  "AE",
-  "KR",
-  "IR",
-  "BR",
-  "PK",
-  "ID",
-  "BD",
-  "MX",
-  "PH",
-  "EG",
-  "VN",
-  "CD",
-  "TR",
-}
+REGIONS = {"AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"}
 
 # See https://github.com/rg3/youtube-dl/blob/master/youtube_dl/extractor/youtube.py#L380-#L476
 VIDEO_FORMATS = {
@@ -258,6 +232,7 @@ struct VideoPreferences
     listen:             Bool,
     local:              Bool,
     preferred_captions: Array(String),
+    player_style:       String,
     quality:            String,
     raw:                Bool,
     region:             String?,
@@ -272,6 +247,7 @@ end
 
 struct Video
   property player_json : JSON::Any?
+  property recommended_json : JSON::Any?
 
   module HTTPParamConverter
     def self.from_rs(rs)
@@ -450,9 +426,29 @@ struct Video
                 json.field "videoThumbnails" do
                   generate_thumbnails(json, rv["id"], config, kemal_config)
                 end
+
                 json.field "author", rv["author"]
+                json.field "authorUrl", rv["author_url"]?
+                json.field "authorId", rv["ucid"]?
+                if rv["author_thumbnail"]?
+                  json.field "authorThumbnails" do
+                    json.array do
+                      qualities = {32, 48, 76, 100, 176, 512}
+
+                      qualities.each do |quality|
+                        json.object do
+                          json.field "url", rv["author_thumbnail"].gsub(/s\d+-/, "s#{quality}-")
+                          json.field "width", quality
+                          json.field "height", quality
+                        end
+                      end
+                    end
+                  end
+                end
+
                 json.field "lengthSeconds", rv["length_seconds"].to_i
                 json.field "viewCountText", rv["short_view_count_text"]
+                json.field "viewCount", rv["view_count"]?.try &.to_i64
               end
             end
           end
@@ -710,12 +706,14 @@ struct Video
     return audio_streams
   end
 
-  def player_response
-    if !@player_json
-      @player_json = JSON.parse(@info["player_response"])
-    end
+  def recommended_videos
+    @recommended_json = JSON.parse(@info["recommended_videos"]) if !@recommended_json
+    @recommended_json.not_nil!
+  end
 
-    return @player_json.not_nil!
+  def player_response
+    @player_json = JSON.parse(@info["player_response"]) if !@player_json
+    @player_json.not_nil!
   end
 
   def storyboards
@@ -803,8 +801,11 @@ struct Video
   end
 
   def premium
-    premium = self.player_response.to_s.includes? "Get YouTube without the ads."
-    return premium
+    if info["premium"]?
+      self.info["premium"] == "true"
+    else
+      false
+    end
   end
 
   def captions
@@ -925,6 +926,33 @@ def get_video(id, db, refresh = true, region = nil, force_refresh = false)
   return video
 end
 
+def extract_recommended(recommended_videos)
+  rvs = [] of HTTP::Params
+
+  recommended_videos.try &.each do |compact_renderer|
+    if compact_renderer["compactRadioRenderer"]? || compact_renderer["compactPlaylistRenderer"]?
+      # TODO
+    elsif video_renderer = compact_renderer["compactVideoRenderer"]?
+      recommended_video = HTTP::Params.new
+      recommended_video["id"] = video_renderer["videoId"].as_s
+      recommended_video["title"] = video_renderer["title"]["simpleText"].as_s
+      recommended_video["author"] = video_renderer["shortBylineText"]["runs"].as_a[0]["text"].as_s
+      recommended_video["ucid"] = video_renderer["shortBylineText"]["runs"].as_a[0]["navigationEndpoint"]["browseEndpoint"]["browseId"].as_s
+      recommended_video["author_thumbnail"] = video_renderer["channelThumbnail"]["thumbnails"][0]["url"].as_s
+
+      if view_count = video_renderer["viewCountText"]?.try { |field| field["simpleText"]?.try &.as_s || field["runs"][0]?.try &.["text"].as_s }.try &.delete(", views watching").to_i64?.try &.to_s
+        recommended_video["view_count"] = view_count
+        recommended_video["short_view_count_text"] = "#{number_to_short_text(view_count.to_i64)} views"
+      end
+      recommended_video["length_seconds"] = decode_length_seconds(video_renderer["lengthText"]?.try &.["simpleText"]?.try &.as_s || "0:00").to_s
+
+      rvs << recommended_video
+    end
+  end
+
+  rvs
+end
+
 def extract_polymer_config(body, html)
   params = HTTP::Params.new
 
@@ -955,36 +983,14 @@ def extract_polymer_config(body, html)
   params["ctoken"] = comment_continuation.try &.["continuation"]?.try &.as_s || ""
   params["itct"] = comment_continuation.try &.["clickTrackingParams"]?.try &.as_s || ""
 
-  recommended_videos = initial_data["contents"]?
+  rvs = initial_data["contents"]?
     .try &.["twoColumnWatchNextResults"]?
       .try &.["secondaryResults"]?
         .try &.["secondaryResults"]?
           .try &.["results"]?
             .try &.as_a
 
-  rvs = [] of String
-
-  recommended_videos.try &.each do |compact_renderer|
-    if compact_renderer["compactRadioRenderer"]? || compact_renderer["compactPlaylistRenderer"]?
-      # TODO
-    elsif compact_renderer["compactVideoRenderer"]?
-      compact_renderer = compact_renderer["compactVideoRenderer"]
-
-      recommended_video = HTTP::Params.new
-      recommended_video["id"] = compact_renderer["videoId"].as_s
-      recommended_video["title"] = compact_renderer["title"]["simpleText"].as_s
-      recommended_video["author"] = compact_renderer["shortBylineText"]["runs"].as_a[0]["text"].as_s
-      recommended_video["ucid"] = compact_renderer["shortBylineText"]["runs"].as_a[0]["navigationEndpoint"]["browseEndpoint"]["browseId"].as_s
-      recommended_video["author_thumbnail"] = compact_renderer["channelThumbnail"]["thumbnails"][0]["url"].as_s
-
-      recommended_video["short_view_count_text"] = compact_renderer["shortViewCountText"]["simpleText"].as_s
-      recommended_video["view_count"] = compact_renderer["viewCountText"]?.try &.["simpleText"]?.try &.as_s.delete(", views watching").to_i64?.try &.to_s || "0"
-      recommended_video["length_seconds"] = decode_length_seconds(compact_renderer["lengthText"]?.try &.["simpleText"]?.try &.as_s || "0:00").to_s
-
-      rvs << recommended_video.to_s
-    end
-  end
-  params["rvs"] = rvs.join(",")
+  params["rvs"] = extract_recommended(rvs).join(",")
 
   # TODO: Watching now
   params["views"] = primary_results.try &.as_a.select { |object| object["videoPrimaryInfoRenderer"]? }[0]?
@@ -1094,8 +1100,32 @@ def extract_player_config(body, html)
     params["session_token"] = md["session_token"]
   end
 
-  if md = body.match(/'RELATED_PLAYER_ARGS': (?<rvs>{"rvs":"[^"]+"})/)
-    params["rvs"] = JSON.parse(md["rvs"])["rvs"].as_s
+  if md = body.match(/'RELATED_PLAYER_ARGS': (?<json>.*?),\n/)
+    recommended_json = JSON.parse(md["json"])
+    rvs_params = recommended_json["rvs"].as_s.split(",").map { |params| HTTP::Params.parse(params) }
+
+    if watch_next_response = recommended_json["watch_next_response"]?
+      watch_next_json = JSON.parse(watch_next_response.as_s)
+      rvs = watch_next_json["contents"]?
+        .try &.["twoColumnWatchNextResults"]?
+          .try &.["secondaryResults"]?
+            .try &.["secondaryResults"]?
+              .try &.["results"]?
+                .try &.as_a
+
+      rvs = extract_recommended(rvs)
+      rvs.each_with_index do |rv, i|
+        if !rv["view_count"]?
+          rv_params = rvs_params.select { |rv_params| rv_params["id"]? == (rv["id"]? || "") }[0]?
+          if rv_params
+            rvs[i]["short_view_count_text"] = rv_params["short_view_count_text"]
+          else
+            rvs.delete_at(i)
+          end
+        end
+      end
+      params["rvs"] = (rvs.map &.to_s).join(",")
+    end
   end
 
   html_info = body.match(/ytplayer\.config = (?<info>.*?);ytplayer\.load/).try &.["info"]
@@ -1128,34 +1158,24 @@ def fetch_video(id, region)
   info = extract_player_config(response.body, html)
   info["cookie"] = response.cookies.to_h.map { |name, cookie| "#{name}=#{cookie.value}" }.join("; ")
 
-  # Try to use proxies for region-blocked videos
-  if info["reason"]? && info["reason"].includes? "your country"
-    bypass_channel = Channel({XML::Node, HTTP::Params} | Nil).new
+  allowed_regions = html.xpath_node(%q(//meta[@itemprop="regionsAllowed"])).try &.["content"].split(",")
+  if !allowed_regions || allowed_regions == [""]
+    allowed_regions = [] of String
+  end
 
-    PROXY_LIST.each do |proxy_region, list|
-      spawn do
-        client = make_client(YT_URL, proxy_region)
-        proxy_response = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
+  # Check for region-blocks
+  if info["reason"]? && info["reason"].includes?("your country")
+    bypass_regions = PROXY_LIST.keys & allowed_regions
+    if !bypass_regions.empty?
+      region = bypass_regions[rand(bypass_regions.size)]
+      client = make_client(YT_URL, region)
+      response = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
 
-        proxy_html = XML.parse_html(proxy_response.body)
-        proxy_info = extract_player_config(proxy_response.body, proxy_html)
+      html = XML.parse_html(response.body)
+      info = extract_player_config(response.body, html)
 
-        if !proxy_info["reason"]?
-          proxy_info["region"] = proxy_region
-          proxy_info["cookie"] = proxy_response.cookies.to_h.map { |name, cookie| "#{name}=#{cookie.value}" }.join("; ")
-          bypass_channel.send({proxy_html, proxy_info})
-        else
-          bypass_channel.send(nil)
-        end
-      end
-    end
-
-    PROXY_LIST.size.times do
-      response = bypass_channel.receive
-      if response
-        html, info = response
-        break
-      end
+      info["region"] = region if region
+      info["cookie"] = response.cookies.to_h.map { |name, cookie| "#{name}=#{cookie.value}" }.join("; ")
     end
   end
 
@@ -1175,7 +1195,7 @@ def fetch_video(id, region)
     end
   end
 
-  if info["errorcode"]?.try &.== "2" || !info["player_response"]
+  if !info["player_response"]? || info["errorcode"]?.try &.== "2"
     raise "Video unavailable."
   end
 
@@ -1188,6 +1208,8 @@ def fetch_video(id, region)
   title = player_json["videoDetails"]["title"].as_s
   author = player_json["videoDetails"]["author"]?.try &.as_s || ""
   ucid = player_json["videoDetails"]["channelId"]?.try &.as_s || ""
+
+  info["premium"] = html.xpath_node(%q(.//span[text()="Premium"])) ? "true" : "false"
 
   views = html.xpath_node(%q(//meta[@itemprop="interactionCount"]))
     .try &.["content"].to_i64? || 0_i64
@@ -1208,9 +1230,6 @@ def fetch_video(id, region)
   published = html.xpath_node(%q(//meta[@itemprop="datePublished"])).try &.["content"]
   published ||= Time.utc.to_s("%Y-%m-%d")
   published = Time.parse(published, "%Y-%m-%d", Time::Location.local)
-
-  allowed_regions = html.xpath_node(%q(//meta[@itemprop="regionsAllowed"])).try &.["content"].split(",")
-  allowed_regions ||= [] of String
 
   is_family_friendly = html.xpath_node(%q(//meta[@itemprop="isFamilyFriendly"])).try &.["content"] == "True"
   is_family_friendly ||= true
@@ -1259,6 +1278,7 @@ def process_video_params(query, preferences)
   continue_autoplay = query["continue_autoplay"]?.try &.to_i?
   listen = query["listen"]? && (query["listen"] == "true" || query["listen"] == "1").to_unsafe
   local = query["local"]? && (query["local"] == "true" || query["local"] == "1").to_unsafe
+  player_style = query["player_style"]?
   preferred_captions = query["subtitles"]?.try &.split(",").map { |a| a.downcase }
   quality = query["quality"]?
   region = query["region"]?
@@ -1276,6 +1296,7 @@ def process_video_params(query, preferences)
     continue_autoplay ||= preferences.continue_autoplay.to_unsafe
     listen ||= preferences.listen.to_unsafe
     local ||= preferences.local.to_unsafe
+    player_style ||= preferences.player_style
     preferred_captions ||= preferences.captions
     quality ||= preferences.quality
     related_videos ||= preferences.related_videos.to_unsafe
@@ -1291,6 +1312,7 @@ def process_video_params(query, preferences)
   continue_autoplay ||= CONFIG.default_user_preferences.continue_autoplay.to_unsafe
   listen ||= CONFIG.default_user_preferences.listen.to_unsafe
   local ||= CONFIG.default_user_preferences.local.to_unsafe
+  player_style ||= CONFIG.default_user_preferences.player_style
   preferred_captions ||= CONFIG.default_user_preferences.captions
   quality ||= CONFIG.default_user_preferences.quality
   related_videos ||= CONFIG.default_user_preferences.related_videos.to_unsafe
@@ -1349,6 +1371,7 @@ def process_video_params(query, preferences)
     controls: controls,
     listen: listen,
     local: local,
+    player_style: player_style,
     preferred_captions: preferred_captions,
     quality: quality,
     raw: raw,

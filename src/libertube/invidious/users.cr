@@ -31,62 +31,6 @@ struct User
 end
 
 struct Preferences
-  module StringToArray
-    def self.to_json(value : Array(String), json : JSON::Builder)
-      json.array do
-        value.each do |element|
-          json.string element
-        end
-      end
-    end
-
-    def self.from_json(value : JSON::PullParser) : Array(String)
-      begin
-        result = [] of String
-        value.read_array do
-          result << HTML.escape(value.read_string[0, 100])
-        end
-      rescue ex
-        result = [HTML.escape(value.read_string[0, 100]), ""]
-      end
-
-      result
-    end
-
-    def self.to_yaml(value : Array(String), yaml : YAML::Nodes::Builder)
-      yaml.sequence do
-        value.each do |element|
-          yaml.scalar element
-        end
-      end
-    end
-
-    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Array(String)
-      begin
-        unless node.is_a?(YAML::Nodes::Sequence)
-          node.raise "Expected sequence, not #{node.class}"
-        end
-
-        result = [] of String
-        node.nodes.each do |item|
-          unless item.is_a?(YAML::Nodes::Scalar)
-            node.raise "Expected scalar, not #{item.class}"
-          end
-
-          result << HTML.escape(item.value[0, 100])
-        end
-      rescue ex
-        if node.is_a?(YAML::Nodes::Scalar)
-          result = [HTML.escape(node.value[0, 100]), ""]
-        else
-          result = ["", ""]
-        end
-      end
-
-      result
-    end
-  end
-
   module ProcessString
     def self.to_json(value : String, json : JSON::Builder)
       json.string value
@@ -127,17 +71,18 @@ struct Preferences
     annotations:            {type: Bool, default: CONFIG.default_user_preferences.annotations},
     annotations_subscribed: {type: Bool, default: CONFIG.default_user_preferences.annotations_subscribed},
     autoplay:               {type: Bool, default: CONFIG.default_user_preferences.autoplay},
-    captions:               {type: Array(String), default: CONFIG.default_user_preferences.captions, converter: StringToArray},
-    comments:               {type: Array(String), default: CONFIG.default_user_preferences.comments, converter: StringToArray},
+    captions:               {type: Array(String), default: CONFIG.default_user_preferences.captions, converter: ConfigPreferences::StringToArray},
+    comments:               {type: Array(String), default: CONFIG.default_user_preferences.comments, converter: ConfigPreferences::StringToArray},
     continue:               {type: Bool, default: CONFIG.default_user_preferences.continue},
     continue_autoplay:      {type: Bool, default: CONFIG.default_user_preferences.continue_autoplay},
-    dark_mode:              {type: Bool, default: CONFIG.default_user_preferences.dark_mode},
+    dark_mode:              {type: String, default: CONFIG.default_user_preferences.dark_mode, converter: ConfigPreferences::BoolToString},
     latest_only:            {type: Bool, default: CONFIG.default_user_preferences.latest_only},
     listen:                 {type: Bool, default: CONFIG.default_user_preferences.listen},
     local:                  {type: Bool, default: CONFIG.default_user_preferences.local},
     locale:                 {type: String, default: CONFIG.default_user_preferences.locale, converter: ProcessString},
     max_results:            {type: Int32, default: CONFIG.default_user_preferences.max_results, converter: ClampInt},
     notifications_only:     {type: Bool, default: CONFIG.default_user_preferences.notifications_only},
+    player_style:           {type: String, default: CONFIG.default_user_preferences.player_style, converter: ProcessString},
     quality:                {type: String, default: CONFIG.default_user_preferences.quality, converter: ProcessString},
     redirect_feed:          {type: Bool, default: CONFIG.default_user_preferences.redirect_feed},
     related_videos:         {type: Bool, default: CONFIG.default_user_preferences.related_videos},
@@ -350,8 +295,7 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
 
     args = arg_array(notifications)
 
-    notifications = db.query_all("SELECT * FROM channel_videos WHERE id IN (#{args})
-    ORDER BY published DESC", notifications, as: ChannelVideo)
+    notifications = db.query_all("SELECT * FROM channel_videos WHERE id IN (#{args}) ORDER BY published DESC", notifications, as: ChannelVideo)
     videos = [] of ChannelVideo
 
     notifications.sort_by! { |video| video.published }.reverse!
@@ -377,14 +321,11 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
         else
           values = "VALUES #{user.watched.map { |id| %(('#{id}')) }.join(",")}"
         end
-        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} WHERE \
-        NOT id = ANY (#{values}) \
-        ORDER BY ucid, published DESC", as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} WHERE NOT id = ANY (#{values}) ORDER BY ucid, published DESC", as: ChannelVideo)
       else
         # Show latest video from each channel
 
-        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} \
-        ORDER BY ucid, published DESC", as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} ORDER BY ucid, published DESC", as: ChannelVideo)
       end
 
       videos.sort_by! { |video| video.published }.reverse!
@@ -397,14 +338,11 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
         else
           values = "VALUES #{user.watched.map { |id| %(('#{id}')) }.join(",")}"
         end
-        videos = PG_DB.query_all("SELECT * FROM #{view_name} WHERE \
-        NOT id = ANY (#{values}) \
-        ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT * FROM #{view_name} WHERE NOT id = ANY (#{values}) ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
       else
         # Sort subscriptions as normal
 
-        videos = PG_DB.query_all("SELECT * FROM #{view_name} \
-        ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT * FROM #{view_name} ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
       end
     end
 
@@ -421,15 +359,10 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
       videos.sort_by! { |video| video.author }.reverse!
     end
 
-    notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email,
-      as: Array(String))
+    notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email, as: Array(String))
 
     notifications = videos.select { |v| notifications.includes? v.id }
     videos = videos - notifications
-  end
-
-  if !limit
-    videos = videos[0..max_results]
   end
 
   return videos, notifications

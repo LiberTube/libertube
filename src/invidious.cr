@@ -148,26 +148,32 @@ statistics = {
 }
 if config.statistics_enabled
   spawn do
-    loop do
-      statistics = {
-        "version"           => "2.0",
-        "software"          => SOFTWARE,
-        "openRegistrations" => config.registration_enabled,
-        "usage"             => {
-          "users" => {
-            "total"          => PG_DB.query_one("SELECT count(*) FROM users", as: Int64),
-            "activeHalfyear" => PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '6 months'", as: Int64),
-            "activeMonth"    => PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '1 month'", as: Int64),
-          },
+    statistics = {
+      "version"           => "2.0",
+      "software"          => SOFTWARE,
+      "openRegistrations" => config.registration_enabled,
+      "usage"             => {
+        "users" => {
+          "total"          => PG_DB.query_one("SELECT count(*) FROM users", as: Int64),
+          "activeHalfyear" => PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '6 months'", as: Int64),
+          "activeMonth"    => PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '1 month'", as: Int64),
         },
-        "metadata" => {
-          "updatedAt"              => Time.utc.to_unix,
-          "lastChannelRefreshedAt" => PG_DB.query_one?("SELECT updated FROM channels ORDER BY updated DESC LIMIT 1", as: Time).try &.to_unix || 0,
-        },
-      }
+      },
+      "metadata" => {
+        "updatedAt"              => Time.utc.to_unix,
+        "lastChannelRefreshedAt" => PG_DB.query_one?("SELECT updated FROM channels ORDER BY updated DESC LIMIT 1", as: Time).try &.to_unix || 0_i64,
+      },
+    }
 
+    loop do
       sleep 1.minute
       Fiber.yield
+
+      statistics["usage"].as(Hash)["users"].as(Hash)["total"] = PG_DB.query_one("SELECT count(*) FROM users", as: Int64)
+      statistics["usage"].as(Hash)["users"].as(Hash)["activeHalfyear"] = PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '6 months'", as: Int64)
+      statistics["usage"].as(Hash)["users"].as(Hash)["activeMonth"] = PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '1 month'", as: Int64)
+      statistics["metadata"].as(Hash(String, Int64))["updatedAt"] = Time.utc.to_unix
+      statistics["metadata"].as(Hash(String, Int64))["lastChannelRefreshedAt"] = PG_DB.query_one?("SELECT updated FROM channels ORDER BY updated DESC LIMIT 1", as: Time).try &.to_unix || 0_i64
     end
   end
 end
@@ -267,8 +273,7 @@ before_all do |env|
     end
   end
 
-  dark_mode = env.params.query["dark_mode"]? || preferences.dark_mode.to_s
-  dark_mode = dark_mode == "true"
+  dark_mode = convert_theme(env.params.query["dark_mode"]?) || preferences.dark_mode.to_s
 
   thin_mode = env.params.query["thin_mode"]? || preferences.thin_mode.to_s
   thin_mode = thin_mode == "true"
@@ -463,8 +468,16 @@ get "/watch" do |env|
 
   # Older videos may not have audio sources available.
   # We redirect here so they're not unplayable
-  if params.listen && audio_streams.empty?
-    next env.redirect "/watch?#{env.params.query}&listen=0"
+  if audio_streams.empty?
+    if params.quality == "dash"
+      env.params.query.delete_all("quality")
+      env.params.query["quality"] = "medium"
+      next env.redirect "/watch?#{env.params.query}"
+    elsif params.listen
+      env.params.query.delete_all("listen")
+      env.params.query["listen"] = "0"
+      next env.redirect "/watch?#{env.params.query}"
+    end
   end
 
   captions = video.captions
@@ -688,6 +701,17 @@ get "/embed/:id" do |env|
 
   video_streams = video.video_streams(adaptive_fmts)
   audio_streams = video.audio_streams(adaptive_fmts)
+
+  if audio_streams.empty?
+    if params.quality == "dash"
+      env.params.query.delete_all("quality")
+      next env.redirect "/embed/#{video_id}?#{env.params.query}"
+    elsif params.listen
+      env.params.query.delete_all("listen")
+      env.params.query["listen"] = "0"
+      next env.redirect "/embed/#{video_id}?#{env.params.query}"
+    end
+  end
 
   captions = video.captions
 
@@ -1478,6 +1502,9 @@ post "/preferences" do |env|
   speed = env.params.body["speed"]?.try &.as(String).to_f32?
   speed ||= CONFIG.default_user_preferences.speed
 
+  player_style = env.params.body["player_style"]?.try &.as(String)
+  player_style ||= CONFIG.default_user_preferences.player_style
+
   quality = env.params.body["quality"]?.try &.as(String)
   quality ||= CONFIG.default_user_preferences.quality
 
@@ -1506,8 +1533,7 @@ post "/preferences" do |env|
   locale ||= CONFIG.default_user_preferences.locale
 
   dark_mode = env.params.body["dark_mode"]?.try &.as(String)
-  dark_mode ||= "off"
-  dark_mode = dark_mode == "on"
+  dark_mode ||= CONFIG.default_user_preferences.dark_mode
 
   thin_mode = env.params.body["thin_mode"]?.try &.as(String)
   thin_mode ||= "off"
@@ -1531,6 +1557,7 @@ post "/preferences" do |env|
   notifications_only ||= "off"
   notifications_only = notifications_only == "on"
 
+  # Convert to JSON and back again to take advantage of converters used for compatability
   preferences = Preferences.from_json({
     annotations:            annotations,
     annotations_subscribed: annotations_subscribed,
@@ -1546,6 +1573,7 @@ post "/preferences" do |env|
     locale:                 locale,
     max_results:            max_results,
     notifications_only:     notifications_only,
+    player_style:           player_style,
     quality:                quality,
     redirect_feed:          redirect_feed,
     related_videos:         related_videos,
@@ -1625,12 +1653,27 @@ get "/toggle_theme" do |env|
   if user = env.get? "user"
     user = user.as(User)
     preferences = user.preferences
-    preferences.dark_mode = !preferences.dark_mode
 
-    PG_DB.exec("UPDATE users SET preferences = $1 WHERE email = $2", preferences.to_json, user.email)
+    case preferences.dark_mode
+    when "dark"
+      preferences.dark_mode = "light"
+    else
+      preferences.dark_mode = "dark"
+    end
+
+    preferences = preferences.to_json
+
+    PG_DB.exec("UPDATE users SET preferences = $1 WHERE email = $2", preferences, user.email)
   else
     preferences = env.get("preferences").as(Preferences)
-    preferences.dark_mode = !preferences.dark_mode
+
+    case preferences.dark_mode
+    when "dark"
+      preferences.dark_mode = "light"
+    else
+      preferences.dark_mode = "dark"
+    end
+
     preferences = preferences.to_json
 
     if Kemal.config.ssl || config.https_only
@@ -2003,7 +2046,7 @@ post "/data_control" do |env|
       env.response.puts %(<meta http-equiv="refresh" content="0; url=#{referer}">)
       env.response.puts %(<link rel="stylesheet" href="/css/ionicons.min.css?v=#{ASSET_COMMIT}">)
       env.response.puts %(<link rel="stylesheet" href="/css/default.css?v=#{ASSET_COMMIT}">)
-      if env.get("preferences").as(Preferences).dark_mode
+      if env.get("preferences").as(Preferences).dark_mode == "dark"
         env.response.puts %(<link rel="stylesheet" href="/css/darktheme.css?v=#{ASSET_COMMIT}">)
       else
         env.response.puts %(<link rel="stylesheet" href="/css/lighttheme.css?v=#{ASSET_COMMIT}">)
@@ -2966,7 +3009,7 @@ get "/user/:user/about" do |env|
   env.redirect "/channel/#{user}"
 end
 
-get "/channel:ucid/about" do |env|
+get "/channel/:ucid/about" do |env|
   ucid = env.params.url["ucid"]
   env.redirect "/channel/#{ucid}"
 end
@@ -3010,8 +3053,7 @@ get "/channel/:ucid" do |env|
         item.author
       end
     end
-    items.select! { |item| item.responds_to?(:thumbnail_id) && item.thumbnail_id }
-    items = items.map { |item| item.as(SearchPlaylist) }
+    items = items.select { |item| item.is_a?(SearchPlaylist) }.map { |item| item.as(SearchPlaylist) }
     items.each { |item| item.author = "" }
   else
     sort_options = {"newest", "oldest", "popular"}
@@ -3071,8 +3113,7 @@ get "/channel/:ucid/playlists" do |env|
   end
 
   items, continuation = fetch_channel_playlists(channel.ucid, channel.author, channel.auto_generated, continuation, sort_by)
-  items.select! { |item| item.is_a?(SearchPlaylist) && !item.videos.empty? }
-  items = items.map { |item| item.as(SearchPlaylist) }
+  items = items.select { |item| item.is_a?(SearchPlaylist) }.map { |item| item.as(SearchPlaylist) }
   items.each { |item| item.author = "" }
 
   env.set "search", "channel:#{channel.ucid} "
@@ -3188,35 +3229,35 @@ get "/api/v1/storyboards/:id" do |env|
     storyboard = storyboard[0]
   end
 
-  webvtt = <<-END_VTT
-  WEBVTT
+  String.build do |str|
+    str << <<-END_VTT
+    WEBVTT
 
 
-  END_VTT
+    END_VTT
 
-  start_time = 0.milliseconds
-  end_time = storyboard[:interval].milliseconds
+    start_time = 0.milliseconds
+    end_time = storyboard[:interval].milliseconds
 
-  storyboard[:storyboard_count].times do |i|
-    host_url = make_host_url(config, Kemal.config)
-    url = storyboard[:url].gsub("$M", i).gsub("https://i9.ytimg.com", host_url)
+    storyboard[:storyboard_count].times do |i|
+      host_url = make_host_url(config, Kemal.config)
+      url = storyboard[:url].gsub("$M", i).gsub("https://i9.ytimg.com", host_url)
 
-    storyboard[:storyboard_height].times do |j|
-      storyboard[:storyboard_width].times do |k|
-        webvtt += <<-END_CUE
-        #{start_time}.000 --> #{end_time}.000
-        #{url}#xywh=#{storyboard[:width] * k},#{storyboard[:height] * j},#{storyboard[:width]},#{storyboard[:height]}
+      storyboard[:storyboard_height].times do |j|
+        storyboard[:storyboard_width].times do |k|
+          str << <<-END_CUE
+          #{start_time}.000 --> #{end_time}.000
+          #{url}#xywh=#{storyboard[:width] * k},#{storyboard[:height] * j},#{storyboard[:width]},#{storyboard[:height]}
 
 
-        END_CUE
+          END_CUE
 
-        start_time += storyboard[:interval].milliseconds
-        end_time += storyboard[:interval].milliseconds
+          start_time += storyboard[:interval].milliseconds
+          end_time += storyboard[:interval].milliseconds
+        end
       end
     end
   end
-
-  webvtt
 end
 
 get "/api/v1/captions/:id" do |env|
@@ -3286,7 +3327,7 @@ get "/api/v1/captions/:id" do |env|
     caption = caption[0]
   end
 
-  url = caption.baseUrl + "&tlang=#{tlang}"
+  url = "#{caption.baseUrl}&tlang=#{tlang}"
 
   # Auto-generated captions often have cues that aren't aligned properly with the video,
   # as well as some other markup that makes it cumbersome, so we try to fix that here
@@ -3294,46 +3335,47 @@ get "/api/v1/captions/:id" do |env|
     caption_xml = client.get(url).body
     caption_xml = XML.parse(caption_xml)
 
-    webvtt = <<-END_VTT
-    WEBVTT
-    Kind: captions
-    Language: #{tlang || caption.languageCode}
+    webvtt = String.build do |str|
+      str << <<-END_VTT
+      WEBVTT
+      Kind: captions
+      Language: #{tlang || caption.languageCode}
 
 
-    END_VTT
+      END_VTT
 
-    caption_nodes = caption_xml.xpath_nodes("//transcript/text")
-    caption_nodes.each_with_index do |node, i|
-      start_time = node["start"].to_f.seconds
-      duration = node["dur"]?.try &.to_f.seconds
-      duration ||= start_time
+      caption_nodes = caption_xml.xpath_nodes("//transcript/text")
+      caption_nodes.each_with_index do |node, i|
+        start_time = node["start"].to_f.seconds
+        duration = node["dur"]?.try &.to_f.seconds
+        duration ||= start_time
 
-      if caption_nodes.size > i + 1
-        end_time = caption_nodes[i + 1]["start"].to_f.seconds
-      else
-        end_time = start_time + duration
+        if caption_nodes.size > i + 1
+          end_time = caption_nodes[i + 1]["start"].to_f.seconds
+        else
+          end_time = start_time + duration
+        end
+
+        start_time = "#{start_time.hours.to_s.rjust(2, '0')}:#{start_time.minutes.to_s.rjust(2, '0')}:#{start_time.seconds.to_s.rjust(2, '0')}.#{start_time.milliseconds.to_s.rjust(3, '0')}"
+        end_time = "#{end_time.hours.to_s.rjust(2, '0')}:#{end_time.minutes.to_s.rjust(2, '0')}:#{end_time.seconds.to_s.rjust(2, '0')}.#{end_time.milliseconds.to_s.rjust(3, '0')}"
+
+        text = HTML.unescape(node.content)
+        text = text.gsub(/<font color="#[a-fA-F0-9]{6}">/, "")
+        text = text.gsub(/<\/font>/, "")
+        if md = text.match(/(?<name>.*) : (?<text>.*)/)
+          text = "<v #{md["name"]}>#{md["text"]}</v>"
+        end
+
+        str << <<-END_CUE
+        #{start_time} --> #{end_time}
+        #{text}
+
+
+        END_CUE
       end
-
-      start_time = "#{start_time.hours.to_s.rjust(2, '0')}:#{start_time.minutes.to_s.rjust(2, '0')}:#{start_time.seconds.to_s.rjust(2, '0')}.#{start_time.milliseconds.to_s.rjust(3, '0')}"
-      end_time = "#{end_time.hours.to_s.rjust(2, '0')}:#{end_time.minutes.to_s.rjust(2, '0')}:#{end_time.seconds.to_s.rjust(2, '0')}.#{end_time.milliseconds.to_s.rjust(3, '0')}"
-
-      text = HTML.unescape(node.content)
-      text = text.gsub(/<font color="#[a-fA-F0-9]{6}">/, "")
-      text = text.gsub(/<\/font>/, "")
-      if md = text.match(/(?<name>.*) : (?<text>.*)/)
-        text = "<v #{md["name"]}>#{md["text"]}</v>"
-      end
-
-      webvtt += <<-END_CUE
-    #{start_time} --> #{end_time}
-    #{text}
-
-
-    END_CUE
     end
   else
-    url += "&format=vtt"
-    webvtt = client.get(url).body
+    webvtt = client.get("#{url}&format=vtt").body
   end
 
   if title = env.params.query["title"]?
@@ -4066,8 +4108,10 @@ get "/api/v1/playlists/:plid" do |env|
 
   response = JSON.build do |json|
     json.object do
+      json.field "type", "playlist"
       json.field "title", playlist.title
       json.field "playlistId", playlist.id
+      json.field "playlistThumbnail", playlist.thumbnail
 
       json.field "author", playlist.author
       json.field "authorId", playlist.ucid
@@ -4493,7 +4537,7 @@ get "/api/manifest/dash/id/:id" do |env|
   end
 
   audio_streams = video.audio_streams(adaptive_fmts)
-  video_streams = video.video_streams(adaptive_fmts)
+  video_streams = video.video_streams(adaptive_fmts).sort_by { |stream| stream["fps"].to_i }.reverse
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("MPD", "xmlns": "urn:mpeg:dash:schema:mpd:2011",
@@ -4796,12 +4840,24 @@ get "/videoplayback" do |env|
     end
   end
 
+  client = make_client(URI.parse(host), region)
+
   response = HTTP::Client::Response.new(403)
   5.times do
     begin
-      client = make_client(URI.parse(host), region)
       response = client.head(url, headers)
-      break
+
+      if response.headers["Location"]?
+        location = URI.parse(response.headers["Location"])
+        env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+        host = "#{location.scheme}://#{location.host}"
+        client = make_client(URI.parse(host), region)
+
+        url = "#{location.full_path}&host=#{location.host}#{region ? "&region=#{region}" : ""}"
+      else
+        break
+      end
     rescue Socket::Addrinfo::Error
       if !mns.empty?
         mn = mns.pop
@@ -4809,23 +4865,9 @@ get "/videoplayback" do |env|
       fvip = "3"
 
       host = "https://r#{fvip}---#{mn}.googlevideo.com"
+      client = make_client(URI.parse(host), region)
     rescue ex
     end
-  end
-
-  if response.headers["Location"]?
-    url = URI.parse(response.headers["Location"])
-    host = url.host
-    env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-    url = url.full_path
-    url += "&host=#{host}"
-
-    if region
-      url += "&region=#{region}"
-    end
-
-    next env.redirect url
   end
 
   if response.status_code >= 400
@@ -4884,6 +4926,8 @@ get "/videoplayback" do |env|
       chunk_end = chunk_start + HTTP_CHUNK_SIZE - 1
     end
 
+    client = make_client(URI.parse(host), region)
+
     # TODO: Record bytes written so we can restart after a chunk fails
     while true
       if !range_end && content_length
@@ -4901,7 +4945,6 @@ get "/videoplayback" do |env|
       headers["Range"] = "bytes=#{chunk_start}-#{chunk_end}"
 
       begin
-        client = make_client(URI.parse(host), region)
         client.get(url, headers) do |response|
           if first_chunk
             if !env.request.headers["Range"]? && response.status_code == 206
@@ -4920,11 +4963,7 @@ get "/videoplayback" do |env|
 
             if location = response.headers["Location"]?
               location = URI.parse(location)
-              location = "#{location.full_path}&host=#{location.host}"
-
-              if region
-                location += "&region=#{region}"
-              end
+              location = "#{location.full_path}&host=#{location.host}#{region ? "&region=#{region}" : ""}"
 
               env.redirect location
               break
@@ -4951,6 +4990,8 @@ get "/videoplayback" do |env|
       rescue ex
         if ex.message != "Error reading socket: Connection reset by peer"
           break
+        else
+          client = make_client(URI.parse(host), region)
         end
       end
 
@@ -5049,6 +5090,43 @@ get "/sb/:id/:storyboard/:index" do |env|
   end
 end
 
+get "/s_p/:id/:name" do |env|
+  id = env.params.url["id"]
+  name = env.params.url["name"]
+
+  host = "https://i9.ytimg.com"
+  client = make_client(URI.parse(host))
+  url = env.request.resource
+
+  headers = HTTP::Headers.new
+  REQUEST_HEADERS_WHITELIST.each do |header|
+    if env.request.headers[header]?
+      headers[header] = env.request.headers[header]
+    end
+  end
+
+  begin
+    client.get(url, headers) do |response|
+      env.response.status_code = response.status_code
+      response.headers.each do |key, value|
+        if !RESPONSE_HEADERS_BLACKLIST.includes? key
+          env.response.headers[key] = value
+        end
+      end
+
+      env.response.headers["Access-Control-Allow-Origin"] = "*"
+
+      if response.status_code >= 300 && response.status_code != 404
+        env.response.headers.delete("Transfer-Encoding")
+        break
+      end
+
+      proxy_file(response, env)
+    end
+  rescue ex
+  end
+end
+
 get "/vi/:id/:name" do |env|
   id = env.params.url["id"]
   name = env.params.url["name"]
@@ -5095,7 +5173,7 @@ get "/vi/:id/:name" do |env|
   end
 end
 
-# Undocumented, creates anonymous playlist with specified 'video_ids'
+# Undocumented, creates anonymous playlist with specified 'video_ids', max 50 videos
 get "/watch_videos" do |env|
   client = make_client(YT_URL)
 

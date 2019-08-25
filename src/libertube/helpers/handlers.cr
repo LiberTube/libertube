@@ -69,20 +69,20 @@ class FilteredCompressHandler < Kemal::Handler
     return call_next env if exclude_match? env
 
     {% if flag?(:without_zlib) %}
-        call_next env
-      {% else %}
-        request_headers = env.request.headers
+      call_next env
+    {% else %}
+      request_headers = env.request.headers
 
-        if request_headers.includes_word?("Accept-Encoding", "gzip")
-          env.response.headers["Content-Encoding"] = "gzip"
-          env.response.output = Gzip::Writer.new(env.response.output, sync_close: true)
-        elsif request_headers.includes_word?("Accept-Encoding", "deflate")
-          env.response.headers["Content-Encoding"] = "deflate"
-          env.response.output = Flate::Writer.new(env.response.output, sync_close: true)
-        end
+      if request_headers.includes_word?("Accept-Encoding", "gzip")
+        env.response.headers["Content-Encoding"] = "gzip"
+        env.response.output = Gzip::Writer.new(env.response.output, sync_close: true)
+      elsif request_headers.includes_word?("Accept-Encoding", "deflate")
+        env.response.headers["Content-Encoding"] = "deflate"
+        env.response.output = Flate::Writer.new(env.response.output, sync_close: true)
+      end
 
-        call_next env
-      {% end %}
+      call_next env
+    {% end %}
   end
 end
 
@@ -159,10 +159,9 @@ class APIHandler < Kemal::Handler
       call_next env
 
       env.response.output.rewind
-      response = env.response.output.gets_to_end
 
-      if env.response.headers["Content-Type"]?.try &.== "application/json"
-        response = JSON.parse(response)
+      if env.response.headers.includes_word?("Content-Type", "application/json")
+        response = JSON.parse(env.response.output)
 
         if fields_text = env.params.query["fields"]?
           begin
@@ -178,6 +177,8 @@ class APIHandler < Kemal::Handler
         else
           response = response.to_json
         end
+      else
+        response = env.response.output.gets_to_end
       end
     rescue ex
     ensure
