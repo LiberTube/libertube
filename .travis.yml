@@ -1,1 +1,34 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/b6629da8b95014ece4e819ea02888f8a
+dist: bionic
+
+jobs:
+  include:
+    - stage: build
+      # TODO: Shallowly clone again once the .git folder is no longer required for building
+      git:
+        depth: false
+      language: crystal
+      crystal: latest
+      before_install:
+        - shards update
+        - shards install
+      install:
+        - crystal build --warnings all --error-on-warnings src/invidious.cr
+      script:
+        - crystal tool format --check
+        - crystal spec
+
+    - stage: build_docker
+      # TODO: Shallowly clone again once the .git folder is no longer required for building
+      git:
+        depth: false
+      language: minimal
+      services:
+        - docker
+      install:
+        - docker-compose build
+      script:
+        - docker-compose up -d
+        - sleep 15 # Wait for cluster to become ready, TODO: do not sleep
+        - HEADERS="$(curl -I -s http://localhost:3000/)"
+        - STATUS="$(echo $HEADERS | head -n1)"
+        - if [[ "$STATUS" != *"200 OK"* ]]; then echo "$HEADERS"; exit 1; fi

@@ -1,5 +1,5 @@
 FROM alpine:edge AS builder
-RUN apk add -u crystal shards libc-dev \
+RUN apk add --no-cache crystal shards libc-dev \
     yaml-dev libxml2-dev sqlite-dev zlib-dev openssl-dev \
     sqlite-static zlib-static openssl-libs-static
 WORKDIR /invidious
@@ -9,13 +9,13 @@ COPY ./src/ ./src/
 # TODO: .git folder is required for building – this is destructive.
 # See definition of CURRENT_BRANCH, CURRENT_COMMIT and CURRENT_VERSION.
 COPY ./.git/ ./.git/
-RUN crystal build --static --release \
+RUN crystal build --static --release --warnings all --error-on-warnings \
 # TODO: Remove next line, see https://github.com/crystal-lang/crystal/issues/7946
     -Dmusl \
     ./src/invidious.cr
 
 FROM alpine:latest
-RUN apk add -u imagemagick ttf-opensans
+RUN apk add --no-cache imagemagick ttf-opensans
 WORKDIR /invidious
 RUN addgroup -g 1000 -S invidious && \
     adduser -u 1000 -S invidious -G invidious
