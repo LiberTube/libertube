@@ -84,7 +84,8 @@ struct Preferences
     notifications_only:     {type: Bool, default: CONFIG.default_user_preferences.notifications_only},
     player_style:           {type: String, default: CONFIG.default_user_preferences.player_style, converter: ProcessString},
     quality:                {type: String, default: CONFIG.default_user_preferences.quality, converter: ProcessString},
-    redirect_feed:          {type: Bool, default: CONFIG.default_user_preferences.redirect_feed},
+    default_home:           {type: String, default: CONFIG.default_user_preferences.default_home},
+    feed_menu:              {type: Array(String), default: CONFIG.default_user_preferences.feed_menu},
     related_videos:         {type: Bool, default: CONFIG.default_user_preferences.related_videos},
     sort:                   {type: String, default: CONFIG.default_user_preferences.sort, converter: ProcessString},
     speed:                  {type: Float32, default: CONFIG.default_user_preferences.speed},
@@ -142,8 +143,7 @@ def get_user(sid, headers, db, refresh = true)
 end
 
 def fetch_user(sid, headers, db)
-  client = make_client(YT_URL)
-  feed = client.get("/subscription_manager?disable_polymer=1", headers)
+  feed = YT_POOL.client &.get("/subscription_manager?disable_polymer=1", headers)
   feed = XML.parse_html(feed.body)
 
   channels = [] of String
@@ -195,7 +195,7 @@ def generate_captcha(key, db)
   end
 
   clock_svg = <<-END_SVG
-  <svg viewBox="0 0 100 100" width="200px">
+  <svg viewBox="0 0 100 100" width="200px" height="200px">
   <circle cx="50" cy="50" r="45" fill="#eee" stroke="black" stroke-width="2"></circle>
 
   <text x="69"     y="20.091" text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 1</text>
@@ -219,7 +219,7 @@ def generate_captcha(key, db)
   END_SVG
 
   image = ""
-  convert = Process.run(%(convert -density 1200 -resize 400x400 -background none svg:- png:-), shell: true,
+  convert = Process.run(%(rsvg-convert -w 400 -h 400 -b none -f png), shell: true,
     input: IO::Memory.new(clock_svg), output: Process::Redirect::Pipe) do |proc|
     image = proc.output.gets_to_end
     image = Base64.strict_encode(image)
@@ -253,8 +253,7 @@ def subscribe_ajax(channel_id, action, env_headers)
   headers = HTTP::Headers.new
   headers["Cookie"] = env_headers["Cookie"]
 
-  client = make_client(YT_URL)
-  html = client.get("/subscription_manager?disable_polymer=1", headers)
+  html = YT_POOL.client &.get("/subscription_manager?disable_polymer=1", headers)
 
   cookies = HTTP::Cookies.from_headers(headers)
   html.cookies.each do |cookie|
@@ -278,9 +277,51 @@ def subscribe_ajax(channel_id, action, env_headers)
     }
     post_url = "/subscription_ajax?#{action}=1&c=#{channel_id}"
 
-    client.post(post_url, headers, form: post_req)
+    YT_POOL.client &.post(post_url, headers, form: post_req)
   end
 end
+
+# TODO: Playlist stub, sync with YouTube for Google accounts
+# def playlist_ajax(video_ids, source_playlist_id, name, privacy, action, env_headers)
+#   headers = HTTP::Headers.new
+#   headers["Cookie"] = env_headers["Cookie"]
+#
+#   html = YT_POOL.client &.get("/view_all_playlists?disable_polymer=1", headers)
+#
+#   cookies = HTTP::Cookies.from_headers(headers)
+#   html.cookies.each do |cookie|
+#     if {"VISITOR_INFO1_LIVE", "YSC", "SIDCC"}.includes? cookie.name
+#       if cookies[cookie.name]?
+#         cookies[cookie.name] = cookie
+#       else
+#         cookies << cookie
+#       end
+#     end
+#   end
+#   headers = cookies.add_request_headers(headers)
+#
+#   if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+#     session_token = match["session_token"]
+#
+#     headers["content-type"] = "application/x-www-form-urlencoded"
+#
+#     post_req = {
+#       video_ids:          [] of String,
+#       source_playlist_id: "",
+#       n:                  name,
+#       p:                  privacy,
+#       session_token:      session_token,
+#     }
+#     post_url = "/playlist_ajax?#{action}=1"
+#
+#     response = client.post(post_url, headers, form: post_req)
+#     if response.status_code == 200
+#       return JSON.parse(response.body)["result"]["playlistId"].as_s
+#     else
+#       return nil
+#     end
+#   end
+# end
 
 def get_subscription_feed(db, user, max_results = 40, page = 1)
   limit = max_results.clamp(0, MAX_ITEMS_PER_PAGE)

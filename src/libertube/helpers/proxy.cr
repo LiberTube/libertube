@@ -77,6 +77,10 @@ class HTTPClient < HTTP::Client
     end
   end
 
+  def unset_proxy
+    @socket = nil
+  end
+
   def proxy_connection_options
     opts = {} of Symbol => Float64 | Nil
 
@@ -97,6 +101,7 @@ def filter_proxies(proxies)
   proxies.select! do |proxy|
     begin
       client = HTTPClient.new(YT_URL)
+      client.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
       client.read_timeout = 10.seconds
       client.connect_timeout = 10.seconds
 

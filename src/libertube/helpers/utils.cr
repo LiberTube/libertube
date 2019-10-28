@@ -1,3 +1,61 @@
+require "lsquic"
+require "pool/connection"
+
+def add_yt_headers(request)
+  request.headers["x-youtube-client-name"] ||= "1"
+  request.headers["x-youtube-client-version"] ||= "1.20180719"
+  request.headers["user-agent"] ||= "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36"
+  request.headers["accept-charset"] ||= "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
+  request.headers["accept"] ||= "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  request.headers["accept-language"] ||= "en-us,en;q=0.5"
+  request.headers["cookie"] = "#{(CONFIG.cookies.map { |c| "#{c.name}=#{c.value}" }).join("; ")}; #{request.headers["cookie"]?}"
+end
+
+struct QUICPool
+  property! url : URI
+  property! capacity : Int32
+  property! timeout : Float64
+  property pool : ConnectionPool(QUIC::Client)
+
+  def initialize(url : URI, @capacity = 5, @timeout = 5.0)
+    @url = url
+    @pool = build_pool
+  end
+
+  def client(region = nil, &block)
+    if region
+      conn = make_client(url, region)
+      response = yield conn
+    else
+      conn = pool.checkout
+      begin
+        response = yield conn
+      rescue ex
+        conn.close
+        conn = QUIC::Client.new(url)
+        conn.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::INET
+        conn.family = Socket::Family::INET if conn.family == Socket::Family::UNSPEC
+        conn.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
+        response = yield conn
+      ensure
+        pool.checkin(conn)
+      end
+    end
+
+    response
+  end
+
+  private def build_pool
+    ConnectionPool(QUIC::Client).new(capacity: capacity, timeout: timeout) do
+      conn = QUIC::Client.new(url)
+      conn.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::INET
+      conn.family = Socket::Family::INET if conn.family == Socket::Family::UNSPEC
+      conn.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
+      conn
+    end
+  end
+end
+
 # See http://www.evanmiller.org/how-not-to-sort-by-average-rating.html
 def ci_lower_bound(pos, n)
   if n == 0
@@ -20,9 +78,9 @@ end
 
 def make_client(url : URI, region = nil)
   client = HTTPClient.new(url)
-  client.family = CONFIG.force_resolve
-  client.read_timeout = 15.seconds
-  client.connect_timeout = 15.seconds
+  client.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::UNSPEC
+  client.read_timeout = 10.seconds
+  client.connect_timeout = 10.seconds
 
   if region
     PROXY_LIST[region]?.try &.sample(40).each do |proxy|
@@ -39,7 +97,7 @@ def make_client(url : URI, region = nil)
 end
 
 def decode_length_seconds(string)
-  length_seconds = string.split(":").map { |a| a.to_i }
+  length_seconds = string.gsub(/[^0-9:]/, "").split(":").map &.to_i
   length_seconds = [0] * (3 - length_seconds.size) + length_seconds
   length_seconds = Time::Span.new(length_seconds[0], length_seconds[1], length_seconds[2])
   length_seconds = length_seconds.total_seconds.to_i
@@ -321,7 +379,6 @@ def subscribe_pubsub(topic, key, config)
     # TODO
   end
 
-  client = make_client(PUBSUB_URL)
   time = Time.utc.to_unix.to_s
   nonce = Random::Secure.hex(4)
   signature = "#{time}:#{nonce}"
@@ -337,7 +394,7 @@ def subscribe_pubsub(topic, key, config)
     "hub.secret"        => key.to_s,
   }
 
-  return client.post("/subscribe", form: body)
+  return make_client(PUBSUB_URL).post("/subscribe", form: body)
 end
 
 def parse_range(range)

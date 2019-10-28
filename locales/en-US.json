@@ -1,11 +1,15 @@
 {
     "`x` subscribers": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` subscriber",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` subscriber",
         "": "`x` subscribers"
     },
     "`x` videos": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` video",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` video",
         "": "`x` videos"
+    },
+    "`x` playlists": {
+        "(\\D|^)1(\\D|$)": "`x` playlist",
+        "": "`x` playlists"
     },
     "LIVE": "LIVE",
     "Shared `x` ago": "Shared `x` ago",
@@ -74,11 +78,11 @@
     "Show related videos: ": "Show related videos: ",
     "Show annotations by default: ": "Show annotations by default: ",
     "Visual preferences": "Visual preferences",
-    "Player style: ": "",
+    "Player style: ": "Player style: ",
     "Dark mode: ": "Dark mode: ",
-    "Theme: ": "",
-    "dark": "",
-    "light": "",
+    "Theme: ": "Theme: ",
+    "dark": "dark",
+    "light": "light",
     "Thin mode: ": "Thin mode: ",
     "Subscription preferences": "Subscription preferences",
     "Show annotations by default for subscribed channels: ": "Show annotations by default for subscribed channels? ",
@@ -111,19 +115,19 @@
     "Feed menu: ": "Feed menu: ",
     "Top enabled: ": "Top enabled: ",
     "CAPTCHA enabled: ": "CAPTCHA enabled: ",
-    "Login enabled: ": "Login enabled? ",
-    "Registration enabled: ": "Registration enabled? ",
-    "Report statistics: ": "Report statistics? ",
+    "Login enabled: ": "Login enabled: ",
+    "Registration enabled: ": "Registration enabled: ",
+    "Report statistics: ": "Report statistics: ",
     "Save preferences": "Save preferences",
     "Subscription manager": "Subscription manager",
     "Token manager": "Token manager",
     "Token": "Token",
     "`x` subscriptions": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` subscription",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` subscription",
         "": "`x` subscriptions"
     },
     "`x` tokens": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` token",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` token",
         "": "`x` tokens"
     },
     "Import/export": "Import/export",
@@ -131,7 +135,7 @@
     "revoke": "revoke",
     "Subscriptions": "Subscriptions",
     "`x` unseen notifications": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` unseen notification",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` unseen notification",
         "": "`x` unseen notifications"
     },
     "search": "search",
@@ -141,7 +145,17 @@
     "View JavaScript license information.": "View JavaScript license information.",
     "View privacy policy.": "View privacy policy.",
     "Trending": "Trending",
+    "Public": "Public",
     "Unlisted": "Unlisted",
+    "Private": "Private",
+    "View all playlists": "View all playlists",
+    "Updated `x` ago": "Updated `x` ago",
+    "Delete playlist `x`?": "Delete playlist `x`?",
+    "Delete playlist": "Delete playlist",
+    "Create playlist": "Create playlist",
+    "Title": "Title",
+    "Playlist privacy": "Playlist privacy",
+    "Editing playlist `x`": "Editing playlist `x`",
     "Watch on YouTube": "Watch on YouTube",
     "Hide annotations": "Hide annotations",
     "Show annotations": "Show annotations",
@@ -154,7 +168,7 @@
     "Blacklisted regions: ": "Blacklisted regions: ",
     "Shared `x`": "Shared `x`",
     "`x` views": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` views",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` view",
         "": "`x` views"
     },
     "Premieres in `x`": "Premieres in `x`",
@@ -162,7 +176,10 @@
     "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.": "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.",
     "View YouTube comments": "View YouTube comments",
     "View more comments on Reddit": "View more comments on Reddit",
-    "View `x` comments": "View `x` comments",
+    "View `x` comments": {
+        "(\\D|^)1(\\D|$)": "View `x` comment",
+        "": "View `x` comments"
+    },
     "View Reddit comments": "View Reddit comments",
     "Hide replies": "Hide replies",
     "Show replies": "Show replies",
@@ -188,13 +205,13 @@
     "Could not get channel info.": "Could not get channel info.",
     "Could not fetch comments": "Could not fetch comments",
     "View `x` replies": {
-        "([^0-9]|^)1([^,0-9]|$)": "View `x` reply",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "View `x` reply",
         "": "View `x` replies"
     },
     "`x` ago": "`x` ago",
     "Load more": "Load more",
     "`x` points": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` point",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` point",
         "": "`x` points"
     },
     "Could not create mix.": "Could not create mix.",
@@ -315,31 +332,31 @@
     "Yoruba": "Yoruba",
     "Zulu": "Zulu",
     "`x` years": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` year",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` year",
         "": "`x` years"
     },
     "`x` months": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` month",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` month",
         "": "`x` months"
     },
     "`x` weeks": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` week",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` week",
         "": "`x` weeks"
     },
     "`x` days": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` day",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` day",
         "": "`x` days"
     },
     "`x` hours": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` hour",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` hour",
         "": "`x` hours"
     },
     "`x` minutes": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` minute",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` minute",
         "": "`x` minutes"
     },
     "`x` seconds": {
-        "([^0-9]|^)1([^,0-9]|$)": "`x` second",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` second",
         "": "`x` seconds"
     },
     "Fallback comments: ": "Fallback comments: ",
@@ -359,7 +376,7 @@
     "%A %B %-d, %Y": "%A %B %-d, %Y",
     "(edited)": "(edited)",
     "YouTube comment permalink": "YouTube comment permalink",
-    "permalink": "",
+    "permalink": "permalink",
     "`x` marked it with a ❤": "`x` marked it with a ❤",
     "Audio mode": "Audio mode",
     "Video mode": "Video mode",

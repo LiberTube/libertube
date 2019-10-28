@@ -195,9 +195,7 @@ def get_channel(id, db, refresh = true, pull_all_videos = true)
 end
 
 def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
-  client = make_client(YT_URL)
-
-  rss = client.get("/feeds/videos.xml?channel_id=#{ucid}").body
+  rss = YT_POOL.client &.get("/feeds/videos.xml?channel_id=#{ucid}").body
   rss = XML.parse_html(rss)
 
   author = rss.xpath_node(%q(//feed/title))
@@ -216,8 +214,18 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
   page = 1
 
   url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated)
-  response = client.get(url)
-  json = JSON.parse(response.body)
+  response = YT_POOL.client &.get(url)
+
+  begin
+    json = JSON.parse(response.body)
+  rescue ex
+    if response.body.includes?("To continue with your YouTube experience, please fill out the form below.") ||
+       response.body.includes?("https://www.google.com/sorry/index")
+      raise "Could not extract channel info. Instance is likely blocked."
+    end
+
+    raise "Could not extract JSON"
+  end
 
   if json["content_html"]? && !json["content_html"].as_s.empty?
     document = XML.parse_html(json["content_html"].as_s)
@@ -283,7 +291,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
     if emails.empty?
       values = "'{}'"
     else
-      values = "VALUES #{emails.map { |id| %(('#{id}')) }.join(",")}"
+      values = "VALUES #{emails.map { |email| %((E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}')) }.join(",")}"
     end
 
     db.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
@@ -296,7 +304,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
 
     loop do
       url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated)
-      response = client.get(url)
+      response = YT_POOL.client &.get(url)
       json = JSON.parse(response.body)
 
       if json["content_html"]? && !json["content_html"].as_s.empty?
@@ -351,7 +359,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
           if emails.empty?
             values = "'{}'"
           else
-            values = "VALUES #{emails.map { |id| %(('#{id}')) }.join(",")}"
+            values = "VALUES #{emails.map { |email| %((E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}')) }.join(",")}"
           end
 
           db.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
@@ -375,12 +383,10 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
 end
 
 def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
-  client = make_client(YT_URL)
-
-  if continuation
+  if continuation || auto_generated
     url = produce_channel_playlists_url(ucid, continuation, sort_by, auto_generated)
 
-    response = client.get(url)
+    response = YT_POOL.client &.get(url)
     json = JSON.parse(response.body)
 
     if json["load_more_widget_html"].as_s.empty?
@@ -396,13 +402,6 @@ def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
 
     html = XML.parse_html(json["content_html"].as_s)
     nodeset = html.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
-  elsif auto_generated
-    url = "/channel/#{ucid}"
-
-    response = client.get(url)
-    html = XML.parse_html(response.body)
-
-    nodeset = html.xpath_nodes(%q(//ul[@id="browse-items-primary"]/li[contains(@class, "feed-item-container")]))
   else
     url = "/channel/#{ucid}/playlists?disable_polymer=1&flow=list&view=1"
 
@@ -415,7 +414,7 @@ def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
       url += "&sort=dd"
     end
 
-    response = client.get(url)
+    response = YT_POOL.client &.get(url)
     html = XML.parse_html(response.body)
 
     continuation = html.xpath_node(%q(//button[@data-uix-load-more-href]))
@@ -436,188 +435,119 @@ def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
 end
 
 def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "newest")
+  object = {
+    "80226972:embedded" => {
+      "2:string" => ucid,
+      "3:base64" => {
+        "2:string" => "videos",
+        "6:varint":   2_i64,
+        "7:varint":   1_i64,
+        "12:varint":  1_i64,
+        "13:string":  "",
+        "23:varint":  0_i64,
+      },
+    },
+  }
+
   if auto_generated
     seed = Time.unix(1525757349)
-
     until seed >= Time.utc
       seed += 1.month
     end
     timestamp = seed - (page - 1).months
 
-    page = "#{timestamp.to_unix}"
-    switch = 0x36
+    object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0x36_i64
+    object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = "#{timestamp.to_unix}"
   else
-    page = "#{page}"
-    switch = 0x00
+    object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0_i64
+    object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = "#{page}"
   end
-
-  data = IO::Memory.new
-  data.write_byte 0x12
-  data.write_byte 0x06
-  data.print "videos"
-
-  data.write Bytes[0x30, 0x02]
-  data.write Bytes[0x38, 0x01]
-  data.write Bytes[0x60, 0x01]
-  data.write Bytes[0x6a, 0x00]
-  data.write Bytes[0xb8, 0x01, 0x00]
-
-  data.write Bytes[0x20, switch]
-  data.write_byte 0x7a
-  VarInt.to_io(data, page.bytesize)
-  data.print page
 
   case sort_by
   when "newest"
-    # Empty tags can be omitted
-    # data.write(Bytes[0x18,0x00])
   when "popular"
-    data.write Bytes[0x18, 0x01]
+    object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 0x01_i64
   when "oldest"
-    data.write Bytes[0x18, 0x02]
+    object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 0x02_i64
   end
 
-  data = Base64.urlsafe_encode(data)
-  cursor = URI.encode_www_form(data)
+  object["80226972:embedded"]["3:string"] = Base64.urlsafe_encode(Protodec::Any.from_json(Protodec::Any.cast_json(object["80226972:embedded"]["3:base64"])))
+  object["80226972:embedded"].delete("3:base64")
 
-  data = IO::Memory.new
+  continuation = object.try { |i| Protodec::Any.cast_json(object) }
+    .try { |i| Protodec::Any.from_json(i) }
+    .try { |i| Base64.urlsafe_encode(i) }
+    .try { |i| URI.encode_www_form(i) }
 
-  data.write_byte 0x12
-  VarInt.to_io(data, ucid.bytesize)
-  data.print ucid
-
-  data.write_byte 0x1a
-  VarInt.to_io(data, cursor.bytesize)
-  data.print cursor
-
-  data.rewind
-
-  buffer = IO::Memory.new
-  buffer.write Bytes[0xe2, 0xa9, 0x85, 0xb2, 0x02]
-  VarInt.to_io(buffer, data.bytesize)
-
-  IO.copy data, buffer
-
-  continuation = Base64.urlsafe_encode(buffer)
-  continuation = URI.encode_www_form(continuation)
-
-  url = "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
-
-  return url
+  return "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
 end
 
 def produce_channel_playlists_url(ucid, cursor, sort = "newest", auto_generated = false)
-  if !auto_generated
-    cursor = Base64.urlsafe_encode(cursor, false)
+  object = {
+    "80226972:embedded" => {
+      "2:string" => ucid,
+      "3:base64" => {
+        "2:string" => "playlists",
+        "6:varint":   2_i64,
+        "7:varint":   1_i64,
+        "12:varint":  1_i64,
+        "13:string":  "",
+        "23:varint":  0_i64,
+      },
+    },
+  }
+
+  if cursor
+    cursor = Base64.urlsafe_encode(cursor, false) if !auto_generated
+    object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = cursor
   end
 
-  data = IO::Memory.new
-
   if auto_generated
-    data.write Bytes[0x08, 0x0a]
-  end
-
-  data.write Bytes[0x12, 0x09]
-  data.print "playlists"
-
-  if auto_generated
-    data.write Bytes[0x20, 0x32]
+    object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0x32_i64
   else
-    # TODO: Look at 0x01, 0x00
+    object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 1_i64
     case sort
     when "oldest", "oldest_created"
-      data.write Bytes[0x18, 0x02]
+      object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 2_i64
     when "newest", "newest_created"
-      data.write Bytes[0x18, 0x03]
+      object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 3_i64
     when "last", "last_added"
-      data.write Bytes[0x18, 0x04]
+      object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 4_i64
     end
-
-    data.write Bytes[0x20, 0x01]
   end
 
-  data.write Bytes[0x30, 0x02]
-  data.write Bytes[0x38, 0x01]
-  data.write Bytes[0x60, 0x01]
-  data.write Bytes[0x6a, 0x00]
+  object["80226972:embedded"]["3:string"] = Base64.urlsafe_encode(Protodec::Any.from_json(Protodec::Any.cast_json(object["80226972:embedded"]["3:base64"])))
+  object["80226972:embedded"].delete("3:base64")
 
-  data.write_byte 0x7a
-  VarInt.to_io(data, cursor.bytesize)
-  data.print cursor
+  continuation = object.try { |i| Protodec::Any.cast_json(object) }
+    .try { |i| Protodec::Any.from_json(i) }
+    .try { |i| Base64.urlsafe_encode(i) }
+    .try { |i| URI.encode_www_form(i) }
 
-  data.write Bytes[0xb8, 0x01, 0x00]
-
-  data.rewind
-  data = Base64.urlsafe_encode(data)
-  continuation = URI.encode_www_form(data)
-
-  data = IO::Memory.new
-
-  data.write_byte 0x12
-  VarInt.to_io(data, ucid.bytesize)
-  data.print ucid
-
-  data.write_byte 0x1a
-  VarInt.to_io(data, continuation.bytesize)
-  data.print continuation
-
-  data.rewind
-
-  buffer = IO::Memory.new
-  buffer.write Bytes[0xe2, 0xa9, 0x85, 0xb2, 0x02]
-  VarInt.to_io(buffer, data.bytesize)
-
-  IO.copy data, buffer
-
-  continuation = Base64.urlsafe_encode(buffer)
-  continuation = URI.encode_www_form(continuation)
-
-  url = "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
-
-  return url
+  return "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
 end
 
 def extract_channel_playlists_cursor(url, auto_generated)
-  continuation = HTTP::Params.parse(URI.parse(url).query.not_nil!)["continuation"]
+  cursor = URI.parse(url).query_params
+    .try { |i| URI.decode_www_form(i["continuation"]) }
+    .try { |i| Base64.decode(i) }
+    .try { |i| IO::Memory.new(i) }
+    .try { |i| Protodec::Any.parse(i) }
+    .try { |i| i["80226972:0:embedded"]["3:1:base64"].as_h.find { |k, v| k.starts_with? "15:" } }
+    .try &.[1]
 
-  continuation = URI.decode_www_form(continuation)
-  data = IO::Memory.new(Base64.decode(continuation))
-
-  # 0xe2 0xa9 0x85 0xb2 0x02
-  data.pos += 5
-
-  continuation = Bytes.new(data.read_bytes(VarInt))
-  data.read continuation
-  data = IO::Memory.new(continuation)
-
-  data.read_byte # => 0x12
-  ucid = Bytes.new(data.read_bytes(VarInt))
-  data.read ucid
-
-  data.read_byte # => 0x1a
-  inner_continuation = Bytes.new(data.read_bytes(VarInt))
-  data.read inner_continuation
-
-  continuation = String.new(inner_continuation)
-  continuation = URI.decode_www_form(continuation)
-  data = IO::Memory.new(Base64.decode(continuation))
-
-  # 0x12 0x09 playlists
-  data.pos += 11
-
-  until data.peek[0] == 0x7a
-    key = data.read_bytes(VarInt)
-    value = data.read_bytes(VarInt)
+  if cursor.try &.as_h?
+    cursor = cursor.try { |i| Protodec::Any.cast_json(i.as_h) }
+      .try { |i| Protodec::Any.from_json(i) }
+      .try { |i| Base64.urlsafe_encode(i) }
+      .try { |i| URI.encode_www_form(i) } || ""
+  else
+    cursor = cursor.try &.as_s || ""
   end
-
-  data.pos += 1 # => 0x7a
-  cursor = Bytes.new(data.read_bytes(VarInt))
-  data.read cursor
-  cursor = String.new(cursor)
 
   if !auto_generated
     cursor = URI.decode_www_form(cursor)
-    cursor = Base64.decode_string(cursor)
+      .try { |i| Base64.decode_string(i) }
   end
 
   return cursor
@@ -625,13 +555,9 @@ end
 
 # TODO: Add "sort_by"
 def fetch_channel_community(ucid, continuation, locale, config, kemal_config, format, thin_mode)
-  client = make_client(YT_URL)
-  headers = HTTP::Headers.new
-  headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36"
-
-  response = client.get("/channel/#{ucid}/community?gl=US&hl=en", headers)
+  response = YT_POOL.client &.get("/channel/#{ucid}/community?gl=US&hl=en")
   if response.status_code == 404
-    response = client.get("/user/#{ucid}/community?gl=US&hl=en", headers)
+    response = YT_POOL.client &.get("/user/#{ucid}/community?gl=US&hl=en")
   end
 
   if response.status_code == 404
@@ -653,6 +579,7 @@ def fetch_channel_community(ucid, continuation, locale, config, kemal_config, fo
   else
     continuation = produce_channel_community_continuation(ucid, continuation)
 
+    headers = HTTP::Headers.new
     headers["cookie"] = response.cookies.add_request_headers(headers)["cookie"]
     headers["content-type"] = "application/x-www-form-urlencoded"
 
@@ -668,7 +595,7 @@ def fetch_channel_community(ucid, continuation, locale, config, kemal_config, fo
       session_token: session_token,
     }
 
-    response = client.post("/comment_service_ajax?action_get_comments=1&ctoken=#{continuation}&continuation=#{continuation}&hl=en&gl=US", headers, form: post_req)
+    response = YT_POOL.client &.post("/comment_service_ajax?action_get_comments=1&ctoken=#{continuation}&continuation=#{continuation}&hl=en&gl=US", headers, form: post_req)
     body = JSON.parse(response.body)
 
     body = body["response"]["continuationContents"]["itemSectionContinuation"]? ||
@@ -879,61 +806,49 @@ def fetch_channel_community(ucid, continuation, locale, config, kemal_config, fo
 end
 
 def produce_channel_community_continuation(ucid, cursor)
-  cursor = URI.encode_www_form(cursor)
+  object = {
+    "80226972:embedded" => {
+      "2:string" => ucid,
+      "3:string" => cursor || "",
+    },
+  }
 
-  data = IO::Memory.new
-
-  data.write_byte 0x12
-  VarInt.to_io(data, ucid.bytesize)
-  data.print ucid
-
-  data.write_byte 0x1a
-  VarInt.to_io(data, cursor.bytesize)
-  data.print cursor
-
-  data.rewind
-
-  buffer = IO::Memory.new
-  buffer.write Bytes[0xe2, 0xa9, 0x85, 0xb2, 0x02]
-  VarInt.to_io(buffer, data.size)
-
-  IO.copy data, buffer
-
-  continuation = Base64.urlsafe_encode(buffer)
-  continuation = URI.encode_www_form(continuation)
+  continuation = object.try { |i| Protodec::Any.cast_json(object) }
+    .try { |i| Protodec::Any.from_json(i) }
+    .try { |i| Base64.urlsafe_encode(i) }
+    .try { |i| URI.encode_www_form(i) }
 
   return continuation
 end
 
 def extract_channel_community_cursor(continuation)
-  continuation = URI.decode_www_form(continuation)
-  data = IO::Memory.new(Base64.decode(continuation))
+  object = URI.decode_www_form(continuation)
+    .try { |i| Base64.decode(i) }
+    .try { |i| IO::Memory.new(i) }
+    .try { |i| Protodec::Any.parse(i) }
+    .try { |i| i["80226972:0:embedded"]["3:1:base64"].as_h }
 
-  # 0xe2 0xa9 0x85 0xb2 0x02
-  data.pos += 5
+  if object["53:2:embedded"]?.try &.["3:0:embedded"]?
+    object["53:2:embedded"]["3:0:embedded"]["2:0:string"] = object["53:2:embedded"]["3:0:embedded"]
+      .try { |i| i["2:0:base64"].as_h }
+      .try { |i| Protodec::Any.cast_json(i) }
+      .try { |i| Protodec::Any.from_json(i) }
+      .try { |i| Base64.urlsafe_encode(i, padding: false) }
 
-  continuation = Bytes.new(data.read_bytes(VarInt))
-  data.read continuation
-  data = IO::Memory.new(continuation)
-
-  data.read_byte # => 0x12
-  ucid = Bytes.new(data.read_bytes(VarInt))
-  data.read ucid
-
-  data.read_byte # => 0x1a
-  until data.peek[0] == 'E'.ord
-    data.read_byte
+    object["53:2:embedded"]["3:0:embedded"].as_h.delete("2:0:base64")
   end
 
-  return URI.decode_www_form(data.gets_to_end)
+  cursor = Protodec::Any.cast_json(object)
+    .try { |i| Protodec::Any.from_json(i) }
+    .try { |i| Base64.urlsafe_encode(i) }
+
+  cursor
 end
 
 def get_about_info(ucid, locale)
-  client = make_client(YT_URL)
-
-  about = client.get("/channel/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
+  about = YT_POOL.client &.get("/channel/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
   if about.status_code == 404
-    about = client.get("/user/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
+    about = YT_POOL.client &.get("/user/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
   end
 
   if md = about.headers["location"]?.try &.match(/\/channel\/(?<ucid>UC[a-zA-Z0-9_-]{22})/)
@@ -1038,11 +953,9 @@ def get_60_videos(ucid, author, page, auto_generated, sort_by = "newest")
   count = 0
   videos = [] of SearchVideo
 
-  client = make_client(YT_URL)
-
   2.times do |i|
     url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated, sort_by: sort_by)
-    response = client.get(url)
+    response = YT_POOL.client &.get(url)
     json = JSON.parse(response.body)
 
     if json["content_html"]? && !json["content_html"].as_s.empty?
@@ -1067,11 +980,10 @@ def get_60_videos(ucid, author, page, auto_generated, sort_by = "newest")
 end
 
 def get_latest_videos(ucid)
-  client = make_client(YT_URL)
   videos = [] of SearchVideo
 
   url = produce_channel_videos_url(ucid, 0)
-  response = client.get(url)
+  response = YT_POOL.client &.get(url)
   json = JSON.parse(response.body)
 
   if json["content_html"]? && !json["content_html"].as_s.empty?

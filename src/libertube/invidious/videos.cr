@@ -621,10 +621,7 @@ struct Video
 
     if fmts = player_response["streamingData"]?.try &.["adaptiveFormats"]?
       fmts.as_a.each do |adaptive_fmt|
-        if !adaptive_fmt.as_h?
-          next
-        end
-
+        next if !adaptive_fmt.as_h?
         fmt = {} of String => String
 
         if init = adaptive_fmt["initRange"]?
@@ -1137,8 +1134,11 @@ def extract_player_config(body, html)
     error_message = html.xpath_node(%q(//h1[@id="unavailable-message"]))
     if error_message
       params["reason"] = error_message.content.strip
+    elsif body.includes?("To continue with your YouTube experience, please fill out the form below.") ||
+          body.includes?("https://www.google.com/sorry/index")
+      params["reason"] = "Could not extract video info. Instance is likely blocked."
     else
-      params["reason"] = "Could not extract video info."
+      params["reason"] = "Video unavailable."
     end
   end
 
@@ -1146,8 +1146,7 @@ def extract_player_config(body, html)
 end
 
 def fetch_video(id, region)
-  client = make_client(YT_URL, region)
-  response = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
+  response = YT_POOL.client(region, &.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999"))
 
   if md = response.headers["location"]?.try &.match(/v=(?<id>[a-zA-Z0-9_-]{11})/)
     raise VideoRedirect.new(video_id: md["id"])
@@ -1167,8 +1166,7 @@ def fetch_video(id, region)
     bypass_regions = PROXY_LIST.keys & allowed_regions
     if !bypass_regions.empty?
       region = bypass_regions[rand(bypass_regions.size)]
-      client = make_client(YT_URL, region)
-      response = client.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
+      response = YT_POOL.client(region, &.get("/watch?v=#{id}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999"))
 
       html = XML.parse_html(response.body)
       info = extract_player_config(response.body, html)
@@ -1180,10 +1178,10 @@ def fetch_video(id, region)
 
   # Try to pull streams from embed URL
   if info["reason"]?
-    embed_page = client.get("/embed/#{id}").body
+    embed_page = YT_POOL.client &.get("/embed/#{id}").body
     sts = embed_page.match(/"sts"\s*:\s*(?<sts>\d+)/).try &.["sts"]?
     sts ||= ""
-    embed_info = HTTP::Params.parse(client.get("/get_video_info?video_id=#{id}&eurl=https://youtube.googleapis.com/v/#{id}&gl=US&hl=en&disable_polymer=1&sts=#{sts}").body)
+    embed_info = HTTP::Params.parse(YT_POOL.client &.get("/get_video_info?video_id=#{id}&eurl=https://youtube.googleapis.com/v/#{id}&gl=US&hl=en&disable_polymer=1&sts=#{sts}").body)
 
     if !embed_info["reason"]?
       embed_info.each do |key, value|
@@ -1194,19 +1192,13 @@ def fetch_video(id, region)
     end
   end
 
-  if !info["player_response"]? || info["errorcode"]?.try &.== "2"
-    raise "Video unavailable."
-  end
-
-  if info["reason"]? && !info["player_response"]["videoDetails"]?
+  if info["reason"]? && !info["player_response"]?
     raise info["reason"]
   end
 
   player_json = JSON.parse(info["player_response"])
-
-  reason = player_json["playabilityStatus"]?.try &.["reason"]?.try &.as_s
-  if reason == "This video is not available."
-    raise "This video is not available."
+  if reason = player_json["playabilityStatus"]?.try &.["reason"]?.try &.as_s
+    raise reason
   end
 
   title = player_json["videoDetails"]["title"].as_s
@@ -1272,6 +1264,20 @@ end
 
 def itag_to_metadata?(itag : String)
   return VIDEO_FORMATS[itag]?
+end
+
+def process_continuation(db, query, plid, id)
+  continuation = nil
+  if plid
+    if index = query["index"]?.try &.to_i?
+      continuation = index
+    else
+      continuation = id
+    end
+    continuation ||= 0
+  end
+
+  continuation
 end
 
 def process_video_params(query, preferences)
