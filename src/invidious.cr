@@ -28,8 +28,11 @@ require "protodec/utils"
 require "./invidious/helpers/*"
 require "./invidious/*"
 
-CONFIG   = Config.from_yaml(File.read("config/config.yml"))
-HMAC_KEY = CONFIG.hmac_key || Random::Secure.hex(32)
+ENV_CONFIG_NAME = "INVIDIOUS_CONFIG"
+
+CONFIG_STR = ENV.has_key?(ENV_CONFIG_NAME) ? ENV.fetch(ENV_CONFIG_NAME) : File.read("config/config.yml")
+CONFIG     = Config.from_yaml(CONFIG_STR)
+HMAC_KEY   = CONFIG.hmac_key || Random::Secure.hex(32)
 
 PG_URL = URI.new(
   scheme: "postgres",
@@ -45,9 +48,8 @@ ARCHIVE_URL     = URI.parse("https://archive.org")
 LOGIN_URL       = URI.parse("https://accounts.google.com")
 PUBSUB_URL      = URI.parse("https://pubsubhubbub.appspot.com")
 REDDIT_URL      = URI.parse("https://www.reddit.com")
-TEXTCAPTCHA_URL = URI.parse("http://textcaptcha.com")
+TEXTCAPTCHA_URL = URI.parse("https://textcaptcha.com")
 YT_URL          = URI.parse("https://www.youtube.com")
-YT_IMG_URL      = URI.parse("https://i.ytimg.com")
 
 CHARS_SAFE         = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 TEST_IDS           = {"AgbeGFYluEA", "BaW_jenozKc", "a9LDPn-MO4I", "ddFvjfvPnqk", "iqKdEhx-dD4"}
@@ -57,7 +59,7 @@ REQUEST_HEADERS_WHITELIST  = {"accept", "accept-encoding", "cache-control", "con
 RESPONSE_HEADERS_BLACKLIST = {"access-control-allow-origin", "alt-svc", "server"}
 HTTP_CHUNK_SIZE            = 10485760 # ~10MB
 
-CURRENT_BRANCH  = {{ "#{`git branch | sed -n '/\* /s///p'`.strip}" }}
+CURRENT_BRANCH  = {{ "#{`git branch | sed -n '/* /s///p'`.strip}" }}
 CURRENT_COMMIT  = {{ "#{`git rev-list HEAD --max-count=1 --abbrev-commit`.strip}" }}
 CURRENT_VERSION = {{ "#{`git describe --tags --abbrev=0`.strip}" }}
 
@@ -81,23 +83,25 @@ LOCALES = {
   "es"    => load_locale("es"),
   "eu"    => load_locale("eu"),
   "fr"    => load_locale("fr"),
+  "hu"    => load_locale("hu-HU"),
   "is"    => load_locale("is"),
   "it"    => load_locale("it"),
   "ja"    => load_locale("ja"),
   "nb-NO" => load_locale("nb-NO"),
   "nl"    => load_locale("nl"),
-  "pt-BR" => load_locale("pt-BR"),
   "pl"    => load_locale("pl"),
+  "pt-BR" => load_locale("pt-BR"),
+  "pt-PT" => load_locale("pt-PT"),
   "ro"    => load_locale("ro"),
   "ru"    => load_locale("ru"),
+  "sv"    => load_locale("sv-SE"),
   "tr"    => load_locale("tr"),
   "uk"    => load_locale("uk"),
   "zh-CN" => load_locale("zh-CN"),
   "zh-TW" => load_locale("zh-TW"),
 }
 
-YT_POOL     = QUICPool.new(YT_URL, capacity: CONFIG.pool_size, timeout: 0.05)
-YT_IMG_POOL = QUICPool.new(YT_IMG_URL, capacity: CONFIG.pool_size, timeout: 0.05)
+YT_POOL = QUICPool.new(YT_URL, capacity: CONFIG.pool_size, timeout: 0.1)
 
 config = CONFIG
 logger = Invidious::LogHandler.new
@@ -207,7 +211,7 @@ spawn do
   end
 end
 
-decrypt_function = [] of {name: String, value: Int32}
+decrypt_function = [] of {SigProc, Int32}
 spawn do
   update_decrypt_function do |function|
     decrypt_function = function
@@ -247,10 +251,20 @@ spawn do
 end
 
 before_all do |env|
-  host_url = make_host_url(config, Kemal.config)
+  begin
+    preferences = Preferences.from_json(env.request.cookies["PREFS"]?.try &.value || "{}")
+  rescue
+    preferences = Preferences.from_json("{}")
+  end
+
   env.response.headers["X-XSS-Protection"] = "1; mode=block"
   env.response.headers["X-Content-Type-Options"] = "nosniff"
-  env.response.headers["Content-Security-Policy"] = "default-src blob: data: 'self' #{host_url} 'unsafe-inline' 'unsafe-eval'; media-src blob: 'self' #{host_url} https://*.googlevideo.com:443"
+  extra_media_csp = ""
+  if CONFIG.disabled?("local") || !preferences.local
+    extra_media_csp += " https://*.googlevideo.com:443"
+  end
+  # TODO: Remove style-src's 'unsafe-inline', requires to remove all inline styles (<style> [..] </style>, style=" [..] ")
+  env.response.headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; media-src 'self' blob:#{extra_media_csp}"
   env.response.headers["Referrer-Policy"] = "same-origin"
 
   if (Kemal.config.ssl || config.https_only) && config.hsts
@@ -267,12 +281,6 @@ before_all do |env|
             "/videoplayback",
             "/latest_version",
           }.any? { |r| env.request.resource.starts_with? r }
-
-  begin
-    preferences = Preferences.from_json(env.request.cookies["PREFS"]?.try &.value || "{}")
-  rescue
-    preferences = Preferences.from_json("{}")
-  end
 
   if env.request.cookies.has_key? "SID"
     sid = env.request.cookies["SID"].value
@@ -379,6 +387,8 @@ get "/" do |env|
     else
       templated "popular"
     end
+  else
+    templated "empty"
   end
 end
 
@@ -425,7 +435,7 @@ get "/watch" do |env|
     next env.redirect "/"
   end
 
-  plid = env.params.query["list"]?
+  plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
   continuation = process_continuation(PG_DB, env.params.query, plid, id)
 
   nojs = env.params.query["nojs"]?
@@ -465,7 +475,7 @@ get "/watch" do |env|
   env.params.query.delete_all("iv_load_policy")
 
   if watched && !watched.includes? id
-    PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
+    PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.as(User).email)
   end
 
   if notifications && notifications.includes? id
@@ -610,7 +620,7 @@ end
 get "/embed/" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
-  if plid = env.params.query["list"]?
+  if plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
     begin
       playlist = get_playlist(PG_DB, plid, locale: locale)
       offset = env.params.query["index"]?.try &.to_i? || 0
@@ -637,7 +647,7 @@ get "/embed/:id" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
   id = env.params.url["id"]
 
-  plid = env.params.query["list"]?
+  plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
   continuation = process_continuation(PG_DB, env.params.query, plid, id)
 
   if md = env.params.query["playlist"]?
@@ -716,6 +726,7 @@ get "/embed/:id" do |env|
     end
 
     next env.redirect url
+  else nil # Continue
   end
 
   params = process_video_params(env.params.query, preferences)
@@ -745,7 +756,7 @@ get "/embed/:id" do |env|
   end
 
   # if watched && !watched.includes? id
-  #   PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
+  #   PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.as(User).email)
   # end
 
   if notifications && notifications.includes? id
@@ -1240,13 +1251,17 @@ post "/playlist_ajax" do |env|
     args = arg_array(video_array)
 
     PG_DB.exec("INSERT INTO playlist_videos VALUES (#{args})", args: video_array)
-    PG_DB.exec("UPDATE playlists SET index = array_append(index, $1), video_count = video_count + 1, updated = $2 WHERE id = $3", playlist_video.index, Time.utc, playlist_id)
+    PG_DB.exec("UPDATE playlists SET index = array_append(index, $1), video_count = cardinality(index), updated = $2 WHERE id = $3", playlist_video.index, Time.utc, playlist_id)
   when "action_remove_video"
     index = env.params.query["set_video_id"]
     PG_DB.exec("DELETE FROM playlist_videos * WHERE index = $1", index)
-    PG_DB.exec("UPDATE playlists SET index = array_remove(index, $1), video_count = video_count - 1, updated = $2 WHERE id = $3", index, Time.utc, playlist_id)
+    PG_DB.exec("UPDATE playlists SET index = array_remove(index, $1), video_count = cardinality(index), updated = $2 WHERE id = $3", index, Time.utc, playlist_id)
   when "action_move_video_before"
     # TODO: Playlist stub
+  else
+    error_message = {"error" => "Unsupported action #{action}"}.to_json
+    env.response.status_code = 400
+    next error_message
   end
 
   if redirect
@@ -1261,9 +1276,9 @@ get "/playlist" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
   user = env.get?("user").try &.as(User)
-  plid = env.params.query["list"]?
   referer = get_referer(env)
 
+  plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
   if !plid
     next env.redirect "/"
   end
@@ -1541,7 +1556,7 @@ post "/login" do |env|
         case prompt_type
         when "TWO_STEP_VERIFICATION"
           prompt_type = 2
-        when "LOGIN_CHALLENGE"
+        else # "LOGIN_CHALLENGE"
           prompt_type = 4
         end
 
@@ -1834,7 +1849,7 @@ post "/login" do |env|
             env.response.status_code = 400
             next templated "error"
           end
-        when "text"
+        else # "text"
           answer = Digest::MD5.hexdigest(answer.downcase.strip)
 
           found_valid_captcha = false
@@ -2241,10 +2256,14 @@ post "/watch_ajax" do |env|
   case action
   when "action_mark_watched"
     if !user.watched.includes? id
-      PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.email)
+      PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.email)
     end
   when "action_mark_unwatched"
     PG_DB.exec("UPDATE users SET watched = array_remove(watched, $1) WHERE email = $2", id, user.email)
+  else
+    error_message = {"error" => "Unsupported action #{action}"}.to_json
+    env.response.status_code = 400
+    next error_message
   end
 
   if redirect
@@ -2399,6 +2418,10 @@ post "/subscription_ajax" do |env|
     end
   when "action_remove_subscriptions"
     PG_DB.exec("UPDATE users SET feed_needs_update = true, subscriptions = array_remove(subscriptions, $1) WHERE email = $2", channel_id, email)
+  else
+    error_message = {"error" => "Unsupported action #{action}"}.to_json
+    env.response.status_code = 400
+    next error_message
   end
 
   if redirect
@@ -2553,6 +2576,7 @@ post "/data_control" do |env|
         next
       end
 
+      # TODO: Unify into single import based on content-type
       case part.name
       when "import_invidious"
         body = JSON.parse(body)
@@ -2639,6 +2663,7 @@ post "/data_control" do |env|
             end
           end
         end
+      else nil # Ignore
       end
     end
   end
@@ -2980,6 +3005,10 @@ post "/token_ajax" do |env|
   case action
   when .starts_with? "action_revoke_token"
     PG_DB.exec("DELETE FROM session_ids * WHERE id = $1 AND email = $2", session, user.email)
+  else
+    error_message = {"error" => "Unsupported action #{action}"}.to_json
+    env.response.status_code = 400
+    next error_message
   end
 
   if redirect
@@ -3122,12 +3151,10 @@ get "/feed/channel/:ucid" do |env|
     next error_message
   end
 
-  rss = YT_POOL.client &.get("/feeds/videos.xml?channel_id=#{channel.ucid}").body
-  rss = XML.parse_html(rss)
+  response = YT_POOL.client &.get("/feeds/videos.xml?channel_id=#{channel.ucid}")
+  rss = XML.parse_html(response.body)
 
-  videos = [] of SearchVideo
-
-  rss.xpath_nodes("//feed/entry").each do |entry|
+  videos = rss.xpath_nodes("//feed/entry").map do |entry|
     video_id = entry.xpath_node("videoid").not_nil!.content
     title = entry.xpath_node("title").not_nil!.content
 
@@ -3139,7 +3166,7 @@ get "/feed/channel/:ucid" do |env|
     description_html = entry.xpath_node("group/description").not_nil!.to_s
     views = entry.xpath_node("group/community/statistics").not_nil!.["views"].to_i64
 
-    videos << SearchVideo.new(
+    SearchVideo.new(
       title: title,
       id: video_id,
       author: author,
@@ -3276,6 +3303,7 @@ get "/feed/playlist/:plid" do |env|
         full_path = URI.parse(node[attribute.name]).full_path
         query_string_opt = full_path.starts_with?("/watch?v=") ? "&#{params}" : ""
         node[attribute.name] = "#{host_url}#{full_path}#{query_string_opt}"
+      else nil # Skip
       end
     end
   end
@@ -3399,8 +3427,8 @@ post "/feed/webhook/:token" do |env|
         views: video.views,
       )
 
-      emails = PG_DB.query_all("UPDATE users SET notifications = notifications || $1 \
-        WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
+      PG_DB.query_all("UPDATE users SET feed_needs_update = true, notifications = array_append(notifications, $1) \
+        WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)",
         video.id, video.published, video.ucid, as: String)
 
       video_array = video.to_a
@@ -3410,15 +3438,6 @@ post "/feed/webhook/:token" do |env|
         ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
         updated = $4, ucid = $5, author = $6, length_seconds = $7, \
         live_now = $8, premiere_timestamp = $9, views = $10", args: video_array)
-
-      # Update all users affected by insert
-      if emails.empty?
-        values = "'{}'"
-      else
-        values = "VALUES #{emails.map { |email| %((E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}')) }.join(",")}"
-      end
-
-      PG_DB.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
     end
   end
 
@@ -3471,14 +3490,12 @@ get "/c/:user" do |env|
   user = env.params.url["user"]
 
   response = YT_POOL.client &.get("/c/#{user}")
-  document = XML.parse_html(response.body)
+  html = XML.parse_html(response.body)
 
-  anchor = document.xpath_node(%q(//a[contains(@class,"branded-page-header-title-link")]))
-  if !anchor
-    next env.redirect "/"
-  end
+  ucid = html.xpath_node(%q(//link[@rel="canonical"])).try &.["href"].split("/")[-1]
+  next env.redirect "/" if !ucid
 
-  env.redirect anchor["href"]
+  env.redirect "/channel/#{ucid}"
 end
 
 # Legacy endpoint for /user/:username
@@ -4044,7 +4061,7 @@ get "/api/v1/annotations/:id" do |env|
 
       cache_annotation(PG_DB, id, annotations)
     end
-  when "youtube"
+  else # "youtube"
     response = YT_POOL.client &.get("/annotations_invideo?video_id=#{id}")
 
     if response.status_code != 200
@@ -4244,7 +4261,7 @@ get "/api/v1/channels/:ucid" do |env|
 
           qualities.each do |quality|
             json.object do
-              json.field "url", channel.author_thumbnail.gsub(/=\d+/, "=s#{quality}")
+              json.field "url", channel.author_thumbnail.gsub(/=s\d+/, "=s#{quality}")
               json.field "width", quality
               json.field "height", quality
             end
@@ -4521,10 +4538,8 @@ get "/api/v1/search/suggestions" do |env|
   query ||= ""
 
   begin
-    client = QUIC::Client.new("suggestqueries.google.com")
-    client.family = CONFIG.force_resolve || Socket::Family::INET
-    client.family = Socket::Family::INET if client.family == Socket::Family::UNSPEC
-    response = client.get("/complete/search?hl=en&gl=#{region}&client=youtube&ds=yt&q=#{URI.encode_www_form(query)}&callback=suggestCallback").body
+    headers = HTTP::Headers{":authority" => "suggestqueries.google.com"}
+    response = YT_POOL.client &.get("/complete/search?hl=en&gl=#{region}&client=youtube&ds=yt&q=#{URI.encode_www_form(query)}&callback=suggestCallback", headers).body
 
     body = response[35..-2]
     body = JSON.parse(body).as_a
@@ -5488,8 +5503,8 @@ get "/videoplayback" do |env|
   end
 
   client = make_client(URI.parse(host), region)
-
   response = HTTP::Client::Response.new(500)
+  error = ""
   5.times do
     begin
       response = client.head(url, headers)
@@ -5514,12 +5529,14 @@ get "/videoplayback" do |env|
       host = "https://r#{fvip}---#{mn}.googlevideo.com"
       client = make_client(URI.parse(host), region)
     rescue ex
+      error = ex.message
     end
   end
 
   if response.status_code >= 400
     env.response.status_code = response.status_code
-    next
+    env.response.content_type = "text/plain"
+    next error
   end
 
   if url.includes? "&file=seg.ts"
@@ -5551,7 +5568,7 @@ get "/videoplayback" do |env|
           next env.redirect location
         end
 
-        IO.copy(response.body_io, env.response)
+        IO.copy response.body_io, env.response
       end
     rescue ex
     end
@@ -5650,11 +5667,9 @@ get "/videoplayback" do |env|
 end
 
 get "/ggpht/*" do |env|
-  host = "https://yt3.ggpht.com"
-  client = make_client(URI.parse(host))
   url = env.request.path.lchop("/ggpht")
 
-  headers = HTTP::Headers.new
+  headers = HTTP::Headers{":authority" => "yt3.ggpht.com"}
   REQUEST_HEADERS_WHITELIST.each do |header|
     if env.request.headers[header]?
       headers[header] = env.request.headers[header]
@@ -5662,7 +5677,7 @@ get "/ggpht/*" do |env|
   end
 
   begin
-    client.get(url, headers) do |response|
+    YT_POOL.client &.get(url, headers) do |response|
       env.response.status_code = response.status_code
       response.headers.each do |key, value|
         if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
@@ -5695,16 +5710,16 @@ get "/sb/:id/:storyboard/:index" do |env|
   storyboard = env.params.url["storyboard"]
   index = env.params.url["index"]
 
-  if storyboard.starts_with? "storyboard_live"
-    host = "https://i.ytimg.com"
-  else
-    host = "https://i9.ytimg.com"
-  end
-  client = make_client(URI.parse(host))
-
   url = "/sb/#{id}/#{storyboard}/#{index}?#{env.params.query}"
 
   headers = HTTP::Headers.new
+
+  if storyboard.starts_with? "storyboard_live"
+    headers[":authority"] = "i.ytimg.com"
+  else
+    headers[":authority"] = "i9.ytimg.com"
+  end
+
   REQUEST_HEADERS_WHITELIST.each do |header|
     if env.request.headers[header]?
       headers[header] = env.request.headers[header]
@@ -5712,7 +5727,7 @@ get "/sb/:id/:storyboard/:index" do |env|
   end
 
   begin
-    client.get(url, headers) do |response|
+    YT_POOL.client &.get(url, headers) do |response|
       env.response.status_code = response.status_code
       response.headers.each do |key, value|
         if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
@@ -5720,6 +5735,7 @@ get "/sb/:id/:storyboard/:index" do |env|
         end
       end
 
+      env.response.headers["Connection"] = "close"
       env.response.headers["Access-Control-Allow-Origin"] = "*"
 
       if response.status_code >= 300
@@ -5737,11 +5753,9 @@ get "/s_p/:id/:name" do |env|
   id = env.params.url["id"]
   name = env.params.url["name"]
 
-  host = "https://i9.ytimg.com"
-  client = make_client(URI.parse(host))
   url = env.request.resource
 
-  headers = HTTP::Headers.new
+  headers = HTTP::Headers{":authority" => "i9.ytimg.com"}
   REQUEST_HEADERS_WHITELIST.each do |header|
     if env.request.headers[header]?
       headers[header] = env.request.headers[header]
@@ -5749,7 +5763,7 @@ get "/s_p/:id/:name" do |env|
   end
 
   begin
-    client.get(url, headers) do |response|
+    YT_POOL.client &.get(url, headers) do |response|
       env.response.status_code = response.status_code
       response.headers.each do |key, value|
         if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
@@ -5804,9 +5818,11 @@ get "/vi/:id/:name" do |env|
   id = env.params.url["id"]
   name = env.params.url["name"]
 
+  headers = HTTP::Headers{":authority" => "i.ytimg.com"}
+
   if name == "maxres.jpg"
     build_thumbnails(id, config, Kemal.config).each do |thumb|
-      if YT_IMG_POOL.client &.head("/vi/#{id}/#{thumb[:url]}.jpg").status_code == 200
+      if YT_POOL.client &.head("/vi/#{id}/#{thumb[:url]}.jpg", headers).status_code == 200
         name = thumb[:url] + ".jpg"
         break
       end
@@ -5814,7 +5830,6 @@ get "/vi/:id/:name" do |env|
   end
   url = "/vi/#{id}/#{name}"
 
-  headers = HTTP::Headers.new
   REQUEST_HEADERS_WHITELIST.each do |header|
     if env.request.headers[header]?
       headers[header] = env.request.headers[header]
@@ -5822,7 +5837,7 @@ get "/vi/:id/:name" do |env|
   end
 
   begin
-    YT_IMG_POOL.client &.get(url, headers) do |response|
+    YT_POOL.client &.get(url, headers) do |response|
       env.response.status_code = response.status_code
       response.headers.each do |key, value|
         if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
@@ -5844,10 +5859,73 @@ get "/vi/:id/:name" do |env|
 end
 
 get "/Captcha" do |env|
-  client = make_client(LOGIN_URL)
-  response = client.get(env.request.resource)
+  headers = HTTP::Headers{":authority" => "accounts.google.com"}
+  response = YT_POOL.client &.get(env.request.resource, headers)
   env.response.headers["Content-Type"] = response.headers["Content-Type"]
   response.body
+end
+
+connect "*" do |env|
+  if CONFIG.proxy_address.empty?
+    env.response.status_code = 400
+    next
+  end
+
+  url = env.request.headers["Host"]?.try { |u| u.split(":") }
+  host = url.try &.[0]?
+  port = url.try &.[1]?
+
+  host = "www.google.com" if !host || host.empty?
+  port = "443" if !port || port.empty?
+
+  # if env.request.internal_uri
+  #   env.request.internal_uri.not_nil!.path = "#{host}:#{port}"
+  # end
+
+  user, pass = env.request.headers["Proxy-Authorization"]?
+    .try { |i| i.lchop("Basic ") }
+    .try { |i| Base64.decode_string(i) }
+    .try &.split(":", 2) || {nil, nil}
+
+  if CONFIG.proxy_user != user || CONFIG.proxy_pass != pass
+    env.response.status_code = 403
+    next
+  end
+
+  begin
+    upstream = TCPSocket.new(host, port)
+  rescue ex
+    logger.puts("Exception: #{ex.message}")
+    env.response.status_code = 400
+    next
+  end
+
+  env.response.reset
+  env.response.upgrade do |downstream|
+    downstream = downstream.as(TCPSocket)
+    downstream.sync = true
+
+    spawn do
+      begin
+        bytes = 1
+        while bytes != 0
+          bytes = IO.copy upstream, downstream
+        end
+      rescue ex
+      end
+    end
+
+    begin
+      bytes = 1
+      while bytes != 0
+        bytes = IO.copy downstream, upstream
+      end
+    rescue ex
+    ensure
+      upstream.close
+      downstream.close
+    end
+  end
 end
 
 # Undocumented, creates anonymous playlist with specified 'video_ids', max 50 videos
@@ -5924,6 +6002,7 @@ end
 public_folder "assets"
 
 Kemal.config.powered_by_header = false
+add_handler ProxyHandler.new
 add_handler FilteredCompressHandler.new
 add_handler APIHandler.new
 add_handler AuthHandler.new

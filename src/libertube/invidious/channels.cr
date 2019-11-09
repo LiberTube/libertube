@@ -273,7 +273,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
       views: views,
     )
 
-    emails = db.query_all("UPDATE users SET notifications = notifications || $1 \
+    emails = db.query_all("UPDATE users SET notifications = array_append(notifications, $1) \
       WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
       video.id, video.published, ucid, as: String)
 
@@ -342,7 +342,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
         # We are notified of Red videos elsewhere (PubSub), which includes a correct published date,
         # so since they don't provide a published date here we can safely ignore them.
         if Time.utc - video.published > 1.minute
-          emails = db.query_all("UPDATE users SET notifications = notifications || $1 \
+          emails = db.query_all("UPDATE users SET notifications = array_append(notifications, $1) \
             WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
             video.id, video.published, video.ucid, as: String)
 
@@ -412,6 +412,7 @@ def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
       url += "&sort=da"
     when "newest", "newest_created"
       url += "&sort=dd"
+    else nil # Ignore
     end
 
     response = YT_POOL.client &.get(url)
@@ -469,6 +470,7 @@ def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "
     object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 0x01_i64
   when "oldest"
     object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 0x02_i64
+  else nil # Ignore
   end
 
   object["80226972:embedded"]["3:string"] = Base64.urlsafe_encode(Protodec::Any.from_json(Protodec::Any.cast_json(object["80226972:embedded"]["3:base64"])))
@@ -513,6 +515,7 @@ def produce_channel_playlists_url(ucid, cursor, sort = "newest", auto_generated 
       object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 3_i64
     when "last", "last_added"
       object["80226972:embedded"]["3:base64"].as(Hash)["3:varint"] = 4_i64
+    else nil # Ignore
     end
   end
 
@@ -556,11 +559,11 @@ end
 # TODO: Add "sort_by"
 def fetch_channel_community(ucid, continuation, locale, config, kemal_config, format, thin_mode)
   response = YT_POOL.client &.get("/channel/#{ucid}/community?gl=US&hl=en")
-  if response.status_code == 404
+  if response.status_code != 200
     response = YT_POOL.client &.get("/user/#{ucid}/community?gl=US&hl=en")
   end
 
-  if response.status_code == 404
+  if response.status_code != 200
     error_message = translate(locale, "This channel does not exist.")
     raise error_message
   end
@@ -628,15 +631,13 @@ def fetch_channel_community(ucid, continuation, locale, config, kemal_config, fo
             post = post["backstagePostThreadRenderer"]?.try &.["post"]["backstagePostRenderer"]? ||
                    post["commentThreadRenderer"]?.try &.["comment"]["commentRenderer"]?
 
-            if !post
-              next
-            end
+            next if !post
 
             if !post["contentText"]?
               content_html = ""
             else
-              content_html = post["contentText"]["simpleText"]?.try &.as_s.rchop('\ufeff').try { |block| HTML.escape(block) }.to_s ||
-                             content_to_comment_html(post["contentText"]["runs"].as_a).try &.to_s || ""
+              content_html = post["contentText"]["simpleText"]?.try &.as_s.rchop('\ufeff').try { |b| HTML.escape(b) }.to_s ||
+                             post["contentText"]["runs"]?.try &.as_a.try { |r| content_to_comment_html(r).try &.to_s } || ""
             end
 
             author = post["authorText"]?.try &.["simpleText"]? || ""
@@ -847,12 +848,17 @@ end
 
 def get_about_info(ucid, locale)
   about = YT_POOL.client &.get("/channel/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
-  if about.status_code == 404
+  if about.status_code != 200
     about = YT_POOL.client &.get("/user/#{ucid}/about?disable_polymer=1&gl=US&hl=en")
   end
 
   if md = about.headers["location"]?.try &.match(/\/channel\/(?<ucid>UC[a-zA-Z0-9_-]{22})/)
     raise ChannelRedirect.new(channel_id: md["ucid"])
+  end
+
+  if about.status_code != 200
+    error_message = translate(locale, "This channel does not exist.")
+    raise error_message
   end
 
   about = XML.parse_html(about.body)

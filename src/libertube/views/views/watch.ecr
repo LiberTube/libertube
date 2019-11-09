@@ -26,24 +26,26 @@
 <title><%= HTML.escape(video.title) %> - Invidious</title>
 <% end %>
 
-<script>
-var video_data = {
-    id: '<%= video.id %>',
-    index: '<%= continuation %>',
-    plid: '<%= plid %>',
-    length_seconds: <%= video.length_seconds.to_f %>,
-    play_next: <%= !rvs.empty? && !plid && params.continue %>,
-    next_video: '<%= rvs.select { |rv| rv["id"]? }[0]?.try &.["id"] %>',
-    youtube_comments_text: '<%= HTML.escape(translate(locale, "View YouTube comments")) %>',
-    reddit_comments_text: '<%= HTML.escape(translate(locale, "View Reddit comments")) %>',
-    reddit_permalink_text: '<%= HTML.escape(translate(locale, "View more comments on Reddit")) %>',
-    comments_text: '<%= HTML.escape(translate(locale, "View `x` comments", "{commentCount}")) %>',
-    hide_replies_text: '<%= HTML.escape(translate(locale, "Hide replies")) %>',
-    show_replies_text: '<%= HTML.escape(translate(locale, "Show replies")) %>',
-    params: <%= params.to_json %>,
-    preferences: <%= preferences.to_json %>,
-    premiere_timestamp: <%= video.premiere_timestamp.try &.to_unix || "null" %>
-}
+<script id="video_data" type="application/json">
+<%=
+{
+    "id" => video.id,
+    "index" => continuation,
+    "plid" => plid,
+    "length_seconds" => video.length_seconds.to_f,
+    "play_next" => !rvs.empty? && !plid && params.continue,
+    "next_video" => rvs.select { |rv| rv["id"]? }[0]?.try &.["id"],
+    "youtube_comments_text" => HTML.escape(translate(locale, "View YouTube comments")),
+    "reddit_comments_text" => HTML.escape(translate(locale, "View Reddit comments")),
+    "reddit_permalink_text" => HTML.escape(translate(locale, "View more comments on Reddit")),
+    "comments_text" => HTML.escape(translate(locale, "View `x` comments", "{commentCount}")),
+    "hide_replies_text" => HTML.escape(translate(locale, "Hide replies")),
+    "show_replies_text" => HTML.escape(translate(locale, "Show replies")),
+    "params" => params,
+    "preferences" => preferences,
+    "premiere_timestamp" => video.premiere_timestamp.try &.to_unix
+}.to_pretty_json
+%>
 </script>
 
 <div id="player-container" class="h-box">
@@ -99,6 +101,34 @@ var video_data = {
                 <% end %>
             </p>
 
+            <% if user %>
+                <% playlists = PG_DB.query_all("SELECT id,title FROM playlists WHERE author = $1", user.email, as: {String, String}) %>
+                <% if !playlists.empty? %>
+                    <form data-onsubmit="return_false" class="pure-form pure-form-stacked" action="/playlist_ajax" method="post">
+                        <div class="pure-control-group">
+                            <label for="playlist_id"><%= translate(locale, "Add to playlist: ") %></label>
+                            <select style="width:100%" name="playlist_id" id="playlist_id">
+                                <% playlists.each do |plid, title| %>
+                                    <option data-plid="<%= plid %>" value="<%= plid %>"><%= title %></option>
+                                <% end %>
+                            </select>
+                        </div>
+
+                        <button data-onclick="add_playlist_video" data-id="<%= video.id %>" type="submit" class="pure-button pure-button-primary">
+                            <b><%= translate(locale, "Add to playlist") %></b>
+                        </button>
+                    </form>
+                    <script id="playlist_data" type="application/json">
+                    <%=
+                    {
+                        "csrf_token" => URI.encode_www_form(env.get?("csrf_token").try &.as(String) || "")
+                    }.to_pretty_json
+                    %>
+                    </script>
+                    <script src="/js/playlist_widget.js?v=<%= Time.utc.to_unix_ms %>"></script>
+                <% end %>
+            <% end %>
+
             <% if CONFIG.dmca_content.includes?(video.id) || CONFIG.disabled?("downloads") %>
                 <p><%= translate(locale, "Download is disabled.") %></p>
             <% else %>
@@ -135,9 +165,9 @@ var video_data = {
                 </form>
             <% end %>
 
-            <p><i class="icon ion-ios-eye"></i> <%= number_with_separator(video.views) %></p>
-            <p><i class="icon ion-ios-thumbs-up"></i> <%= number_with_separator(video.likes) %></p>
-            <p><i class="icon ion-ios-thumbs-down"></i> <%= number_with_separator(video.dislikes) %></p>
+            <p id="views"><i class="icon ion-ios-eye"></i> <%= number_with_separator(video.views) %></p>
+            <p id="likes"><i class="icon ion-ios-thumbs-up"></i> <%= number_with_separator(video.likes) %></p>
+            <p id="dislikes"><i class="icon ion-ios-thumbs-down"></i> <%= number_with_separator(video.dislikes) %></p>
             <p id="genre"><%= translate(locale, "Genre: ") %>
                 <% if video.genre_url.empty? %>
                     <%= video.genre %>

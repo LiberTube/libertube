@@ -562,8 +562,8 @@ struct Video
         if fmt_stream["url"]?
           fmt["url"] = fmt_stream["url"].as_s
         end
-        if fmt_stream["cipher"]?
-          HTTP::Params.parse(fmt_stream["cipher"].as_s).each do |key, value|
+        if cipher = fmt_stream["cipher"]? || fmt_stream["signatureCipher"]?
+          HTTP::Params.parse(cipher.as_s).each do |key, value|
             fmt[key] = value
           end
         end
@@ -638,8 +638,8 @@ struct Video
         if adaptive_fmt["url"]?
           fmt["url"] = adaptive_fmt["url"].as_s
         end
-        if adaptive_fmt["cipher"]?
-          HTTP::Params.parse(adaptive_fmt["cipher"].as_s).each do |key, value|
+        if cipher = adaptive_fmt["cipher"]? || adaptive_fmt["signatureCipher"]?
+          HTTP::Params.parse(cipher.as_s).each do |key, value|
             fmt[key] = value
           end
         end
@@ -1250,6 +1250,7 @@ def fetch_video(id, region)
     genre_url = "/channel/UCfFyYRYslvuhwMDnx6KjUvw"
   when "Trailers"
     genre_url = "/channel/UClgRkhTL3_hImCAmdLfDE4g"
+  else nil # Ignore
   end
 
   license = html.xpath_node(%q(//h4[contains(text(),"License")]/parent::*/ul/li)).try &.content || ""

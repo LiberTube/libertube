@@ -1,3 +1,7 @@
+def connect(path : String, &block : HTTP::Server::Context -> _)
+  Kemal::RouteHandler::INSTANCE.add_route("CONNECT", path, &block)
+end
+
 # See https://github.com/crystal-lang/crystal/issues/2963
 class HTTPProxy
   getter proxy_host : String
@@ -124,7 +128,7 @@ def get_nova_proxies(country_code = "US")
   client.connect_timeout = 10.seconds
 
   headers = HTTP::Headers.new
-  headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36"
+  headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.61 Safari/537.36"
   headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"
   headers["Accept-Language"] = "Accept-Language: en-US,en;q=0.9"
   headers["Host"] = "www.proxynova.com"
@@ -161,7 +165,7 @@ def get_spys_proxies(country_code = "US")
   client.connect_timeout = 10.seconds
 
   headers = HTTP::Headers.new
-  headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36"
+  headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.61 Safari/537.36"
   headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"
   headers["Accept-Language"] = "Accept-Language: en-US,en;q=0.9"
   headers["Host"] = "spys.one"
