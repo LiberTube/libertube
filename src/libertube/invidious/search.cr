@@ -310,7 +310,6 @@ def produce_search_params(sort : String = "relevance", date : String = "", conte
     object["2:embedded"].as(Hash)["1:varint"] = 4_i64
   when "year"
     object["2:embedded"].as(Hash)["1:varint"] = 5_i64
-  else nil # Ignore
   end
 
   case content_type
@@ -335,7 +334,6 @@ def produce_search_params(sort : String = "relevance", date : String = "", conte
     object["2:embedded"].as(Hash)["3:varint"] = 1_i64
   when "long"
     object["2:embedded"].as(Hash)["3:varint"] = 2_i64
-  else nil # Ignore
   end
 
   features.each do |feature|
@@ -360,7 +358,6 @@ def produce_search_params(sort : String = "relevance", date : String = "", conte
       object["2:embedded"].as(Hash)["23:varint"] = 1_i64
     when "hdr"
       object["2:embedded"].as(Hash)["25:varint"] = 1_i64
-    else nil # Ignore
     end
   end
 

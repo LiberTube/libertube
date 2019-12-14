@@ -1,5 +1,3 @@
-var watched_data = JSON.parse(document.getElementById('watched_data').innerHTML);
-
 function mark_watched(target) {
     var tile = target.parentNode.parentNode.parentNode.parentNode.parentNode;
     tile.style.display = 'none';

@@ -24,8 +24,6 @@ def translate(locale : Hash(String, JSON::Any) | Nil, translation : String, text
       if !locale[translation].as_s.empty?
         translation = locale[translation].as_s
       end
-    else
-      raise "Invalid translation #{translation}"
     end
   end
 

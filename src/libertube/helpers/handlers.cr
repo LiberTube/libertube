@@ -213,31 +213,28 @@ class DenyFrame < Kemal::Handler
   end
 end
 
-class ProxyHandler < Kemal::Handler
-  def call(env)
-    if env.request.headers["Proxy-Authorization"]? && env.request.method != "CONNECT"
-      user, pass = env.request.headers["Proxy-Authorization"]?
-        .try { |i| i.lchop("Basic ") }
-        .try { |i| Base64.decode_string(i) }
-        .try &.split(":", 2) || {nil, nil}
-
-      if CONFIG.proxy_user != user || CONFIG.proxy_pass != pass
-        env.response.status_code = 403
-        return
-      end
-
-      HTTP::Client.exec(env.request.method, "#{env.request.headers["Host"]?}#{env.request.resource}", env.request.headers, env.request.body) do |response|
-        response.headers.each do |key, value|
-          if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase) && key.downcase != "transfer-encoding"
-            env.response.headers[key] = value
-          end
-        end
-        IO.copy response.body_io, env.response
-      end
-      env.response.close
-      return
-    else
-      call_next env
+# Temp fixes for https://github.com/crystal-lang/crystal/issues/7383
+class HTTP::UnknownLengthContent
+  def read_byte
+    ensure_send_continue
+    if @io.is_a?(OpenSSL::SSL::Socket::Client)
+      return if @io.as(OpenSSL::SSL::Socket::Client).@in_buffer_rem.empty?
     end
+    @io.read_byte
+  end
+end
+
+class HTTP::Client
+  private def handle_response(response)
+    if @socket.is_a?(OpenSSL::SSL::Socket::Client) && @host.ends_with?("googlevideo.com")
+      close unless response.keep_alive? || @socket.as(OpenSSL::SSL::Socket::Client).@in_buffer_rem.empty?
+
+      if @socket.as(OpenSSL::SSL::Socket::Client).@in_buffer_rem.empty?
+        @socket = nil
+      end
+    else
+      close unless response.keep_alive?
+    end
+    response
   end
 end

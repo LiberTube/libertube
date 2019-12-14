@@ -1,6 +1,3 @@
-var player_data = JSON.parse(document.getElementById('player_data').innerHTML);
-var video_data = JSON.parse(document.getElementById('video_data').innerHTML);
-
 var options = {
     preload: 'auto',
     liveui: true,
@@ -38,7 +35,7 @@ var shareOptions = {
     title: player_data.title,
     description: player_data.description,
     image: player_data.thumbnail,
-    embedCode: "<iframe id='ivplayer' width='640' height='360' src='" + embed_url + "' style='border:none;'></iframe>"
+    embedCode: "<iframe id='ivplayer' type='text/html' width='640' height='360' src='" + embed_url + "' frameborder='0'></iframe>"
 }
 
 var player = videojs('player', options);

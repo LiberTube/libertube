@@ -1,5 +1,3 @@
-require "crypto/subtle"
-
 def generate_token(email, scopes, expire, key, db)
   session = "v1:#{Base64.urlsafe_encode(Random::Secure.random_bytes(32))}"
   PG_DB.exec("INSERT INTO session_ids VALUES ($1, $2, $3)", session, email, Time.utc)
@@ -43,10 +41,15 @@ def sign_token(key, hash)
   string_to_sign = [] of String
 
   hash.each do |key, value|
-    next if key == "signature"
+    if key == "signature"
+      next
+    end
 
-    if value.is_a?(JSON::Any) && value.as_a?
-      value = value.as_a.map { |i| i.as_s }
+    if value.is_a?(JSON::Any)
+      case value
+      when .as_a?
+        value = value.as_a.map { |item| item.as_s }
+      end
     end
 
     case value
@@ -73,23 +76,12 @@ def validate_request(token, session, request, key, db, locale = nil)
     raise translate(locale, "Hidden field \"token\" is a required field")
   end
 
-  expire = token["expire"]?.try &.as_i
-  if expire.try &.< Time.utc.to_unix
-    raise translate(locale, "Token is expired, please try again")
+  if token["signature"] != sign_token(key, token)
+    raise translate(locale, "Invalid signature")
   end
 
   if token["session"] != session
     raise translate(locale, "Erroneous token")
-  end
-
-  scopes = token["scopes"].as_a.map { |v| v.as_s }
-  scope = "#{request.method}:#{request.path.lchop("/api/v1/auth/").lstrip("/")}"
-  if !scopes_include_scope(scopes, scope)
-    raise translate(locale, "Invalid scope")
-  end
-
-  if !Crypto::Subtle.constant_time_compare(token["signature"].to_s, sign_token(key, token))
-    raise translate(locale, "Invalid signature")
   end
 
   if token["nonce"]? && (nonce = db.query_one?("SELECT * FROM nonces WHERE nonce = $1", token["nonce"], as: {String, Time}))
@@ -98,6 +90,18 @@ def validate_request(token, session, request, key, db, locale = nil)
     else
       raise translate(locale, "Erroneous token")
     end
+  end
+
+  scopes = token["scopes"].as_a.map { |v| v.as_s }
+  scope = "#{request.method}:#{request.path.lchop("/api/v1/auth/").lstrip("/")}"
+
+  if !scopes_include_scope(scopes, scope)
+    raise translate(locale, "Invalid scope")
+  end
+
+  expire = token["expire"]?.try &.as_i
+  if expire.try &.< Time.utc.to_unix
+    raise translate(locale, "Token is expired, please try again")
   end
 
   return {scopes, expire, token["signature"].as_s}
