@@ -28,8 +28,11 @@ require "protodec/utils"
 require "./invidious/helpers/*"
 require "./invidious/*"
 
-CONFIG   = Config.from_yaml(File.read("config/config.yml"))
-HMAC_KEY = CONFIG.hmac_key || Random::Secure.hex(32)
+ENV_CONFIG_NAME = "INVIDIOUS_CONFIG"
+
+CONFIG_STR = ENV.has_key?(ENV_CONFIG_NAME) ? ENV.fetch(ENV_CONFIG_NAME) : File.read("config/config.yml")
+CONFIG     = Config.from_yaml(CONFIG_STR)
+HMAC_KEY   = CONFIG.hmac_key || Random::Secure.hex(32)
 
 PG_URL = URI.new(
   scheme: "postgres",
@@ -57,7 +60,7 @@ REQUEST_HEADERS_WHITELIST  = {"accept", "accept-encoding", "cache-control", "con
 RESPONSE_HEADERS_BLACKLIST = {"access-control-allow-origin", "alt-svc", "server"}
 HTTP_CHUNK_SIZE            = 10485760 # ~10MB
 
-CURRENT_BRANCH  = {{ "#{`git branch | sed -n '/\* /s///p'`.strip}" }}
+CURRENT_BRANCH  = {{ "#{`git branch | sed -n '/* /s///p'`.strip}" }}
 CURRENT_COMMIT  = {{ "#{`git rev-list HEAD --max-count=1 --abbrev-commit`.strip}" }}
 CURRENT_VERSION = {{ "#{`git describe --tags --abbrev=0`.strip}" }}
 
@@ -207,7 +210,7 @@ spawn do
   end
 end
 
-decrypt_function = [] of {name: String, value: Int32}
+decrypt_function = [] of {SigProc, Int32}
 spawn do
   update_decrypt_function do |function|
     decrypt_function = function
@@ -425,7 +428,7 @@ get "/watch" do |env|
     next env.redirect "/"
   end
 
-  plid = env.params.query["list"]?
+  plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
   continuation = process_continuation(PG_DB, env.params.query, plid, id)
 
   nojs = env.params.query["nojs"]?
@@ -465,7 +468,7 @@ get "/watch" do |env|
   env.params.query.delete_all("iv_load_policy")
 
   if watched && !watched.includes? id
-    PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
+    PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.as(User).email)
   end
 
   if notifications && notifications.includes? id
@@ -610,7 +613,7 @@ end
 get "/embed/" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
-  if plid = env.params.query["list"]?
+  if plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
     begin
       playlist = get_playlist(PG_DB, plid, locale: locale)
       offset = env.params.query["index"]?.try &.to_i? || 0
@@ -637,7 +640,7 @@ get "/embed/:id" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
   id = env.params.url["id"]
 
-  plid = env.params.query["list"]?
+  plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
   continuation = process_continuation(PG_DB, env.params.query, plid, id)
 
   if md = env.params.query["playlist"]?
@@ -745,7 +748,7 @@ get "/embed/:id" do |env|
   end
 
   # if watched && !watched.includes? id
-  #   PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.as(User).email)
+  #   PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.as(User).email)
   # end
 
   if notifications && notifications.includes? id
@@ -1240,11 +1243,11 @@ post "/playlist_ajax" do |env|
     args = arg_array(video_array)
 
     PG_DB.exec("INSERT INTO playlist_videos VALUES (#{args})", args: video_array)
-    PG_DB.exec("UPDATE playlists SET index = array_append(index, $1), video_count = video_count + 1, updated = $2 WHERE id = $3", playlist_video.index, Time.utc, playlist_id)
+    PG_DB.exec("UPDATE playlists SET index = array_append(index, $1), video_count = cardinality(index), updated = $2 WHERE id = $3", playlist_video.index, Time.utc, playlist_id)
   when "action_remove_video"
     index = env.params.query["set_video_id"]
     PG_DB.exec("DELETE FROM playlist_videos * WHERE index = $1", index)
-    PG_DB.exec("UPDATE playlists SET index = array_remove(index, $1), video_count = video_count - 1, updated = $2 WHERE id = $3", index, Time.utc, playlist_id)
+    PG_DB.exec("UPDATE playlists SET index = array_remove(index, $1), video_count = cardinality(index), updated = $2 WHERE id = $3", index, Time.utc, playlist_id)
   when "action_move_video_before"
     # TODO: Playlist stub
   end
@@ -1261,9 +1264,9 @@ get "/playlist" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
   user = env.get?("user").try &.as(User)
-  plid = env.params.query["list"]?
   referer = get_referer(env)
 
+  plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
   if !plid
     next env.redirect "/"
   end
@@ -2241,7 +2244,7 @@ post "/watch_ajax" do |env|
   case action
   when "action_mark_watched"
     if !user.watched.includes? id
-      PG_DB.exec("UPDATE users SET watched = watched || $1 WHERE email = $2", [id], user.email)
+      PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.email)
     end
   when "action_mark_unwatched"
     PG_DB.exec("UPDATE users SET watched = array_remove(watched, $1) WHERE email = $2", id, user.email)
@@ -2602,13 +2605,9 @@ post "/data_control" do |env|
             next match["channel"]
           elsif match = channel["url"].as_s.match(/\/user\/(?<user>.+)/)
             response = YT_POOL.client &.get("/user/#{match["user"]}?disable_polymer=1&hl=en&gl=US")
-            document = XML.parse_html(response.body)
-            canonical = document.xpath_node(%q(//link[@rel="canonical"]))
-
-            if canonical
-              ucid = canonical["href"].split("/")[-1]
-              next ucid
-            end
+            html = XML.parse_html(response.body)
+            ucid = html.xpath_node(%q(//link[@rel="canonical"])).try &.["href"].split("/")[-1]
+            next ucid if ucid
           end
 
           nil
@@ -3403,8 +3402,8 @@ post "/feed/webhook/:token" do |env|
         views: video.views,
       )
 
-      emails = PG_DB.query_all("UPDATE users SET notifications = notifications || $1 \
-        WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
+      PG_DB.query_all("UPDATE users SET feed_needs_update = true, notifications = array_append(notifications, $1) \
+        WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)",
         video.id, video.published, video.ucid, as: String)
 
       video_array = video.to_a
@@ -3414,15 +3413,6 @@ post "/feed/webhook/:token" do |env|
         ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
         updated = $4, ucid = $5, author = $6, length_seconds = $7, \
         live_now = $8, premiere_timestamp = $9, views = $10", args: video_array)
-
-      # Update all users affected by insert
-      if emails.empty?
-        values = "'{}'"
-      else
-        values = "VALUES #{emails.map { |email| %((E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}')) }.join(",")}"
-      end
-
-      PG_DB.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
     end
   end
 
@@ -3841,10 +3831,10 @@ get "/api/v1/captions/:id" do |env|
 
   env.response.content_type = "text/vtt; charset=UTF-8"
 
-  caption = captions.select { |caption| caption.name.simpleText == label }
-
   if lang
     caption = captions.select { |caption| caption.languageCode == lang }
+  else
+    caption = captions.select { |caption| caption.name.simpleText == label }
   end
 
   if caption.empty?
@@ -5155,7 +5145,7 @@ get "/api/manifest/dash/id/:id" do |env|
 
   # Since some implementations create playlists based on resolution regardless of different codecs,
   # we can opt to only add a source to a representation if it has a unique height within that representation
-  unique_res = env.params.query["unique_res"]? && (env.params.query["unique_res"] == "true" || env.params.query["unique_res"] == "1")
+  unique_res = env.params.query["unique_res"]?.try { |q| (q == "true" || q == "1").to_unsafe }
 
   begin
     video = get_video(id, PG_DB, region: region)
@@ -5167,7 +5157,7 @@ get "/api/manifest/dash/id/:id" do |env|
   end
 
   if dashmpd = video.player_response["streamingData"]?.try &.["dashManifestUrl"]?.try &.as_s
-    manifest = YT_POOL.client &.get(dashmpd).body
+    manifest = YT_POOL.client &.get(URI.parse(dashmpd).full_path).body
 
     manifest = manifest.gsub(/<BaseURL>[^<]+<\/BaseURL>/) do |baseurl|
       url = baseurl.lchop("<BaseURL>")
@@ -5192,7 +5182,7 @@ get "/api/manifest/dash/id/:id" do |env|
   end
 
   audio_streams = video.audio_streams(adaptive_fmts)
-  video_streams = video.video_streams(adaptive_fmts).sort_by { |stream| stream["fps"].to_i }.reverse
+  video_streams = video.video_streams(adaptive_fmts).sort_by { |stream| {stream["size"].split("x")[0].to_i, stream["fps"].to_i} }.reverse
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("MPD", "xmlns": "urn:mpeg:dash:schema:mpd:2011",
@@ -5230,9 +5220,7 @@ get "/api/manifest/dash/id/:id" do |env|
 
         {"video/mp4", "video/webm"}.each do |mime_type|
           mime_streams = video_streams.select { |stream| stream["type"].starts_with? mime_type }
-          if mime_streams.empty?
-            next
-          end
+          next if mime_streams.empty?
 
           heights = [] of Int32
           xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true, scanType: "progressive") do
@@ -5875,7 +5863,7 @@ error 404 do |env|
     response = YT_POOL.client &.get("/#{item}")
 
     if response.status_code == 301
-      response = YT_POOL.client &.get(response.headers["Location"])
+      response = YT_POOL.client &.get(URI.parse(response.headers["Location"]).full_path)
     end
 
     if response.body.empty?
@@ -5884,10 +5872,10 @@ error 404 do |env|
     end
 
     html = XML.parse_html(response.body)
-    ucid = html.xpath_node(%q(//meta[@itemprop="channelId"]))
+    ucid = html.xpath_node(%q(//link[@rel="canonical"])).try &.["href"].split("/")[-1]
 
     if ucid
-      env.response.headers["Location"] = "/channel/#{ucid["content"]}"
+      env.response.headers["Location"] = "/channel/#{ucid}"
       halt env, status_code: 302
     end
 
