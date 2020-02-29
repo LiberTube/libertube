@@ -69,12 +69,14 @@
 </div>
 
 <% if playlist.is_a?(InvidiousPlaylist) && playlist.author == user.try &.email %>
-<script>
-var playlist_data = {
-    csrf_token: '<%= URI.encode_www_form(env.get?("csrf_token").try &.as(String) || "") %>',
-}
+<script id="playlist_data" type="application/json">
+<%=
+{
+    "csrf_token" => URI.encode_www_form(env.get?("csrf_token").try &.as(String) || "")
+}.to_pretty_json
+%>
 </script>
-<script src="/js/playlist_widget.js"></script>
+<script src="/js/playlist_widget.js?v=<%= ASSET_COMMIT %>"></script>
 <% end %>
 
 <div class="pure-g">

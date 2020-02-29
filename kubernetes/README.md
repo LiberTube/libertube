@@ -18,8 +18,7 @@ $ kubectl create configmap invidious-postgresql-init \
   --from-file=../config/sql/nonces.sql \
   --from-file=../config/sql/annotations.sql \
   --from-file=../config/sql/playlists.sql \
-  --from-file=../config/sql/playlist_videos.sql \
-  --from-file=../config/sql/privacy.sql
+  --from-file=../config/sql/playlist_videos.sql
 
 # Install Helm app to your Kubernetes cluster
 $ helm install invidious ./
