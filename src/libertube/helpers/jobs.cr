@@ -170,41 +170,6 @@ def subscribe_to_feeds(db, logger, key, config)
   end
 end
 
-def pull_top_videos(config, db)
-  loop do
-    begin
-      top = rank_videos(db, 40)
-    rescue ex
-      sleep 1.minute
-      Fiber.yield
-
-      next
-    end
-
-    if top.size == 0
-      sleep 1.minute
-      Fiber.yield
-
-      next
-    end
-
-    videos = [] of Video
-
-    top.each do |id|
-      begin
-        videos << get_video(id, db)
-      rescue ex
-        next
-      end
-    end
-
-    yield videos
-
-    sleep 1.minute
-    Fiber.yield
-  end
-end
-
 def pull_popular_videos(db)
   loop do
     videos = db.query_all("SELECT DISTINCT ON (ucid) * FROM channel_videos WHERE ucid IN \
@@ -225,6 +190,7 @@ def update_decrypt_function
       decrypt_function = fetch_decrypt_function
       yield decrypt_function
     rescue ex
+      # TODO: Log error
       next
     ensure
       sleep 1.minute
@@ -236,7 +202,7 @@ end
 def bypass_captcha(captcha_key, logger)
   loop do
     begin
-      {"/watch?v=CvFH_6DNRCY&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999", produce_channel_videos_url(ucid: "UCXuqSBlHAE6Xw-yeJA0Tunw")}.each do |path|
+      {"/watch?v=CvFH_6DNRCY&gl=US&hl=en&has_verified=1&bpctr=9999999999", produce_channel_videos_url(ucid: "UCXuqSBlHAE6Xw-yeJA0Tunw")}.each do |path|
         response = YT_POOL.client &.get(path)
         if response.body.includes?("To continue with your YouTube experience, please fill out the form below.")
           html = XML.parse_html(response.body)

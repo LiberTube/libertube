@@ -23,7 +23,7 @@ require "pg"
 require "sqlite3"
 require "xml"
 require "yaml"
-require "zip"
+require "compress/zip"
 require "protodec/utils"
 require "./invidious/helpers/*"
 require "./invidious/*"
@@ -50,6 +50,7 @@ PUBSUB_URL      = URI.parse("https://pubsubhubbub.appspot.com")
 REDDIT_URL      = URI.parse("https://www.reddit.com")
 TEXTCAPTCHA_URL = URI.parse("https://textcaptcha.com")
 YT_URL          = URI.parse("https://www.youtube.com")
+HOST_URL        = make_host_url(CONFIG, Kemal.config)
 
 CHARS_SAFE         = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 TEST_IDS           = {"AgbeGFYluEA", "BaW_jenozKc", "a9LDPn-MO4I", "ddFvjfvPnqk", "iqKdEhx-dD4"}
@@ -195,15 +196,6 @@ if config.statistics_enabled
   end
 end
 
-top_videos = [] of Video
-if config.top_enabled
-  spawn do
-    pull_top_videos(config, PG_DB) do |videos|
-      top_videos = videos
-    end
-  end
-end
-
 popular_videos = [] of ChannelVideo
 spawn do
   pull_popular_videos(PG_DB) do |videos|
@@ -211,10 +203,11 @@ spawn do
   end
 end
 
-decrypt_function = [] of {SigProc, Int32}
+DECRYPT_FUNCTION = [] of {SigProc, Int32}
 spawn do
   update_decrypt_function do |function|
-    decrypt_function = function
+    DECRYPT_FUNCTION.clear
+    function.each { |i| DECRYPT_FUNCTION << i }
   end
 end
 
@@ -367,12 +360,6 @@ get "/" do |env|
     templated "empty"
   when "Popular"
     templated "popular"
-  when "Top"
-    if config.top_enabled
-      templated "top"
-    else
-      templated "empty"
-    end
   when "Trending"
     env.redirect "/feed/trending"
   when "Subscriptions"
@@ -523,16 +510,16 @@ get "/watch" do |env|
     comment_html ||= ""
   end
 
-  fmt_stream = video.fmt_stream(decrypt_function)
-  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+  fmt_stream = video.fmt_stream
+  adaptive_fmts = video.adaptive_fmts
 
   if params.local
-    fmt_stream.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
-    adaptive_fmts.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
+    fmt_stream.each { |fmt| fmt["url"] = JSON::Any.new(URI.parse(fmt["url"].as_s).full_path) }
+    adaptive_fmts.each { |fmt| fmt["url"] = JSON::Any.new(URI.parse(fmt["url"].as_s).full_path) }
   end
 
-  video_streams = video.video_streams(adaptive_fmts)
-  audio_streams = video.audio_streams(adaptive_fmts)
+  video_streams = video.video_streams
+  audio_streams = video.audio_streams
 
   # Older videos may not have audio sources available.
   # We redirect here so they're not unplayable
@@ -562,57 +549,29 @@ get "/watch" do |env|
 
   aspect_ratio = "16:9"
 
-  video.description_html = fill_links(video.description_html, "https", "www.youtube.com")
-  video.description_html = replace_links(video.description_html)
-
-  host_url = make_host_url(config, Kemal.config)
-
-  if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
-    hlsvp = video.player_response["streamingData"]["hlsManifestUrl"].as_s
-    hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", host_url)
-  end
-
   thumbnail = "/vi/#{video.id}/maxres.jpg"
 
   if params.raw
     if params.listen
-      url = audio_streams[0]["url"]
+      url = audio_streams[0]["url"].as_s
 
       audio_streams.each do |fmt|
-        if fmt["bitrate"] == params.quality.rchop("k")
-          url = fmt["url"]
+        if fmt["bitrate"].as_i == params.quality.rchop("k").to_i
+          url = fmt["url"].as_s
         end
       end
     else
-      url = fmt_stream[0]["url"]
+      url = fmt_stream[0]["url"].as_s
 
       fmt_stream.each do |fmt|
-        if fmt["label"].split(" - ")[0] == params.quality
-          url = fmt["url"]
+        if fmt["quality"].as_s == params.quality
+          url = fmt["url"].as_s
         end
       end
     end
 
     next env.redirect url
   end
-
-  rvs = [] of Hash(String, String)
-  video.info["rvs"]?.try &.split(",").each do |rv|
-    rvs << HTTP::Params.parse(rv).to_h
-  end
-
-  rating = video.info["avg_rating"].to_f64
-  if video.views > 0
-    engagement = ((video.dislikes.to_f + video.likes.to_f)/video.views * 100)
-  else
-    engagement = 0
-  end
-
-  playability_status = video.player_response["playabilityStatus"]?
-  if playability_status && playability_status["status"] == "LIVE_STREAM_OFFLINE" && !video.premiere_timestamp
-    reason = playability_status["reason"]?.try &.as_s
-  end
-  reason ||= ""
 
   templated "watch"
 end
@@ -765,16 +724,16 @@ get "/embed/:id" do |env|
     notifications.delete(id)
   end
 
-  fmt_stream = video.fmt_stream(decrypt_function)
-  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+  fmt_stream = video.fmt_stream
+  adaptive_fmts = video.adaptive_fmts
 
   if params.local
-    fmt_stream.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
-    adaptive_fmts.each { |fmt| fmt["url"] = URI.parse(fmt["url"]).full_path }
+    fmt_stream.each { |fmt| fmt["url"] = JSON::Any.new(URI.parse(fmt["url"].as_s).full_path) }
+    adaptive_fmts.each { |fmt| fmt["url"] = JSON::Any.new(URI.parse(fmt["url"].as_s).full_path) }
   end
 
-  video_streams = video.video_streams(adaptive_fmts)
-  audio_streams = video.audio_streams(adaptive_fmts)
+  video_streams = video.video_streams
+  audio_streams = video.audio_streams
 
   if audio_streams.empty? && !video.live_now
     if params.quality == "dash"
@@ -801,25 +760,13 @@ get "/embed/:id" do |env|
 
   aspect_ratio = nil
 
-  video.description_html = fill_links(video.description_html, "https", "www.youtube.com")
-  video.description_html = replace_links(video.description_html)
-
-  host_url = make_host_url(config, Kemal.config)
-
-  if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
-    hlsvp = video.player_response["streamingData"]["hlsManifestUrl"].as_s
-    hlsvp = hlsvp.gsub("https://manifest.googlevideo.com", host_url)
-  end
-
   thumbnail = "/vi/#{video.id}/maxres.jpg"
 
   if params.raw
-    url = fmt_stream[0]["url"]
+    url = fmt_stream[0]["url"].as_s
 
     fmt_stream.each do |fmt|
-      if fmt["label"].split(" - ")[0] == params.quality
-        url = fmt["url"]
-      end
+      url = fmt["url"].as_s if fmt["quality"].as_s == params.quality
     end
 
     next env.redirect url
@@ -846,8 +793,14 @@ get "/view_all_playlists" do |env|
 
   user = user.as(User)
 
-  items = PG_DB.query_all("SELECT * FROM playlists WHERE author = $1 ORDER BY created", user.email, as: InvidiousPlaylist)
-  items.map! do |item|
+  items_created = PG_DB.query_all("SELECT * FROM playlists WHERE author = $1 AND id LIKE 'IV%' ORDER BY created", user.email, as: InvidiousPlaylist)
+  items_created.map! do |item|
+    item.author = ""
+    item
+  end
+
+  items_saved = PG_DB.query_all("SELECT * FROM playlists WHERE author = $1 AND id NOT LIKE 'IV%' ORDER BY created", user.email, as: InvidiousPlaylist)
+  items_saved.map! do |item|
     item.author = ""
     item
   end
@@ -918,6 +871,25 @@ post "/create_playlist" do |env|
   env.redirect "/playlist?list=#{playlist.id}"
 end
 
+get "/subscribe_playlist" do |env|
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  user = env.get? "user"
+  referer = get_referer(env)
+
+  if !user
+    next env.redirect "/"
+  end
+
+  user = user.as(User)
+
+  playlist_id = env.params.query["list"]
+  playlist = get_playlist(PG_DB, playlist_id, locale)
+  subscribe_playlist(PG_DB, user, playlist)
+
+  env.redirect "/playlist?list=#{playlist.id}"
+end
+
 get "/delete_playlist" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
@@ -933,10 +905,6 @@ get "/delete_playlist" do |env|
   sid = sid.as(String)
 
   plid = env.params.query["list"]?
-  if !plid || !plid.starts_with?("IV")
-    next env.redirect referer
-  end
-
   playlist = PG_DB.query_one?("SELECT * FROM playlists WHERE id = $1", plid, as: InvidiousPlaylist)
   if !playlist || playlist.author != user.email
     next env.redirect referer
@@ -1345,16 +1313,14 @@ get "/opensearch.xml" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
   env.response.content_type = "application/opensearchdescription+xml"
 
-  host = make_host_url(config, Kemal.config)
-
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("OpenSearchDescription", xmlns: "http://a9.com/-/spec/opensearch/1.1/") do
       xml.element("ShortName") { xml.text "Invidious" }
       xml.element("LongName") { xml.text "Invidious Search" }
       xml.element("Description") { xml.text "Search for videos, channels, and playlists on Invidious" }
       xml.element("InputEncoding") { xml.text "UTF-8" }
-      xml.element("Image", width: 48, height: 48, type: "image/x-icon") { xml.text "#{host}/favicon.ico" }
-      xml.element("Url", type: "text/html", method: "get", template: "#{host}/search?q={searchTerms}")
+      xml.element("Image", width: 48, height: 48, type: "image/x-icon") { xml.text "#{HOST_URL}/favicon.ico" }
+      xml.element("Url", type: "text/html", method: "get", template: "#{HOST_URL}/search?q={searchTerms}")
     end
   end
 end
@@ -1463,7 +1429,6 @@ post "/login" do |env|
     traceback = IO::Memory.new
 
     # See https://github.com/ytdl-org/youtube-dl/blob/2019.04.07/youtube_dl/extractor/youtube.py#L82
-    # TODO: Convert to QUIC
     begin
       client = QUIC::Client.new(LOGIN_URL)
       headers = HTTP::Headers.new
@@ -2102,10 +2067,6 @@ post "/preferences" do |env|
       end
       config.default_user_preferences.feed_menu = admin_feed_menu
 
-      top_enabled = env.params.body["top_enabled"]?.try &.as(String)
-      top_enabled ||= "off"
-      config.top_enabled = top_enabled == "on"
-
       captcha_enabled = env.params.body["captcha_enabled"]?.try &.as(String)
       captcha_enabled ||= "off"
       config.captcha_enabled = captcha_enabled == "on"
@@ -2327,8 +2288,7 @@ get "/modify_notifications" do |env|
     end
     headers = cookies.add_request_headers(headers)
 
-    match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
-    if match
+    if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[^"]+)"/)
       session_token = match["session_token"]
     else
       next env.redirect referer
@@ -2471,8 +2431,6 @@ get "/subscription_manager" do |env|
   subscriptions.sort_by! { |channel| channel.author.downcase }
 
   if action_takeout
-    host_url = make_host_url(config, Kemal.config)
-
     if format == "json"
       env.response.content_type = "application/json"
       env.response.headers["content-disposition"] = "attachment"
@@ -2498,7 +2456,7 @@ get "/subscription_manager" do |env|
                 if format == "newpipe"
                   xmlUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=#{channel.id}"
                 else
-                  xmlUrl = "#{host_url}/feed/channel/#{channel.id}"
+                  xmlUrl = "#{HOST_URL}/feed/channel/#{channel.id}"
                 end
 
                 xml.element("outline", text: channel.author, title: channel.author,
@@ -2639,7 +2597,7 @@ post "/data_control" do |env|
 
         PG_DB.exec("UPDATE users SET feed_needs_update = true, subscriptions = $1 WHERE email = $2", user.subscriptions, user.email)
       when "import_newpipe"
-        Zip::Reader.open(IO::Memory.new(body)) do |file|
+        Compress::Zip::Reader.open(IO::Memory.new(body)) do |file|
           file.each_entry do |entry|
             if entry.filename == "newpipe.db"
               tempfile = File.tempfile(".db")
@@ -3023,12 +2981,7 @@ end
 
 get "/feed/top" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
-
-  if config.top_enabled
-    templated "top"
-  else
-    env.redirect "/"
-  end
+  env.redirect "/"
 end
 
 get "/feed/popular" do |env|
@@ -3182,25 +3135,23 @@ get "/feed/channel/:ucid" do |env|
     )
   end
 
-  host_url = make_host_url(config, Kemal.config)
-
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
       "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom",
       "xml:lang": "en-US") do
-      xml.element("link", rel: "self", href: "#{host_url}#{env.request.resource}")
+      xml.element("link", rel: "self", href: "#{HOST_URL}#{env.request.resource}")
       xml.element("id") { xml.text "yt:channel:#{channel.ucid}" }
       xml.element("yt:channelId") { xml.text channel.ucid }
       xml.element("title") { xml.text channel.author }
-      xml.element("link", rel: "alternate", href: "#{host_url}/channel/#{channel.ucid}")
+      xml.element("link", rel: "alternate", href: "#{HOST_URL}/channel/#{channel.ucid}")
 
       xml.element("author") do
         xml.element("name") { xml.text channel.author }
-        xml.element("uri") { xml.text "#{host_url}/channel/#{channel.ucid}" }
+        xml.element("uri") { xml.text "#{HOST_URL}/channel/#{channel.ucid}" }
       end
 
       videos.each do |video|
-        video.to_xml(host_url, channel.auto_generated, params, xml)
+        video.to_xml(channel.auto_generated, params, xml)
       end
     end
   end
@@ -3234,19 +3185,18 @@ get "/feed/private" do |env|
   params = HTTP::Params.parse(env.params.query["params"]? || "")
 
   videos, notifications = get_subscription_feed(PG_DB, user, max_results, page)
-  host_url = make_host_url(config, Kemal.config)
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
       "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom",
       "xml:lang": "en-US") do
-      xml.element("link", "type": "text/html", rel: "alternate", href: "#{host_url}/feed/subscriptions")
+      xml.element("link", "type": "text/html", rel: "alternate", href: "#{HOST_URL}/feed/subscriptions")
       xml.element("link", "type": "application/atom+xml", rel: "self",
-        href: "#{host_url}#{env.request.resource}")
+        href: "#{HOST_URL}#{env.request.resource}")
       xml.element("title") { xml.text translate(locale, "Invidious Private Feed for `x`", user.email) }
 
       (notifications + videos).each do |video|
-        video.to_xml(locale, host_url, params, xml)
+        video.to_xml(locale, params, xml)
       end
     end
   end
@@ -3260,8 +3210,6 @@ get "/feed/playlist/:plid" do |env|
   plid = env.params.url["plid"]
 
   params = HTTP::Params.parse(env.params.query["params"]? || "")
-
-  host_url = make_host_url(config, Kemal.config)
   path = env.request.path
 
   if plid.starts_with? "IV"
@@ -3272,18 +3220,18 @@ get "/feed/playlist/:plid" do |env|
         xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
           "xmlns:media": "http://search.yahoo.com/mrss/", xmlns: "http://www.w3.org/2005/Atom",
           "xml:lang": "en-US") do
-          xml.element("link", rel: "self", href: "#{host_url}#{env.request.resource}")
+          xml.element("link", rel: "self", href: "#{HOST_URL}#{env.request.resource}")
           xml.element("id") { xml.text "iv:playlist:#{plid}" }
           xml.element("iv:playlistId") { xml.text plid }
           xml.element("title") { xml.text playlist.title }
-          xml.element("link", rel: "alternate", href: "#{host_url}/playlist?list=#{plid}")
+          xml.element("link", rel: "alternate", href: "#{HOST_URL}/playlist?list=#{plid}")
 
           xml.element("author") do
             xml.element("name") { xml.text playlist.author }
           end
 
           videos.each do |video|
-            video.to_xml(host_url, false, xml)
+            video.to_xml(false, xml)
           end
         end
       end
@@ -3302,7 +3250,7 @@ get "/feed/playlist/:plid" do |env|
       when "url", "href"
         full_path = URI.parse(node[attribute.name]).full_path
         query_string_opt = full_path.starts_with?("/watch?v=") ? "&#{params}" : ""
-        node[attribute.name] = "#{host_url}#{full_path}#{query_string_opt}"
+        node[attribute.name] = "#{HOST_URL}#{full_path}#{query_string_opt}"
       else nil # Skip
       end
     end
@@ -3311,7 +3259,7 @@ get "/feed/playlist/:plid" do |env|
   document = document.to_xml(options: XML::SaveOptions::NO_DECL)
 
   document.scan(/<uri>(?<url>[^<]+)<\/uri>/).each do |match|
-    content = "#{host_url}#{URI.parse(match["url"]).full_path}"
+    content = "#{HOST_URL}#{URI.parse(match["url"]).full_path}"
     document = document.gsub(match[0], "<uri>#{content}</uri>")
   end
 
@@ -3585,14 +3533,14 @@ get "/channel/:ucid" do |env|
         item.author
       end
     end
-    items = items.select { |item| item.is_a?(SearchPlaylist) }.map { |item| item.as(SearchPlaylist) }
+    items = items.select(&.is_a?(SearchPlaylist)).map(&.as(SearchPlaylist))
     items.each { |item| item.author = "" }
   else
     sort_options = {"newest", "oldest", "popular"}
     sort_by ||= "newest"
 
-    items, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
-    items.select! { |item| !item.paid }
+    count, items = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
+    items.reject! &.paid
 
     env.set "search", "channel:#{channel.ucid} "
   end
@@ -3687,7 +3635,7 @@ get "/channel/:ucid/community" do |env|
   end
 
   begin
-    items = JSON.parse(fetch_channel_community(ucid, continuation, locale, config, Kemal.config, "json", thin_mode))
+    items = JSON.parse(fetch_channel_community(ucid, continuation, locale, "json", thin_mode))
   rescue ex
     env.response.status_code = 500
     error_message = ex.message
@@ -3740,7 +3688,6 @@ get "/api/v1/storyboards/:id" do |env|
   end
 
   storyboards = video.storyboards
-
   width = env.params.query["width"]?
   height = env.params.query["height"]?
 
@@ -3748,7 +3695,7 @@ get "/api/v1/storyboards/:id" do |env|
     response = JSON.build do |json|
       json.object do
         json.field "storyboards" do
-          generate_storyboards(json, id, storyboards, config, Kemal.config)
+          generate_storyboards(json, id, storyboards)
         end
       end
     end
@@ -3778,8 +3725,7 @@ get "/api/v1/storyboards/:id" do |env|
     end_time = storyboard[:interval].milliseconds
 
     storyboard[:storyboard_count].times do |i|
-      host_url = make_host_url(config, Kemal.config)
-      url = storyboard[:url].gsub("$M", i).gsub("https://i9.ytimg.com", host_url)
+      url = storyboard[:url].gsub("$M", i).gsub("https://i9.ytimg.com", HOST_URL)
 
       storyboard[:storyboard_height].times do |j|
         storyboard[:storyboard_width].times do |k|
@@ -4102,7 +4048,7 @@ get "/api/v1/videos/:id" do |env|
     next error_message
   end
 
-  video.to_json(locale, config, Kemal.config, decrypt_function)
+  video.to_json(locale)
 end
 
 get "/api/v1/trending" do |env|
@@ -4124,7 +4070,7 @@ get "/api/v1/trending" do |env|
   videos = JSON.build do |json|
     json.array do
       trending.each do |video|
-        video.to_json(locale, config, Kemal.config, json)
+        video.to_json(locale, json)
       end
     end
   end
@@ -4140,7 +4086,7 @@ get "/api/v1/popular" do |env|
   JSON.build do |json|
     json.array do
       popular_videos.each do |video|
-        video.to_json(locale, config, Kemal.config, json)
+        video.to_json(locale, json)
       end
     end
   end
@@ -4150,41 +4096,7 @@ get "/api/v1/top" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
 
   env.response.content_type = "application/json"
-
-  if !config.top_enabled
-    error_message = {"error" => "Administrator has disabled this endpoint."}.to_json
-    env.response.status_code = 400
-    next error_message
-  end
-
-  JSON.build do |json|
-    json.array do
-      top_videos.each do |video|
-        # Top videos have much more information than provided below (adaptiveFormats, etc)
-        # but can be very out of date, so we only provide a subset here
-
-        json.object do
-          json.field "title", video.title
-          json.field "videoId", video.id
-          json.field "videoThumbnails" do
-            generate_thumbnails(json, video.id, config, Kemal.config)
-          end
-
-          json.field "lengthSeconds", video.length_seconds
-          json.field "viewCount", video.views
-
-          json.field "author", video.author
-          json.field "authorId", video.ucid
-          json.field "authorUrl", "/channel/#{video.ucid}"
-          json.field "published", video.published.to_unix
-          json.field "publishedText", translate(locale, "`x` ago", recode_date(video.published, locale))
-
-          json.field "description", html_to_content(video.description_html)
-          json.field "descriptionHtml", video.description_html
-        end
-      end
-    end
-  end
+  "[]"
 end
 
 get "/api/v1/channels/:ucid" do |env|
@@ -4215,7 +4127,7 @@ get "/api/v1/channels/:ucid" do |env|
     count = 0
   else
     begin
-      videos, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
+      count, videos = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 500
@@ -4284,7 +4196,7 @@ get "/api/v1/channels/:ucid" do |env|
       json.field "latestVideos" do
         json.array do
           videos.each do |video|
-            video.to_json(locale, config, Kemal.config, json)
+            video.to_json(locale, json)
           end
         end
       end
@@ -4345,7 +4257,7 @@ end
     end
 
     begin
-      videos, count = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
+      count, videos = get_60_videos(channel.ucid, channel.author, page, channel.auto_generated, sort_by)
     rescue ex
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 500
@@ -4355,7 +4267,7 @@ end
     JSON.build do |json|
       json.array do
         videos.each do |video|
-          video.to_json(locale, config, Kemal.config, json)
+          video.to_json(locale, json)
         end
       end
     end
@@ -4381,7 +4293,7 @@ end
     JSON.build do |json|
       json.array do
         videos.each do |video|
-          video.to_json(locale, config, Kemal.config, json)
+          video.to_json(locale, json)
         end
       end
     end
@@ -4396,9 +4308,9 @@ end
 
     ucid = env.params.url["ucid"]
     continuation = env.params.query["continuation"]?
-    sort_by = env.params.query["sort"]?.try &.downcase
-    sort_by ||= env.params.query["sort_by"]?.try &.downcase
-    sort_by ||= "last"
+    sort_by = env.params.query["sort"]?.try &.downcase ||
+              env.params.query["sort_by"]?.try &.downcase ||
+              "last"
 
     begin
       channel = get_about_info(ucid, locale)
@@ -4420,9 +4332,7 @@ end
         json.field "playlists" do
           json.array do
             items.each do |item|
-              if item.is_a?(SearchPlaylist)
-                item.to_json(locale, config, Kemal.config, json)
-              end
+              item.to_json(locale, json) if item.is_a?(SearchPlaylist)
             end
           end
         end
@@ -4451,7 +4361,7 @@ end
     # sort_by = env.params.query["sort_by"]?.try &.downcase
 
     begin
-      fetch_channel_community(ucid, continuation, locale, config, Kemal.config, format, thin_mode)
+      fetch_channel_community(ucid, continuation, locale, format, thin_mode)
     rescue ex
       env.response.status_code = 400
       error_message = {"error" => ex.message}.to_json
@@ -4477,7 +4387,7 @@ get "/api/v1/channels/search/:ucid" do |env|
   JSON.build do |json|
     json.array do
       search_results.each do |item|
-        item.to_json(locale, config, Kemal.config, json)
+        item.to_json(locale, json)
       end
     end
   end
@@ -4522,7 +4432,7 @@ get "/api/v1/search" do |env|
   JSON.build do |json|
     json.array do
       search_results.each do |item|
-        item.to_json(locale, config, Kemal.config, json)
+        item.to_json(locale, json)
       end
     end
   end
@@ -4599,7 +4509,7 @@ end
       next error_message
     end
 
-    response = playlist.to_json(offset, locale, config, Kemal.config, continuation: continuation)
+    response = playlist.to_json(offset, locale, continuation: continuation)
 
     if format == "html"
       response = JSON.parse(response)
@@ -4663,7 +4573,7 @@ get "/api/v1/mixes/:rdid" do |env|
 
               json.field "videoThumbnails" do
                 json.array do
-                  generate_thumbnails(json, video.id, config, Kemal.config)
+                  generate_thumbnails(json, video.id)
                 end
               end
 
@@ -4698,7 +4608,7 @@ get "/api/v1/auth/notifications" do |env|
   topics = env.params.query["topics"]?.try &.split(",").uniq.first(1000)
   topics ||= [] of String
 
-  create_notification_stream(env, config, Kemal.config, decrypt_function, topics, connection_channel)
+  create_notification_stream(env, topics, connection_channel)
 end
 
 post "/api/v1/auth/notifications" do |env|
@@ -4707,7 +4617,7 @@ post "/api/v1/auth/notifications" do |env|
   topics = env.params.body["topics"]?.try &.split(",").uniq.first(1000)
   topics ||= [] of String
 
-  create_notification_stream(env, config, Kemal.config, decrypt_function, topics, connection_channel)
+  create_notification_stream(env, topics, connection_channel)
 end
 
 get "/api/v1/auth/preferences" do |env|
@@ -4751,7 +4661,7 @@ get "/api/v1/auth/feed" do |env|
       json.field "notifications" do
         json.array do
           notifications.each do |video|
-            video.to_json(locale, config, Kemal.config, json)
+            video.to_json(locale, json)
           end
         end
       end
@@ -4759,7 +4669,7 @@ get "/api/v1/auth/feed" do |env|
       json.field "videos" do
         json.array do
           videos.each do |video|
-            video.to_json(locale, config, Kemal.config, json)
+            video.to_json(locale, json)
           end
         end
       end
@@ -4831,7 +4741,7 @@ get "/api/v1/auth/playlists" do |env|
   JSON.build do |json|
     json.array do
       playlists.each do |playlist|
-        playlist.to_json(0, locale, config, Kemal.config, json)
+        playlist.to_json(0, locale, json)
       end
     end
   end
@@ -4862,10 +4772,8 @@ post "/api/v1/auth/playlists" do |env|
     next error_message
   end
 
-  host_url = make_host_url(config, Kemal.config)
-
   playlist = create_playlist(PG_DB, title, privacy, user)
-  env.response.headers["Location"] = "#{host_url}/api/v1/auth/playlists/#{playlist.id}"
+  env.response.headers["Location"] = "#{HOST_URL}/api/v1/auth/playlists/#{playlist.id}"
   env.response.status_code = 201
   {
     "title"      => title,
@@ -4995,11 +4903,9 @@ post "/api/v1/auth/playlists/:plid/videos" do |env|
   PG_DB.exec("INSERT INTO playlist_videos VALUES (#{args})", args: video_array)
   PG_DB.exec("UPDATE playlists SET index = array_append(index, $1), video_count = video_count + 1, updated = $2 WHERE id = $3", playlist_video.index, Time.utc, plid)
 
-  host_url = make_host_url(config, Kemal.config)
-
-  env.response.headers["Location"] = "#{host_url}/api/v1/auth/playlists/#{plid}/videos/#{playlist_video.index.to_u64.to_s(16).upcase}"
+  env.response.headers["Location"] = "#{HOST_URL}/api/v1/auth/playlists/#{plid}/videos/#{playlist_video.index.to_u64.to_s(16).upcase}"
   env.response.status_code = 201
-  playlist_video.to_json(locale, config, Kemal.config, index: playlist.index.size)
+  playlist_video.to_json(locale, index: playlist.index.size)
 end
 
 delete "/api/v1/auth/playlists/:plid/videos/:index" do |env|
@@ -5177,7 +5083,7 @@ get "/api/manifest/dash/id/:id" do |env|
     next
   end
 
-  if dashmpd = video.player_response["streamingData"]?.try &.["dashManifestUrl"]?.try &.as_s
+  if dashmpd = video.dash_manifest_url
     manifest = YT_POOL.client &.get(URI.parse(dashmpd).full_path).body
 
     manifest = manifest.gsub(/<BaseURL>[^<]+<\/BaseURL>/) do |baseurl|
@@ -5194,16 +5100,16 @@ get "/api/manifest/dash/id/:id" do |env|
     next manifest
   end
 
-  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+  adaptive_fmts = video.adaptive_fmts
 
   if local
     adaptive_fmts.each do |fmt|
-      fmt["url"] = URI.parse(fmt["url"]).full_path
+      fmt["url"] = JSON::Any.new(URI.parse(fmt["url"].as_s).full_path)
     end
   end
 
-  audio_streams = video.audio_streams(adaptive_fmts)
-  video_streams = video.video_streams(adaptive_fmts).sort_by { |stream| {stream["size"].split("x")[0].to_i, stream["fps"].to_i} }.reverse
+  audio_streams = video.audio_streams
+  video_streams = video.video_streams.sort_by { |stream| {stream["width"].as_i, stream["fps"].as_i} }.reverse
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("MPD", "xmlns": "urn:mpeg:dash:schema:mpd:2011",
@@ -5213,24 +5119,22 @@ get "/api/manifest/dash/id/:id" do |env|
         i = 0
 
         {"audio/mp4", "audio/webm"}.each do |mime_type|
-          mime_streams = audio_streams.select { |stream| stream["type"].starts_with? mime_type }
-          if mime_streams.empty?
-            next
-          end
+          mime_streams = audio_streams.select { |stream| stream["mimeType"].as_s.starts_with? mime_type }
+          next if mime_streams.empty?
 
           xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true) do
             mime_streams.each do |fmt|
-              codecs = fmt["type"].split("codecs=")[1].strip('"')
-              bandwidth = fmt["bitrate"].to_i * 1000
-              itag = fmt["itag"]
-              url = fmt["url"]
+              codecs = fmt["mimeType"].as_s.split("codecs=")[1].strip('"')
+              bandwidth = fmt["bitrate"].as_i
+              itag = fmt["itag"].as_i
+              url = fmt["url"].as_s
 
               xml.element("Representation", id: fmt["itag"], codecs: codecs, bandwidth: bandwidth) do
                 xml.element("AudioChannelConfiguration", schemeIdUri: "urn:mpeg:dash:23003:3:audio_channel_configuration:2011",
                   value: "2")
                 xml.element("BaseURL") { xml.text url }
-                xml.element("SegmentBase", indexRange: fmt["index"]) do
-                  xml.element("Initialization", range: fmt["init"])
+                xml.element("SegmentBase", indexRange: "#{fmt["indexRange"]["start"]}-#{fmt["indexRange"]["end"]}") do
+                  xml.element("Initialization", range: "#{fmt["initRange"]["start"]}-#{fmt["initRange"]["end"]}")
                 end
               end
             end
@@ -5239,21 +5143,24 @@ get "/api/manifest/dash/id/:id" do |env|
           i += 1
         end
 
+        potential_heights = {4320, 2160, 1440, 1080, 720, 480, 360, 240, 144}
+
         {"video/mp4", "video/webm"}.each do |mime_type|
-          mime_streams = video_streams.select { |stream| stream["type"].starts_with? mime_type }
+          mime_streams = video_streams.select { |stream| stream["mimeType"].as_s.starts_with? mime_type }
           next if mime_streams.empty?
 
           heights = [] of Int32
           xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true, scanType: "progressive") do
             mime_streams.each do |fmt|
-              codecs = fmt["type"].split("codecs=")[1].strip('"')
-              bandwidth = fmt["bitrate"]
-              itag = fmt["itag"]
-              url = fmt["url"]
-              width, height = fmt["size"].split("x").map { |i| i.to_i }
+              codecs = fmt["mimeType"].as_s.split("codecs=")[1].strip('"')
+              bandwidth = fmt["bitrate"].as_i
+              itag = fmt["itag"].as_i
+              url = fmt["url"].as_s
+              width = fmt["width"].as_i
+              height = fmt["height"].as_i
 
               # Resolutions reported by YouTube player (may not accurately reflect source)
-              height = [4320, 2160, 1440, 1080, 720, 480, 360, 240, 144].sort_by { |i| (height - i).abs }[0]
+              height = potential_heights.min_by { |i| (height - i).abs }
               next if unique_res && heights.includes? height
               heights << height
 
@@ -5261,8 +5168,8 @@ get "/api/manifest/dash/id/:id" do |env|
                 startWithSAP: "1", maxPlayoutRate: "1",
                 bandwidth: bandwidth, frameRate: fmt["fps"]) do
                 xml.element("BaseURL") { xml.text url }
-                xml.element("SegmentBase", indexRange: fmt["index"]) do
-                  xml.element("Initialization", range: fmt["init"])
+                xml.element("SegmentBase", indexRange: "#{fmt["indexRange"]["start"]}-#{fmt["indexRange"]["end"]}") do
+                  xml.element("Initialization", range: "#{fmt["initRange"]["start"]}-#{fmt["initRange"]["end"]}")
                 end
               end
             end
@@ -5276,10 +5183,10 @@ get "/api/manifest/dash/id/:id" do |env|
 end
 
 get "/api/manifest/hls_variant/*" do |env|
-  manifest = YT_POOL.client &.get(env.request.path)
+  response = YT_POOL.client &.get(env.request.path)
 
-  if manifest.status_code != 200
-    env.response.status_code = manifest.status_code
+  if response.status_code != 200
+    env.response.status_code = response.status_code
     next
   end
 
@@ -5288,12 +5195,10 @@ get "/api/manifest/hls_variant/*" do |env|
   env.response.content_type = "application/x-mpegURL"
   env.response.headers.add("Access-Control-Allow-Origin", "*")
 
-  host_url = make_host_url(config, Kemal.config)
-
-  manifest = manifest.body
+  manifest = response.body
 
   if local
-    manifest = manifest.gsub("https://www.youtube.com", host_url)
+    manifest = manifest.gsub("https://www.youtube.com", HOST_URL)
     manifest = manifest.gsub("index.m3u8", "index.m3u8?local=true")
   end
 
@@ -5301,10 +5206,10 @@ get "/api/manifest/hls_variant/*" do |env|
 end
 
 get "/api/manifest/hls_playlist/*" do |env|
-  manifest = YT_POOL.client &.get(env.request.path)
+  response = YT_POOL.client &.get(env.request.path)
 
-  if manifest.status_code != 200
-    env.response.status_code = manifest.status_code
+  if response.status_code != 200
+    env.response.status_code = response.status_code
     next
   end
 
@@ -5313,9 +5218,7 @@ get "/api/manifest/hls_playlist/*" do |env|
   env.response.content_type = "application/x-mpegURL"
   env.response.headers.add("Access-Control-Allow-Origin", "*")
 
-  host_url = make_host_url(config, Kemal.config)
-
-  manifest = manifest.body
+  manifest = response.body
 
   if local
     manifest = manifest.gsub(/^https:\/\/r\d---.{11}\.c\.youtube\.com[^\n]*/m) do |match|
@@ -5350,7 +5253,7 @@ get "/api/manifest/hls_playlist/*" do |env|
 
       raw_params["local"] = "true"
 
-      "#{host_url}/videoplayback?#{raw_params}"
+      "#{HOST_URL}/videoplayback?#{raw_params}"
     end
   end
 
@@ -5376,7 +5279,7 @@ get "/latest_version" do |env|
   end
 
   id ||= env.params.query["id"]?
-  itag ||= env.params.query["itag"]?
+  itag ||= env.params.query["itag"]?.try &.to_i
 
   region = env.params.query["region"]?
 
@@ -5391,26 +5294,16 @@ get "/latest_version" do |env|
 
   video = get_video(id, PG_DB, region: region)
 
-  fmt_stream = video.fmt_stream(decrypt_function)
-  adaptive_fmts = video.adaptive_fmts(decrypt_function)
+  fmt = video.fmt_stream.find(nil) { |f| f["itag"].as_i == itag } || video.adaptive_fmts.find(nil) { |f| f["itag"].as_i == itag }
+  url = fmt.try &.["url"]?.try &.as_s
 
-  urls = (fmt_stream + adaptive_fmts).select { |fmt| fmt["itag"] == itag }
-  if urls.empty?
+  if !url
     env.response.status_code = 404
     next
-  elsif urls.size > 1
-    env.response.status_code = 409
-    next
   end
 
-  url = urls[0]["url"]
-  if local
-    url = URI.parse(url).full_path.not_nil!
-  end
-
-  if title
-    url += "&title=#{title}"
-  end
+  url = URI.parse(url).full_path.not_nil! if local
+  url = "#{url}&title=#{title}" if title
 
   env.redirect url
 end
@@ -5821,7 +5714,7 @@ get "/vi/:id/:name" do |env|
   headers = HTTP::Headers{":authority" => "i.ytimg.com"}
 
   if name == "maxres.jpg"
-    build_thumbnails(id, config, Kemal.config).each do |thumb|
+    build_thumbnails(id).each do |thumb|
       if YT_POOL.client &.head("/vi/#{id}/#{thumb[:url]}.jpg", headers).status_code == 200
         name = thumb[:url] + ".jpg"
         break

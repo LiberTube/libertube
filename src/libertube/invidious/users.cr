@@ -267,7 +267,7 @@ def subscribe_ajax(channel_id, action, env_headers)
   end
   headers = cookies.add_request_headers(headers)
 
-  if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+  if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[^"]+)"/)
     session_token = match["session_token"]
 
     headers["content-type"] = "application/x-www-form-urlencoded"
@@ -286,7 +286,7 @@ end
 #   headers = HTTP::Headers.new
 #   headers["Cookie"] = env_headers["Cookie"]
 #
-#   html = YT_POOL.client &.get("/view_all_playlists?disable_polymer=1", headers)
+#   html = YT_POOL.client &.get("/view_all_playlists", headers)
 #
 #   cookies = HTTP::Cookies.from_headers(headers)
 #   html.cookies.each do |cookie|
@@ -300,7 +300,7 @@ end
 #   end
 #   headers = cookies.add_request_headers(headers)
 #
-#   if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+#   if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[^"]+)"/)
 #     session_token = match["session_token"]
 #
 #     headers["content-type"] = "application/x-www-form-urlencoded"

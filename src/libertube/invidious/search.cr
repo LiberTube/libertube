@@ -1,5 +1,5 @@
 struct SearchVideo
-  def to_xml(host_url, auto_generated, query_params, xml : XML::Builder)
+  def to_xml(auto_generated, query_params, xml : XML::Builder)
     query_params["v"] = self.id
 
     xml.element("entry") do
@@ -7,22 +7,22 @@ struct SearchVideo
       xml.element("yt:videoId") { xml.text self.id }
       xml.element("yt:channelId") { xml.text self.ucid }
       xml.element("title") { xml.text self.title }
-      xml.element("link", rel: "alternate", href: "#{host_url}/watch?#{query_params}")
+      xml.element("link", rel: "alternate", href: "#{HOST_URL}/watch?#{query_params}")
 
       xml.element("author") do
         if auto_generated
           xml.element("name") { xml.text self.author }
-          xml.element("uri") { xml.text "#{host_url}/channel/#{self.ucid}" }
+          xml.element("uri") { xml.text "#{HOST_URL}/channel/#{self.ucid}" }
         else
           xml.element("name") { xml.text author }
-          xml.element("uri") { xml.text "#{host_url}/channel/#{ucid}" }
+          xml.element("uri") { xml.text "#{HOST_URL}/channel/#{ucid}" }
         end
       end
 
       xml.element("content", type: "xhtml") do
         xml.element("div", xmlns: "http://www.w3.org/1999/xhtml") do
-          xml.element("a", href: "#{host_url}/watch?#{query_params}") do
-            xml.element("img", src: "#{host_url}/vi/#{self.id}/mqdefault.jpg")
+          xml.element("a", href: "#{HOST_URL}/watch?#{query_params}") do
+            xml.element("img", src: "#{HOST_URL}/vi/#{self.id}/mqdefault.jpg")
           end
 
           xml.element("p", style: "word-break:break-word;white-space:pre-wrap") { xml.text html_to_content(self.description_html) }
@@ -33,7 +33,7 @@ struct SearchVideo
 
       xml.element("media:group") do
         xml.element("media:title") { xml.text self.title }
-        xml.element("media:thumbnail", url: "#{host_url}/vi/#{self.id}/mqdefault.jpg",
+        xml.element("media:thumbnail", url: "#{HOST_URL}/vi/#{self.id}/mqdefault.jpg",
           width: "320", height: "180")
         xml.element("media:description") { xml.text html_to_content(self.description_html) }
       end
@@ -44,17 +44,17 @@ struct SearchVideo
     end
   end
 
-  def to_xml(host_url, auto_generated, query_params, xml : XML::Builder | Nil = nil)
+  def to_xml(auto_generated, query_params, xml : XML::Builder | Nil = nil)
     if xml
-      to_xml(host_url, auto_generated, query_params, xml)
+      to_xml(HOST_URL, auto_generated, query_params, xml)
     else
       XML.build do |json|
-        to_xml(host_url, auto_generated, query_params, xml)
+        to_xml(HOST_URL, auto_generated, query_params, xml)
       end
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder)
+  def to_json(locale, json : JSON::Builder)
     json.object do
       json.field "type", "video"
       json.field "title", self.title
@@ -65,7 +65,7 @@ struct SearchVideo
       json.field "authorUrl", "/channel/#{self.ucid}"
 
       json.field "videoThumbnails" do
-        generate_thumbnails(json, self.id, config, kemal_config)
+        generate_thumbnails(json, self.id)
       end
 
       json.field "description", html_to_content(self.description_html)
@@ -78,17 +78,26 @@ struct SearchVideo
       json.field "liveNow", self.live_now
       json.field "paid", self.paid
       json.field "premium", self.premium
+      json.field "isUpcoming", self.is_upcoming
+
+      if self.premiere_timestamp
+        json.field "premiereTimestamp", self.premiere_timestamp.try &.to_unix
+      end
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+  def to_json(locale, json : JSON::Builder | Nil = nil)
     if json
-      to_json(locale, config, kemal_config, json)
+      to_json(locale, json)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json)
+        to_json(locale, json)
       end
     end
+  end
+
+  def is_upcoming
+    premiere_timestamp ? true : false
   end
 
   db_mapping({
@@ -116,7 +125,7 @@ struct SearchPlaylistVideo
 end
 
 struct SearchPlaylist
-  def to_json(locale, config, kemal_config, json : JSON::Builder)
+  def to_json(locale, json : JSON::Builder)
     json.object do
       json.field "type", "playlist"
       json.field "title", self.title
@@ -137,7 +146,7 @@ struct SearchPlaylist
               json.field "lengthSeconds", video.length_seconds
 
               json.field "videoThumbnails" do
-                generate_thumbnails(json, video.id, config, Kemal.config)
+                generate_thumbnails(json, video.id)
               end
             end
           end
@@ -146,12 +155,12 @@ struct SearchPlaylist
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+  def to_json(locale, json : JSON::Builder | Nil = nil)
     if json
-      to_json(locale, config, kemal_config, json)
+      to_json(locale, json)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json)
+        to_json(locale, json)
       end
     end
   end
@@ -168,7 +177,7 @@ struct SearchPlaylist
 end
 
 struct SearchChannel
-  def to_json(locale, config, kemal_config, json : JSON::Builder)
+  def to_json(locale, json : JSON::Builder)
     json.object do
       json.field "type", "channel"
       json.field "author", self.author
@@ -198,12 +207,12 @@ struct SearchChannel
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+  def to_json(locale, json : JSON::Builder | Nil = nil)
     if json
-      to_json(locale, config, kemal_config, json)
+      to_json(locale, json)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json)
+        to_json(locale, json)
       end
     end
   end
@@ -222,61 +231,36 @@ end
 alias SearchItem = SearchVideo | SearchChannel | SearchPlaylist
 
 def channel_search(query, page, channel)
-  response = YT_POOL.client &.get("/channel/#{channel}?disable_polymer=1&hl=en&gl=US")
-  document = XML.parse_html(response.body)
-  canonical = document.xpath_node(%q(//link[@rel="canonical"]))
+  response = YT_POOL.client &.get("/channel/#{channel}?hl=en&gl=US")
+  response = YT_POOL.client &.get("/user/#{channel}?hl=en&gl=US") if response.headers["location"]?
+  response = YT_POOL.client &.get("/c/#{channel}?hl=en&gl=US") if response.headers["location"]?
 
-  if !canonical
-    response = YT_POOL.client &.get("/c/#{channel}?disable_polymer=1&hl=en&gl=US")
-    document = XML.parse_html(response.body)
-    canonical = document.xpath_node(%q(//link[@rel="canonical"]))
-  end
+  ucid = response.body.match(/\\"channelId\\":\\"(?<ucid>[^\\]+)\\"/).try &.["ucid"]?
 
-  if !canonical
-    response = YT_POOL.client &.get("/user/#{channel}?disable_polymer=1&hl=en&gl=US")
-    document = XML.parse_html(response.body)
-    canonical = document.xpath_node(%q(//link[@rel="canonical"]))
-  end
-
-  if !canonical
-    return 0, [] of SearchItem
-  end
-
-  ucid = canonical["href"].split("/")[-1]
+  return 0, [] of SearchItem if !ucid
 
   url = produce_channel_search_url(ucid, query, page)
   response = YT_POOL.client &.get(url)
-  json = JSON.parse(response.body)
+  initial_data = JSON.parse(response.body).as_a.find &.["response"]?
+  return 0, [] of SearchItem if !initial_data
+  author = initial_data["response"]?.try &.["metadata"]?.try &.["channelMetadataRenderer"]?.try &.["title"]?.try &.as_s
+  items = extract_items(initial_data.as_h, author, ucid)
 
-  if json["content_html"]? && !json["content_html"].as_s.empty?
-    document = XML.parse_html(json["content_html"].as_s)
-    nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
-
-    count = nodeset.size
-    items = extract_items(nodeset)
-  else
-    count = 0
-    items = [] of SearchItem
-  end
-
-  return count, items
+  return items.size, items
 end
 
 def search(query, page = 1, search_params = produce_search_params(content_type: "all"), region = nil)
-  if query.empty?
-    return {0, [] of SearchItem}
-  end
+  return 0, [] of SearchItem if query.empty?
 
-  html = YT_POOL.client(region, &.get("/results?q=#{URI.encode_www_form(query)}&page=#{page}&sp=#{search_params}&hl=en&disable_polymer=1").body)
-  if html.empty?
-    return {0, [] of SearchItem}
-  end
+  body = YT_POOL.client(region, &.get("/results?q=#{URI.encode_www_form(query)}&page=#{page}&sp=#{search_params}&hl=en").body)
+  return 0, [] of SearchItem if body.empty?
 
-  html = XML.parse_html(html)
-  nodeset = html.xpath_nodes(%q(//ol[@class="item-section"]/li))
-  items = extract_items(nodeset)
+  initial_data = extract_initial_data(body)
+  items = extract_items(initial_data)
 
-  return {nodeset.size, items}
+  # initial_data["estimatedResults"]?.try &.as_s.to_i64
+
+  return items.size, items
 end
 
 def produce_search_params(sort : String = "relevance", date : String = "", content_type : String = "",
@@ -382,12 +366,9 @@ def produce_channel_search_url(ucid, query, page)
       "2:string" => ucid,
       "3:base64" => {
         "2:string"  => "search",
-        "6:varint"  => 2_i64,
         "7:varint"  => 1_i64,
-        "12:varint" => 1_i64,
-        "13:string" => "",
-        "23:varint" => 0_i64,
         "15:string" => "#{page}",
+        "23:varint" => 0_i64,
       },
       "11:string" => query,
     },

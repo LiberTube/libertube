@@ -8,7 +8,7 @@ def add_yt_headers(request)
   request.headers["accept-language"] ||= "en-us,en;q=0.5"
   return if request.resource.starts_with? "/sorry/index"
   request.headers["x-youtube-client-name"] ||= "1"
-  request.headers["x-youtube-client-version"] ||= "1.20180719"
+  request.headers["x-youtube-client-version"] ||= "2.20200609"
   if !CONFIG.cookies.empty?
     request.headers["cookie"] = "#{(CONFIG.cookies.map { |c| "#{c.name}=#{c.value}" }).join("; ")}; #{request.headers["cookie"]?}"
   end
@@ -332,7 +332,7 @@ end
 def sha256(text)
   digest = OpenSSL::Digest.new("SHA256")
   digest << text
-  return digest.hexdigest
+  return digest.final.hexstring
 end
 
 def subscribe_pubsub(topic, key, config)
@@ -351,10 +351,8 @@ def subscribe_pubsub(topic, key, config)
   nonce = Random::Secure.hex(4)
   signature = "#{time}:#{nonce}"
 
-  host_url = make_host_url(config, Kemal.config)
-
   body = {
-    "hub.callback"      => "#{host_url}/feed/webhook/v1:#{time}:#{nonce}:#{OpenSSL::HMAC.hexdigest(:sha1, key, signature)}",
+    "hub.callback"      => "#{HOST_URL}/feed/webhook/v1:#{time}:#{nonce}:#{OpenSSL::HMAC.hexdigest(:sha1, key, signature)}",
     "hub.topic"         => "https://www.youtube.com/xml/feeds/videos.xml?#{topic}",
     "hub.verify"        => "async",
     "hub.mode"          => "subscribe",
