@@ -17,7 +17,7 @@ dependencies:
     version: ~> 0.16.0
   kemal:
     github: kemalcr/kemal
-    branch: master
+    commit: dfe7dca08f4c9a9456d6132af5f6b59fcd6865e4
   pool:
     github: ysbaddaden/pool
     version: ~> 0.2.3
@@ -26,8 +26,8 @@ dependencies:
     version: ~> 0.1.2
   lsquic:
     github: omarroth/lsquic.cr
-    branch: dev
+    version: ~> 2.18.1
 
-crystal: 0.35.0
+crystal: 0.35.1
 
 license: AGPLv3

@@ -1203,17 +1203,17 @@ post "/playlist_ajax" do |env|
       end
     end
 
-    playlist_video = PlaylistVideo.new(
-      title: video.title,
-      id: video.id,
-      author: video.author,
-      ucid: video.ucid,
+    playlist_video = PlaylistVideo.new({
+      title:          video.title,
+      id:             video.id,
+      author:         video.author,
+      ucid:           video.ucid,
       length_seconds: video.length_seconds,
-      published: video.published,
-      plid: playlist_id,
-      live_now: video.live_now,
-      index: Random::Secure.rand(0_i64..Int64::MAX)
-    )
+      published:      video.published,
+      plid:           playlist_id,
+      live_now:       video.live_now,
+      index:          Random::Secure.rand(0_i64..Int64::MAX),
+    })
 
     video_array = playlist_video.to_a
     args = arg_array(video_array)
@@ -1839,8 +1839,8 @@ post "/login" do |env|
       sid = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
       user, sid = create_user(sid, email, password)
       user_array = user.to_a
+      user_array[4] = user_array[4].to_json # User preferences
 
-      user_array[4] = user_array[4].to_json
       args = arg_array(user_array)
 
       PG_DB.exec("INSERT INTO users VALUES (#{args})", args: user_array)
@@ -2427,18 +2427,39 @@ get "/subscription_manager" do |env|
   end
 
   subscriptions = PG_DB.query_all("SELECT * FROM channels WHERE id = ANY(#{values})", as: InvidiousChannel)
-
   subscriptions.sort_by! { |channel| channel.author.downcase }
 
   if action_takeout
     if format == "json"
       env.response.content_type = "application/json"
       env.response.headers["content-disposition"] = "attachment"
-      next {
-        "subscriptions" => user.subscriptions,
-        "watch_history" => user.watched,
-        "preferences"   => user.preferences,
-      }.to_json
+      playlists = PG_DB.query_all("SELECT * FROM playlists WHERE author = $1 AND id LIKE 'IV%' ORDER BY created", user.email, as: InvidiousPlaylist)
+
+      next JSON.build do |json|
+        json.object do
+          json.field "subscriptions", user.subscriptions
+          json.field "watch_history", user.watched
+          json.field "preferences", user.preferences
+          json.field "playlists" do
+            json.array do
+              playlists.each do |playlist|
+                json.object do
+                  json.field "title", playlist.title
+                  json.field "description", html_to_content(playlist.description_html)
+                  json.field "privacy", playlist.privacy.to_s
+                  json.field "videos" do
+                    json.array do
+                      PG_DB.query_all("SELECT id FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 500", playlist.id, playlist.index, as: String).each do |video_id|
+                        json.string video_id
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
     else
       env.response.content_type = "application/xml"
       env.response.headers["content-disposition"] = "attachment"
@@ -2498,41 +2519,11 @@ post "/data_control" do |env|
   if user
     user = user.as(User)
 
-    spawn do
-      # Since import can take a while, if we're not done after 20 seconds
-      # push out content to prevent timeout.
-
-      # Interesting to note is that Chrome will try to render before the content has finished loading,
-      # which is why we include a loading icon. Firefox and its derivatives will not see this page,
-      # instead redirecting immediately once the connection has closed.
-
-      # https://stackoverflow.com/q/2091239 is helpful but not directly applicable here.
-
-      sleep 20.seconds
-      env.response.puts %(<meta http-equiv="refresh" content="0; url=#{referer}">)
-      env.response.puts %(<link rel="stylesheet" href="/css/ionicons.min.css?v=#{ASSET_COMMIT}">)
-      env.response.puts %(<link rel="stylesheet" href="/css/default.css?v=#{ASSET_COMMIT}">)
-      if env.get("preferences").as(Preferences).dark_mode == "dark"
-        env.response.puts %(<link rel="stylesheet" href="/css/darktheme.css?v=#{ASSET_COMMIT}">)
-      else
-        env.response.puts %(<link rel="stylesheet" href="/css/lighttheme.css?v=#{ASSET_COMMIT}">)
-      end
-      env.response.puts %(<h3><div class="loading"><i class="icon ion-ios-refresh"></i></div></h3>)
-      env.response.flush
-
-      loop do
-        env.response.puts %(<!-- keepalive #{Time.utc.to_unix} -->)
-        env.response.flush
-
-        sleep (20 + rand(11)).seconds
-      end
-    end
+    # TODO: Find a way to prevent browser timeout
 
     HTTP::FormData.parse(env.request) do |part|
       body = part.body.gets_to_end
-      if body.empty?
-        next
-      end
+      next if body.empty?
 
       # TODO: Unify into single import based on content-type
       case part.name
@@ -2555,8 +2546,54 @@ post "/data_control" do |env|
         end
 
         if body["preferences"]?
-          user.preferences = Preferences.from_json(body["preferences"].to_json, user.preferences)
+          user.preferences = Preferences.from_json(body["preferences"].to_json)
           PG_DB.exec("UPDATE users SET preferences = $1 WHERE email = $2", user.preferences.to_json, user.email)
+        end
+
+        if playlists = body["playlists"]?.try &.as_a?
+          playlists.each do |item|
+            title = item["title"]?.try &.as_s?.try &.delete("<>")
+            description = item["description"]?.try &.as_s?.try &.delete("\r")
+            privacy = item["privacy"]?.try &.as_s?.try { |privacy| PlaylistPrivacy.parse? privacy }
+
+            next if !title
+            next if !description
+            next if !privacy
+
+            playlist = create_playlist(PG_DB, title, privacy, user)
+            PG_DB.exec("UPDATE playlists SET description = $1 WHERE id = $2", description, playlist.id)
+
+            videos = item["videos"]?.try &.as_a?.try &.each_with_index do |video_id, idx|
+              raise "Playlist cannot have more than 500 videos" if idx > 500
+
+              video_id = video_id.try &.as_s?
+              next if !video_id
+
+              begin
+                video = get_video(video_id, PG_DB)
+              rescue ex
+                next
+              end
+
+              playlist_video = PlaylistVideo.new({
+                title:          video.title,
+                id:             video.id,
+                author:         video.author,
+                ucid:           video.ucid,
+                length_seconds: video.length_seconds,
+                published:      video.published,
+                plid:           playlist.id,
+                live_now:       video.live_now,
+                index:          Random::Secure.rand(0_i64..Int64::MAX),
+              })
+
+              video_array = playlist_video.to_a
+              args = arg_array(video_array)
+
+              PG_DB.exec("INSERT INTO playlist_videos VALUES (#{args})", args: video_array)
+              PG_DB.exec("UPDATE playlists SET index = array_append(index, $1), video_count = cardinality(index), updated = $2 WHERE id = $3", playlist_video.index, Time.utc, playlist.id)
+            end
+          end
         end
       when "import_youtube"
         subscriptions = XML.parse(body)
@@ -3119,20 +3156,20 @@ get "/feed/channel/:ucid" do |env|
     description_html = entry.xpath_node("group/description").not_nil!.to_s
     views = entry.xpath_node("group/community/statistics").not_nil!.["views"].to_i64
 
-    SearchVideo.new(
-      title: title,
-      id: video_id,
-      author: author,
-      ucid: ucid,
-      published: published,
-      views: views,
-      description_html: description_html,
-      length_seconds: 0,
-      live_now: false,
-      paid: false,
-      premium: false,
-      premiere_timestamp: nil
-    )
+    SearchVideo.new({
+      title:              title,
+      id:                 video_id,
+      author:             author,
+      ucid:               ucid,
+      published:          published,
+      views:              views,
+      description_html:   description_html,
+      length_seconds:     0,
+      live_now:           false,
+      paid:               false,
+      premium:            false,
+      premiere_timestamp: nil,
+    })
   end
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
@@ -3362,18 +3399,18 @@ post "/feed/webhook/:token" do |env|
       }.to_json
       PG_DB.exec("NOTIFY notifications, E'#{payload}'")
 
-      video = ChannelVideo.new(
-        id: id,
-        title: video.title,
-        published: published,
-        updated: updated,
-        ucid: video.ucid,
-        author: author,
-        length_seconds: video.length_seconds,
-        live_now: video.live_now,
+      video = ChannelVideo.new({
+        id:                 id,
+        title:              video.title,
+        published:          published,
+        updated:            updated,
+        ucid:               video.ucid,
+        author:             author,
+        length_seconds:     video.length_seconds,
+        live_now:           video.live_now,
         premiere_timestamp: video.premiere_timestamp,
-        views: video.views,
-      )
+        views:              video.views,
+      })
 
       PG_DB.query_all("UPDATE users SET feed_needs_update = true, notifications = array_append(notifications, $1) \
         WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)",
@@ -4631,7 +4668,7 @@ post "/api/v1/auth/preferences" do |env|
   user = env.get("user").as(User)
 
   begin
-    preferences = Preferences.from_json(env.request.body || "{}", user.preferences)
+    preferences = Preferences.from_json(env.request.body || "{}")
   rescue
     preferences = user.preferences
   end
@@ -4885,17 +4922,17 @@ post "/api/v1/auth/playlists/:plid/videos" do |env|
     next error_message
   end
 
-  playlist_video = PlaylistVideo.new(
-    title: video.title,
-    id: video.id,
-    author: video.author,
-    ucid: video.ucid,
+  playlist_video = PlaylistVideo.new({
+    title:          video.title,
+    id:             video.id,
+    author:         video.author,
+    ucid:           video.ucid,
     length_seconds: video.length_seconds,
-    published: video.published,
-    plid: plid,
-    live_now: video.live_now,
-    index: Random::Secure.rand(0_i64..Int64::MAX)
-  )
+    published:      video.published,
+    plid:           plid,
+    live_now:       video.live_now,
+    index:          Random::Secure.rand(0_i64..Int64::MAX),
+  })
 
   video_array = playlist_video.to_a
   args = arg_array(video_array)
