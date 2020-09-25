@@ -97,6 +97,14 @@ struct ChannelVideo
       end
     end
   end
+
+  def to_tuple
+    {% begin %}
+      {
+        {{*@type.instance_vars.map { |var| var.name }}}
+      }
+    {% end %}
+  end
 end
 
 struct AboutRelatedChannel
@@ -213,8 +221,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
 
   page = 1
 
-  url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated)
-  response = YT_POOL.client &.get(url)
+  response = get_channel_videos_response(ucid, page, auto_generated: auto_generated)
 
   videos = [] of SearchVideo
   begin
@@ -261,28 +268,15 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
       views:              views,
     })
 
-    emails = db.query_all("UPDATE users SET notifications = array_append(notifications, $1) \
-      WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
-      video.id, video.published, ucid, as: String)
-
-    video_array = video.to_a
-    args = arg_array(video_array)
-
     # We don't include the 'premiere_timestamp' here because channel pages don't include them,
     # meaning the above timestamp is always null
-    db.exec("INSERT INTO channel_videos VALUES (#{args}) \
+    was_insert = db.query_one("INSERT INTO channel_videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
       ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
       updated = $4, ucid = $5, author = $6, length_seconds = $7, \
-      live_now = $8, views = $10", args: video_array)
+      live_now = $8, views = $10 returning (xmax=0) as was_insert", *video.to_tuple, as: Bool)
 
-    # Update all users affected by insert
-    if emails.empty?
-      values = "'{}'"
-    else
-      values = "VALUES #{emails.map { |email| %((E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}')) }.join(",")}"
-    end
-
-    db.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
+    db.exec("UPDATE users SET notifications = array_append(notifications, $1), \
+      feed_needs_update = true WHERE $2 = ANY(subscriptions)", video.id, video.ucid) if was_insert
   end
 
   if pull_all_videos
@@ -291,8 +285,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
     ids = [] of String
 
     loop do
-      url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated)
-      response = YT_POOL.client &.get(url)
+      response = get_channel_videos_response(ucid, page, auto_generated: auto_generated)
       initial_data = JSON.parse(response.body).as_a.find &.["response"]?
       raise "Could not extract JSON" if !initial_data
       videos = extract_videos(initial_data.as_h, author, ucid)
@@ -317,39 +310,19 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
         # We are notified of Red videos elsewhere (PubSub), which includes a correct published date,
         # so since they don't provide a published date here we can safely ignore them.
         if Time.utc - video.published > 1.minute
-          emails = db.query_all("UPDATE users SET notifications = array_append(notifications, $1) \
-            WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
-            video.id, video.published, video.ucid, as: String)
-
-          video_array = video.to_a
-          args = arg_array(video_array)
-
-          # We don't update the 'premire_timestamp' here because channel pages don't include them
-          db.exec("INSERT INTO channel_videos VALUES (#{args}) \
+          was_insert = db.query_one("INSERT INTO channel_videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
             ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
             updated = $4, ucid = $5, author = $6, length_seconds = $7, \
-            live_now = $8, views = $10", args: video_array)
+            live_now = $8, views = $10 returning (xmax=0) as was_insert", *video.to_tuple, as: Bool)
 
-          # Update all users affected by insert
-          if emails.empty?
-            values = "'{}'"
-          else
-            values = "VALUES #{emails.map { |email| %((E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}')) }.join(",")}"
-          end
-
-          db.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
+          db.exec("UPDATE users SET notifications = array_append(notifications, $1), \
+            feed_needs_update = true WHERE $2 = ANY(subscriptions)", video.id, video.ucid) if was_insert
         end
       end
 
-      if count < 25
-        break
-      end
-
+      break if count < 25
       page += 1
     end
-
-    # When a video is deleted from a channel, we find and remove it here
-    db.exec("DELETE FROM channel_videos * WHERE NOT id = ANY ('{#{ids.map { |id| %("#{id}") }.join(",")}}') AND ucid = $1", ucid)
   end
 
   channel = InvidiousChannel.new({
@@ -396,7 +369,7 @@ def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
   return items, continuation
 end
 
-def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "newest")
+def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "newest", v2 = false)
   object = {
     "80226972:embedded" => {
       "2:string" => ucid,
@@ -411,18 +384,33 @@ def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "
     },
   }
 
-  if auto_generated
-    seed = Time.unix(1525757349)
-    until seed >= Time.utc
-      seed += 1.month
-    end
-    timestamp = seed - (page - 1).months
+  if !v2
+    if auto_generated
+      seed = Time.unix(1525757349)
+      until seed >= Time.utc
+        seed += 1.month
+      end
+      timestamp = seed - (page - 1).months
 
-    object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0x36_i64
-    object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = "#{timestamp.to_unix}"
+      object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0x36_i64
+      object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = "#{timestamp.to_unix}"
+    else
+      object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0_i64
+      object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = "#{page}"
+    end
   else
     object["80226972:embedded"]["3:base64"].as(Hash)["4:varint"] = 0_i64
-    object["80226972:embedded"]["3:base64"].as(Hash)["15:string"] = "#{page}"
+
+    object["80226972:embedded"]["3:base64"].as(Hash)["61:string"] = Base64.urlsafe_encode(Protodec::Any.from_json(Protodec::Any.cast_json({
+      "1:embedded" => {
+        "1:varint" => 6307666885028338688_i64,
+        "2:embedded" => {
+          "1:string" => Base64.urlsafe_encode(Protodec::Any.from_json(Protodec::Any.cast_json({
+            "1:varint" => 30_i64 * (page - 1),
+          }))),
+        },
+      },
+    })))
   end
 
   case sort_by
@@ -901,12 +889,28 @@ def get_about_info(ucid, locale)
   })
 end
 
+def get_channel_videos_response(ucid, page = 1, auto_generated = nil, sort_by = "newest")
+  url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated, sort_by: sort_by, v2: false)
+  response = YT_POOL.client &.get(url)
+  initial_data = JSON.parse(response.body).as_a.find &.["response"]?
+  return response if !initial_data
+  needs_v2 = initial_data
+    .try &.["response"]?.try &.["alerts"]?
+    .try &.as_a.any? { |alert|
+      alert.try &.["alertRenderer"]?.try &.["type"]?.try { |t| t == "ERROR" }
+    }
+  if needs_v2
+    url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated, sort_by: sort_by, v2: true)
+    response = YT_POOL.client &.get(url)
+  end
+  response
+end
+
 def get_60_videos(ucid, author, page, auto_generated, sort_by = "newest")
   videos = [] of SearchVideo
 
   2.times do |i|
-    url = produce_channel_videos_url(ucid, page * 2 + (i - 1), auto_generated: auto_generated, sort_by: sort_by)
-    response = YT_POOL.client &.get(url)
+    response = get_channel_videos_response(ucid, page * 2 + (i - 1), auto_generated: auto_generated, sort_by: sort_by)
     initial_data = JSON.parse(response.body).as_a.find &.["response"]?
     break if !initial_data
     videos.concat extract_videos(initial_data.as_h, author, ucid)
@@ -916,8 +920,7 @@ def get_60_videos(ucid, author, page, auto_generated, sort_by = "newest")
 end
 
 def get_latest_videos(ucid)
-  url = produce_channel_videos_url(ucid, 0)
-  response = YT_POOL.client &.get(url)
+  response = get_channel_videos_response(ucid, 1)
   initial_data = JSON.parse(response.body).as_a.find &.["response"]?
   return [] of SearchVideo if !initial_data
   author = initial_data["response"]?.try &.["metadata"]?.try &.["channelMetadataRenderer"]?.try &.["title"]?.try &.as_s
