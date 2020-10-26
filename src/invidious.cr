@@ -27,6 +27,8 @@ require "compress/zip"
 require "protodec/utils"
 require "./invidious/helpers/*"
 require "./invidious/*"
+require "./invidious/routes/**"
+require "./invidious/jobs/**"
 
 ENV_CONFIG_NAME = "INVIDIOUS_CONFIG"
 
@@ -157,99 +159,39 @@ end
 
 # Start jobs
 
-refresh_channels(PG_DB, logger, config)
-refresh_feeds(PG_DB, logger, config)
-subscribe_to_feeds(PG_DB, logger, HMAC_KEY, config)
+Invidious::Jobs.register Invidious::Jobs::RefreshChannelsJob.new(PG_DB, logger, config)
+Invidious::Jobs.register Invidious::Jobs::RefreshFeedsJob.new(PG_DB, logger, config)
+Invidious::Jobs.register Invidious::Jobs::SubscribeToFeedsJob.new(PG_DB, logger, config, HMAC_KEY)
+Invidious::Jobs.register Invidious::Jobs::PullPopularVideosJob.new(PG_DB)
+Invidious::Jobs.register Invidious::Jobs::UpdateDecryptFunctionJob.new
 
-statistics = {
-  "error" => "Statistics are not availabile.",
-}
 if config.statistics_enabled
-  spawn do
-    statistics = {
-      "version"           => "2.0",
-      "software"          => SOFTWARE,
-      "openRegistrations" => config.registration_enabled,
-      "usage"             => {
-        "users" => {
-          "total"          => PG_DB.query_one("SELECT count(*) FROM users", as: Int64),
-          "activeHalfyear" => PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '6 months'", as: Int64),
-          "activeMonth"    => PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '1 month'", as: Int64),
-        },
-      },
-      "metadata" => {
-        "updatedAt"              => Time.utc.to_unix,
-        "lastChannelRefreshedAt" => PG_DB.query_one?("SELECT updated FROM channels ORDER BY updated DESC LIMIT 1", as: Time).try &.to_unix || 0_i64,
-      },
-    }
-
-    loop do
-      sleep 1.minute
-      Fiber.yield
-
-      statistics["usage"].as(Hash)["users"].as(Hash)["total"] = PG_DB.query_one("SELECT count(*) FROM users", as: Int64)
-      statistics["usage"].as(Hash)["users"].as(Hash)["activeHalfyear"] = PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '6 months'", as: Int64)
-      statistics["usage"].as(Hash)["users"].as(Hash)["activeMonth"] = PG_DB.query_one("SELECT count(*) FROM users WHERE CURRENT_TIMESTAMP - updated < '1 month'", as: Int64)
-      statistics["metadata"].as(Hash(String, Int64))["updatedAt"] = Time.utc.to_unix
-      statistics["metadata"].as(Hash(String, Int64))["lastChannelRefreshedAt"] = PG_DB.query_one?("SELECT updated FROM channels ORDER BY updated DESC LIMIT 1", as: Time).try &.to_unix || 0_i64
-    end
-  end
+  Invidious::Jobs.register Invidious::Jobs::StatisticsRefreshJob.new(PG_DB, config, SOFTWARE)
 end
 
-popular_videos = [] of ChannelVideo
-spawn do
-  pull_popular_videos(PG_DB) do |videos|
-    popular_videos = videos
-  end
-end
-
-DECRYPT_FUNCTION = [] of {SigProc, Int32}
-spawn do
-  update_decrypt_function do |function|
-    DECRYPT_FUNCTION.clear
-    function.each { |i| DECRYPT_FUNCTION << i }
-  end
-end
-
-if CONFIG.captcha_key
-  spawn do
-    bypass_captcha(CONFIG.captcha_key, logger) do |cookies|
-      cookies.each do |cookie|
-        config.cookies << cookie
-      end
-
-      # Persist cookies between runs
-      CONFIG.cookies = config.cookies
-      File.write("config/config.yml", config.to_yaml)
-    end
-  end
+if config.captcha_key
+  Invidious::Jobs.register Invidious::Jobs::BypassCaptchaJob.new(logger, config)
 end
 
 connection_channel = Channel({Bool, Channel(PQ::Notification)}).new(32)
-spawn do
-  connections = [] of Channel(PQ::Notification)
+Invidious::Jobs.register Invidious::Jobs::NotificationJob.new(connection_channel, PG_URL)
 
-  PG.connect_listen(PG_URL, "notifications") { |event| connections.each { |connection| connection.send(event) } }
+Invidious::Jobs.start_all
 
-  loop do
-    action, connection = connection_channel.receive
-
-    case action
-    when true
-      connections << connection
-    when false
-      connections.delete(connection)
-    end
-  end
+def popular_videos
+  Invidious::Jobs::PullPopularVideosJob::POPULAR_VIDEOS.get
 end
 
+DECRYPT_FUNCTION = Invidious::Jobs::UpdateDecryptFunctionJob::DECRYPT_FUNCTION
+
 before_all do |env|
-  begin
-    preferences = Preferences.from_json(env.request.cookies["PREFS"]?.try &.value || "{}")
+  preferences = begin
+    Preferences.from_json(env.request.cookies["PREFS"]?.try &.value || "{}")
   rescue
-    preferences = Preferences.from_json("{}")
+    Preferences.from_json("{}")
   end
 
+  env.set "preferences", preferences
   env.response.headers["X-XSS-Protection"] = "1; mode=block"
   env.response.headers["X-Content-Type-Options"] = "nosniff"
   extra_media_csp = ""
@@ -296,6 +238,7 @@ before_all do |env|
         }, HMAC_KEY, PG_DB, 1.week)
 
         preferences = user.preferences
+        env.set "preferences", preferences
 
         env.set "sid", sid
         env.set "csrf_token", csrf_token
@@ -317,6 +260,7 @@ before_all do |env|
         }, HMAC_KEY, PG_DB, 1.week)
 
         preferences = user.preferences
+        env.set "preferences", preferences
 
         env.set "sid", sid
         env.set "csrf_token", csrf_token
@@ -334,7 +278,6 @@ before_all do |env|
   preferences.dark_mode = dark_mode
   preferences.thin_mode = thin_mode
   preferences.locale = locale
-  env.set "preferences", preferences
 
   current_page = env.request.path
   if env.request.query
@@ -350,44 +293,9 @@ before_all do |env|
   env.set "current_page", URI.encode_www_form(current_page)
 end
 
-get "/" do |env|
-  preferences = env.get("preferences").as(Preferences)
-  locale = LOCALES[preferences.locale]?
-  user = env.get? "user"
-
-  case preferences.default_home
-  when ""
-    templated "empty"
-  when "Popular"
-    templated "popular"
-  when "Trending"
-    env.redirect "/feed/trending"
-  when "Subscriptions"
-    if user
-      env.redirect "/feed/subscriptions"
-    else
-      templated "popular"
-    end
-  when "Playlists"
-    if user
-      env.redirect "/view_all_playlists"
-    else
-      templated "popular"
-    end
-  else
-    templated "empty"
-  end
-end
-
-get "/privacy" do |env|
-  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
-  templated "privacy"
-end
-
-get "/licenses" do |env|
-  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
-  rendered "licenses"
-end
+Invidious::Routing.get "/", Invidious::Routes::Home
+Invidious::Routing.get "/privacy", Invidious::Routes::Privacy
+Invidious::Routing.get "/licenses", Invidious::Routes::Licenses
 
 # Videos
 
@@ -3689,12 +3597,7 @@ get "/api/v1/stats" do |env|
     next error_message
   end
 
-  if statistics["error"]?
-    env.response.status_code = 500
-    next statistics.to_json
-  end
-
-  statistics.to_json
+  Invidious::Jobs::StatisticsRefreshJob::STATISTICS.to_json
 end
 
 # YouTube provides "storyboards", which are sprites containing x * y
@@ -3758,7 +3661,10 @@ get "/api/v1/storyboards/:id" do |env|
     end_time = storyboard[:interval].milliseconds
 
     storyboard[:storyboard_count].times do |i|
-      url = storyboard[:url].gsub("$M", i).gsub("https://i9.ytimg.com", HOST_URL)
+      url = storyboard[:url]
+      authority = /(i\d?).ytimg.com/.match(url).not_nil![1]?
+      url = storyboard[:url].gsub("$M", i).gsub(%r(https://i\d?.ytimg.com/sb/), "")
+      url = "#{HOST_URL}/sb/#{authority}/#{url}"
 
       storyboard[:storyboard_height].times do |j|
         storyboard[:storyboard_width].times do |k|
@@ -5624,14 +5530,14 @@ get "/ggpht/*" do |env|
   end
 end
 
-options "/sb/:id/:storyboard/:index" do |env|
-  env.response.headers.delete("Content-Type")
+options "/sb/:authority/:id/:storyboard/:index" do |env|
   env.response.headers["Access-Control-Allow-Origin"] = "*"
   env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
   env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
 end
 
-get "/sb/:id/:storyboard/:index" do |env|
+get "/sb/:authority/:id/:storyboard/:index" do |env|
+  authority = env.params.url["authority"]
   id = env.params.url["id"]
   storyboard = env.params.url["storyboard"]
   index = env.params.url["index"]
@@ -5640,11 +5546,7 @@ get "/sb/:id/:storyboard/:index" do |env|
 
   headers = HTTP::Headers.new
 
-  if storyboard.starts_with? "storyboard_live"
-    headers[":authority"] = "i.ytimg.com"
-  else
-    headers[":authority"] = "i9.ytimg.com"
-  end
+  headers[":authority"] = "#{authority}.ytimg.com"
 
   REQUEST_HEADERS_WHITELIST.each do |header|
     if env.request.headers[header]?
