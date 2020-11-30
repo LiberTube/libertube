@@ -208,7 +208,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
 
   author = rss.xpath_node(%q(//feed/title))
   if !author
-    raise translate(locale, "Deleted or invalid channel")
+    raise InfoException.new("Deleted or invalid channel")
   end
   author = author.content
 
@@ -226,13 +226,14 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
   videos = [] of SearchVideo
   begin
     initial_data = JSON.parse(response.body).as_a.find &.["response"]?
-    raise "Could not extract JSON" if !initial_data
+    raise InfoException.new("Could not extract channel JSON") if !initial_data
     videos = extract_videos(initial_data.as_h, author, ucid)
   rescue ex
     if response.body.includes?("To continue with your YouTube experience, please fill out the form below.") ||
        response.body.includes?("https://www.google.com/sorry/index")
-      raise "Could not extract channel info. Instance is likely blocked."
+      raise InfoException.new("Could not extract channel info. Instance is likely blocked.")
     end
+    raise ex
   end
 
   rss.xpath_nodes("//feed/entry").each do |entry|
@@ -287,7 +288,7 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
     loop do
       response = get_channel_videos_response(ucid, page, auto_generated: auto_generated)
       initial_data = JSON.parse(response.body).as_a.find &.["response"]?
-      raise "Could not extract JSON" if !initial_data
+      raise InfoException.new("Could not extract channel JSON") if !initial_data
       videos = extract_videos(initial_data.as_h, author, ucid)
 
       count = videos.size
@@ -507,8 +508,7 @@ def fetch_channel_community(ucid, continuation, locale, format, thin_mode)
   end
 
   if response.status_code != 200
-    error_message = translate(locale, "This channel does not exist.")
-    raise error_message
+    raise InfoException.new("This channel does not exist.")
   end
 
   ucid = response.body.match(/https:\/\/www.youtube.com\/channel\/(?<ucid>UC[a-zA-Z0-9_-]{22})/).not_nil!["ucid"]
@@ -518,7 +518,7 @@ def fetch_channel_community(ucid, continuation, locale, format, thin_mode)
     body = initial_data["contents"]?.try &.["twoColumnBrowseResultsRenderer"]["tabs"].as_a.select { |tab| tab["tabRenderer"]?.try &.["selected"].as_bool.== true }[0]?
 
     if !body
-      raise "Could not extract community tab."
+      raise InfoException.new("Could not extract community tab.")
     end
 
     body = body["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]
@@ -540,7 +540,7 @@ def fetch_channel_community(ucid, continuation, locale, format, thin_mode)
            body["response"]["continuationContents"]["backstageCommentsContinuation"]?
 
     if !body
-      raise "Could not extract continuation."
+      raise InfoException.new("Could not extract continuation.")
     end
   end
 
@@ -551,7 +551,7 @@ def fetch_channel_community(ucid, continuation, locale, format, thin_mode)
     error_message = (message["text"]["simpleText"]? ||
                      message["text"]["runs"]?.try &.[0]?.try &.["text"]?)
       .try &.as_s || ""
-    raise error_message
+    raise InfoException.new(error_message)
   end
 
   response = JSON.build do |json|
@@ -775,46 +775,37 @@ def extract_channel_community_cursor(continuation)
   cursor
 end
 
-INITDATA_PREQUERY = "window[\"ytInitialData\"] = {"
-
 def get_about_info(ucid, locale)
-  about = YT_POOL.client &.get("/channel/#{ucid}/about?gl=US&hl=en")
-  if about.status_code != 200
-    about = YT_POOL.client &.get("/user/#{ucid}/about?gl=US&hl=en")
+  result = YT_POOL.client &.get("/channel/#{ucid}/about?gl=US&hl=en")
+  if result.status_code != 200
+    result = YT_POOL.client &.get("/user/#{ucid}/about?gl=US&hl=en")
   end
 
-  if md = about.headers["location"]?.try &.match(/\/channel\/(?<ucid>UC[a-zA-Z0-9_-]{22})/)
+  if md = result.headers["location"]?.try &.match(/\/channel\/(?<ucid>UC[a-zA-Z0-9_-]{22})/)
     raise ChannelRedirect.new(channel_id: md["ucid"])
   end
 
-  if about.status_code != 200
-    error_message = translate(locale, "This channel does not exist.")
-    raise error_message
+  if result.status_code != 200
+    raise InfoException.new("This channel does not exist.")
   end
 
-  initdata_pre = about.body.index(INITDATA_PREQUERY)
-  initdata_post = initdata_pre.nil? ? nil : about.body.index("};", initdata_pre)
-  if initdata_post.nil?
-    about = XML.parse_html(about.body)
+  about = XML.parse_html(result.body)
+  if about.xpath_node(%q(//div[contains(@class, "channel-empty-message")]))
+    raise InfoException.new("This channel does not exist.")
+  end
+
+  initdata = extract_initial_data(result.body)
+  if initdata.empty?
     error_message = about.xpath_node(%q(//div[@class="yt-alert-content"])).try &.content.strip
     error_message ||= translate(locale, "Could not get channel info.")
-    raise error_message
-  end
-  initdata_pre = initdata_pre.not_nil! + INITDATA_PREQUERY.size - 1
-
-  initdata = JSON.parse(about.body[initdata_pre, initdata_post - initdata_pre + 1])
-  about = XML.parse_html(about.body)
-
-  if about.xpath_node(%q(//div[contains(@class, "channel-empty-message")]))
-    error_message = translate(locale, "This channel does not exist.")
-    raise error_message
+    raise InfoException.new(error_message)
   end
 
-  author = about.xpath_node(%q(//meta[@name="title"])).not_nil!["content"]
-  author_url = about.xpath_node(%q(//link[@rel="canonical"])).not_nil!["href"]
-  author_thumbnail = about.xpath_node(%q(//link[@rel="image_src"])).not_nil!["href"]
+  author = initdata["metadata"]["channelMetadataRenderer"]["title"].as_s
+  author_url = initdata["metadata"]["channelMetadataRenderer"]["channelUrl"].as_s
+  author_thumbnail = initdata["metadata"]["channelMetadataRenderer"]["avatar"]["thumbnails"][0]["url"].as_s
 
-  ucid = about.xpath_node(%q(//meta[@itemprop="channelId"])).not_nil!["content"]
+  ucid = initdata["metadata"]["channelMetadataRenderer"]["externalId"].as_s
 
   # Raises a KeyError on failure.
   banners = initdata["header"]["c4TabbedHeaderRenderer"]?.try &.["banner"]?.try &.["thumbnails"]?
@@ -887,8 +878,8 @@ def get_about_info(ucid, locale)
         # Auto-generated channels
         # https://support.google.com/youtube/answer/2579942
         # For auto-generated channels, channel_about_meta only has ["description"]["simpleText"] and ["primaryLinks"][0]["title"]["simpleText"]
-        if (channel_about_meta["primaryLinks"]?.try &.size || 0) == 1 && (channel_about_meta["primaryLinks"][0]?)
-          (channel_about_meta["primaryLinks"][0]["title"]?.try &.["simpleText"]?.try &.as_s? || "") == "Auto-generated by YouTube"
+        if (channel_about_meta["primaryLinks"]?.try &.size || 0) == 1 && (channel_about_meta["primaryLinks"][0]?) &&
+           (channel_about_meta["primaryLinks"][0]["title"]?.try &.["simpleText"]?.try &.as_s? || "") == "Auto-generated by YouTube"
           auto_generated = true
         end
       end

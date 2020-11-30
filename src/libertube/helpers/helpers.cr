@@ -93,8 +93,9 @@ struct Config
   property admin_email : String = "omarroth@protonmail.com"        # Email for bug reports
 
   @[YAML::Field(converter: Preferences::StringToCookies)]
-  property cookies : HTTP::Cookies = HTTP::Cookies.new # Saved cookies in "name1=value1; name2=value2..." format
-  property captcha_key : String? = nil                 # Key for Anti-Captcha
+  property cookies : HTTP::Cookies = HTTP::Cookies.new               # Saved cookies in "name1=value1; name2=value2..." format
+  property captcha_key : String? = nil                               # Key for Anti-Captcha
+  property captcha_api_url : String = "https://api.anti-captcha.com" # API URL for Anti-Captcha
 
   def disabled?(option)
     case disabled = CONFIG.disable_proxy
@@ -597,12 +598,7 @@ def create_notification_stream(env, topics, connection_channel)
 end
 
 def extract_initial_data(body) : Hash(String, JSON::Any)
-  initial_data = body.match(/(window\["ytInitialData"\]|var\s+ytInitialData)\s*=\s*(?<info>.*?);+\s*\n/).try &.["info"] || "{}"
-  if initial_data.starts_with?("JSON.parse(\"")
-    return JSON.parse(JSON.parse(%({"initial_data":"#{initial_data[12..-3]}"}))["initial_data"].as_s).as_h
-  else
-    return JSON.parse(initial_data).as_h
-  end
+  return JSON.parse(body.match(/(window\["ytInitialData"\]|var\s*ytInitialData)\s*=\s*(?<info>\{.*?\});/mx).try &.["info"] || "{}").as_h
 end
 
 def proxy_file(response, env)

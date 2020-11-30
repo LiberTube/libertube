@@ -839,8 +839,7 @@ def extract_polymer_config(body)
     params[f] = player_response[f] if player_response[f]?
   end
 
-  yt_initial_data = body.match(/(window\["ytInitialData"\]|var\s+ytInitialData)\s*=\s*(?<info>.*?);\s*\n/)
-    .try { |r| JSON.parse(r["info"]).as_h }
+  yt_initial_data = extract_initial_data(body)
 
   params["relatedVideos"] = yt_initial_data.try &.["playerOverlays"]?.try &.["playerOverlayRenderer"]?
     .try &.["endScreen"]?.try &.["watchNextEndScreenRenderer"]?.try &.["results"]?.try &.as_a.compact_map { |r|
@@ -999,7 +998,7 @@ def fetch_video(id, region)
     }.try { |a| JSON::Any.new(a) } || JSON::Any.new([] of JSON::Any)
   end
 
-  raise info["reason"]?.try &.as_s || "" if !info["videoDetails"]?
+  raise InfoException.new(info["reason"]?.try &.as_s || "") if !info["videoDetails"]?
 
   video = Video.new({
     id:      id,
