@@ -66,6 +66,8 @@ struct Preferences
 
   @[JSON::Field(converter: Preferences::ProcessString)]
   property quality : String = CONFIG.default_user_preferences.quality
+  @[JSON::Field(converter: Preferences::ProcessString)]
+  property quality_dash : String = CONFIG.default_user_preferences.quality_dash
   property default_home : String = CONFIG.default_user_preferences.default_home
   property feed_menu : Array(String) = CONFIG.default_user_preferences.feed_menu
   property related_videos : Bool = CONFIG.default_user_preferences.related_videos
@@ -267,12 +269,12 @@ struct Preferences
   end
 end
 
-def get_user(sid, headers, db, refresh = true)
+def get_user(sid, headers, db, logger, refresh = true)
   if email = db.query_one?("SELECT email FROM session_ids WHERE id = $1", sid, as: String)
     user = db.query_one("SELECT * FROM users WHERE email = $1", email, as: User)
 
     if refresh && Time.utc - user.updated > 1.minute
-      user, sid = fetch_user(sid, headers, db)
+      user, sid = fetch_user(sid, headers, db, logger)
       user_array = user.to_a
       user_array[4] = user_array[4].to_json # User preferences
       args = arg_array(user_array)
@@ -290,7 +292,7 @@ def get_user(sid, headers, db, refresh = true)
       end
     end
   else
-    user, sid = fetch_user(sid, headers, db)
+    user, sid = fetch_user(sid, headers, db, logger)
     user_array = user.to_a
     user_array[4] = user_array[4].to_json # User preferences
     args = arg_array(user.to_a)
@@ -311,7 +313,7 @@ def get_user(sid, headers, db, refresh = true)
   return user, sid
 end
 
-def fetch_user(sid, headers, db)
+def fetch_user(sid, headers, db, logger)
   feed = YT_POOL.client &.get("/subscription_manager?disable_polymer=1", headers)
   feed = XML.parse_html(feed.body)
 
@@ -324,7 +326,7 @@ def fetch_user(sid, headers, db)
     end
   end
 
-  channels = get_batch_channels(channels, db, false, false)
+  channels = get_batch_channels(channels, db, logger, false, false)
 
   email = feed.xpath_node(%q(//a[@class="yt-masthead-picker-header yt-masthead-picker-active-account"]))
   if email
@@ -425,7 +427,7 @@ def generate_captcha(key, db)
 end
 
 def generate_text_captcha(key, db)
-  response = make_client(TEXTCAPTCHA_URL).get("/omarroth@protonmail.com.json").body
+  response = make_client(TEXTCAPTCHA_URL, &.get("/omarroth@protonmail.com.json").body)
   response = JSON.parse(response)
 
   tokens = response["a"].as_a.map do |answer|

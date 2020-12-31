@@ -7,8 +7,8 @@ class Invidious::Jobs::RefreshFeedsJob < Invidious::Jobs::BaseJob
   end
 
   def begin
-    max_threads = config.feed_threads
-    active_threads = 0
+    max_fibers = config.feed_threads
+    active_fibers = 0
     active_channel = Channel(Bool).new
 
     loop do
@@ -17,27 +17,27 @@ class Invidious::Jobs::RefreshFeedsJob < Invidious::Jobs::BaseJob
           email = rs.read(String)
           view_name = "subscriptions_#{sha256(email)}"
 
-          if active_threads >= max_threads
+          if active_fibers >= max_fibers
             if active_channel.receive
-              active_threads -= 1
+              active_fibers -= 1
             end
           end
 
-          active_threads += 1
+          active_fibers += 1
           spawn do
             begin
               # Drop outdated views
               column_array = get_column_array(db, view_name)
               ChannelVideo.type_array.each_with_index do |name, i|
                 if name != column_array[i]?
-                  logger.puts("DROP MATERIALIZED VIEW #{view_name}")
+                  logger.info("RefreshFeedsJob: DROP MATERIALIZED VIEW #{view_name}")
                   db.exec("DROP MATERIALIZED VIEW #{view_name}")
                   raise "view does not exist"
                 end
               end
 
               if !db.query_one("SELECT pg_get_viewdef('#{view_name}')", as: String).includes? "WHERE ((cv.ucid = ANY (u.subscriptions))"
-                logger.puts("Materialized view #{view_name} is out-of-date, recreating...")
+                logger.info("RefreshFeedsJob: Materialized view #{view_name} is out-of-date, recreating...")
                 db.exec("DROP MATERIALIZED VIEW #{view_name}")
               end
 
@@ -49,18 +49,18 @@ class Invidious::Jobs::RefreshFeedsJob < Invidious::Jobs::BaseJob
                 legacy_view_name = "subscriptions_#{sha256(email)[0..7]}"
 
                 db.exec("SELECT * FROM #{legacy_view_name} LIMIT 0")
-                logger.puts("RENAME MATERIALIZED VIEW #{legacy_view_name}")
+                logger.info("RefreshFeedsJob: RENAME MATERIALIZED VIEW #{legacy_view_name}")
                 db.exec("ALTER MATERIALIZED VIEW #{legacy_view_name} RENAME TO #{view_name}")
               rescue ex
                 begin
                   # While iterating through, we may have an email stored from a deleted account
                   if db.query_one?("SELECT true FROM users WHERE email = $1", email, as: Bool)
-                    logger.puts("CREATE #{view_name}")
+                    logger.info("RefreshFeedsJob: CREATE #{view_name}")
                     db.exec("CREATE MATERIALIZED VIEW #{view_name} AS #{MATERIALIZED_VIEW_SQL.call(email)}")
                     db.exec("UPDATE users SET feed_needs_update = false WHERE email = $1", email)
                   end
                 rescue ex
-                  logger.puts("REFRESH #{email} : #{ex.message}")
+                  logger.error("RefreshFeedJobs: REFRESH #{email} : #{ex.message}")
                 end
               end
             end

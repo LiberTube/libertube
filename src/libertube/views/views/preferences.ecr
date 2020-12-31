@@ -57,6 +57,17 @@
                 </select>
             </div>
 
+            <% if !CONFIG.disabled?("dash") %>
+                <div class="pure-control-group">
+                    <label for="quality_dash"><%= translate(locale, "Preferred dash video quality: ") %></label>
+                    <select name="quality_dash" id="quality_dash">
+                        <% {"auto", "best", "4320p", "2160p", "1440p", "1080p", "720p", "480p", "360p", "240p", "144p", "worst"}.each do |option| %>
+                            <option value="<%= option %>" <% if preferences.quality_dash == option %> selected <% end %>><%= translate(locale, option) %></option>
+                        <% end %>
+                    </select>
+                </div>
+            <% end %>
+
             <div class="pure-control-group">
                 <label for="volume"><%= translate(locale, "Player volume: ") %></label>
                 <input name="volume" id="volume" data-onrange="update_volume_value" type="range" min="0" max="100" step="5" value="<%= preferences.volume %>">
@@ -130,9 +141,9 @@
             </div>
 
             <% if env.get?("user") %>
-                <% feed_options = {"", "Popular", "Top", "Trending", "Subscriptions", "Playlists"} %>
+                <% feed_options = {"", "Popular", "Trending", "Subscriptions", "Playlists"} %>
             <% else %>
-                <% feed_options = {"", "Popular", "Top", "Trending"} %>
+                <% feed_options = {"", "Popular", "Trending"} %>
             <% end %>
 
             <div class="pure-control-group">
@@ -226,6 +237,12 @@
                         </select>
                     <% end %>
                 </div>
+
+                <div class="pure-control-group">
+                    <label for="popular_enabled"><%= translate(locale, "Popular enabled: ") %></label>
+                    <input name="popular_enabled" id="popular_enabled" type="checkbox" <% if config.popular_enabled %>checked<% end %>>
+                </div>
+
 
                 <div class="pure-control-group">
                     <label for="captcha_enabled"><%= translate(locale, "CAPTCHA enabled: ") %></label>

@@ -235,6 +235,7 @@ struct VideoPreferences
   property preferred_captions : Array(String)
   property player_style : String
   property quality : String
+  property quality_dash : String
   property raw : Bool
   property region : String?
   property related_videos : Bool
@@ -816,7 +817,7 @@ end
 
 def extract_polymer_config(body)
   params = {} of String => JSON::Any
-  player_response = body.match(/window\["ytInitialPlayerResponse"\]\s*=\s*(?<info>.*?);\n/)
+  player_response = body.match(/(window\["ytInitialPlayerResponse"\]|var\sytInitialPlayerResponse)\s*=\s*(?<info>{.*?});/m)
     .try { |r| JSON.parse(r["info"]).as_h }
 
   if body.includes?("To continue with your YouTube experience, please fill out the form below.") ||
@@ -830,7 +831,8 @@ def extract_polymer_config(body)
     params["reason"] = JSON::Any.new(reason)
   end
 
-  params["sessionToken"] = JSON::Any.new(body.match(/"XSRF_TOKEN":"(?<session_token>[^"]+)"/).try &.["session_token"]?)
+  session_token_json_encoded = body.match(/"XSRF_TOKEN":"(?<session_token>[^"]+)"/).try &.["session_token"]? || ""
+  params["sessionToken"] = JSON.parse(%({"key": "#{session_token_json_encoded}"}))["key"]
   params["shortDescription"] = JSON::Any.new(body.match(/"og:description" content="(?<description>[^"]+)"/).try &.["description"]?)
 
   return params if !player_response
@@ -914,10 +916,14 @@ def extract_polymer_config(body)
     .try { |r| JSON.parse(r["info"]) }.try &.["args"]["player_response"]?
     .try &.as_s?.try &.try { |r| JSON.parse(r).as_h }
 
-  return params if !initial_data
-
-  {"playabilityStatus", "streamingData"}.each do |f|
-    params[f] = initial_data[f] if initial_data[f]?
+  if initial_data
+    {"playabilityStatus", "streamingData"}.each do |f|
+      params[f] = initial_data[f] if initial_data[f]?
+    end
+  else
+    {"playabilityStatus", "streamingData"}.each do |f|
+      params[f] = player_response[f] if player_response[f]?
+    end
   end
 
   params
@@ -1038,6 +1044,7 @@ def process_video_params(query, preferences)
   player_style = query["player_style"]?
   preferred_captions = query["subtitles"]?.try &.split(",").map { |a| a.downcase }
   quality = query["quality"]?
+  quality_dash = query["quality_dash"]?
   region = query["region"]?
   related_videos = query["related_videos"]?.try { |q| (q == "true" || q == "1").to_unsafe }
   speed = query["speed"]?.try &.rchop("x").to_f?
@@ -1056,6 +1063,7 @@ def process_video_params(query, preferences)
     player_style ||= preferences.player_style
     preferred_captions ||= preferences.captions
     quality ||= preferences.quality
+    quality_dash ||= preferences.quality_dash
     related_videos ||= preferences.related_videos.to_unsafe
     speed ||= preferences.speed
     video_loop ||= preferences.video_loop.to_unsafe
@@ -1072,6 +1080,7 @@ def process_video_params(query, preferences)
   player_style ||= CONFIG.default_user_preferences.player_style
   preferred_captions ||= CONFIG.default_user_preferences.captions
   quality ||= CONFIG.default_user_preferences.quality
+  quality_dash ||= CONFIG.default_user_preferences.quality_dash
   related_videos ||= CONFIG.default_user_preferences.related_videos.to_unsafe
   speed ||= CONFIG.default_user_preferences.speed
   video_loop ||= CONFIG.default_user_preferences.video_loop.to_unsafe
@@ -1124,6 +1133,7 @@ def process_video_params(query, preferences)
     player_style:       player_style,
     preferred_captions: preferred_captions,
     quality:            quality,
+    quality_dash:       quality_dash,
     raw:                raw,
     region:             region,
     related_videos:     related_videos,

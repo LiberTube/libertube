@@ -88,7 +88,7 @@ def fetch_youtube_comments(id, db, cursor, format, locale, thin_mode, region, so
     "cookie" => video.cookie,
   }
 
-  response = YT_POOL.client(region, &.post("/comment_service_ajax?action_get_comments=1&hl=en&gl=US", headers, form: post_req))
+  response = YT_POOL.client(region, &.post("/comment_service_ajax?action_get_comments=1&hl=en&gl=US&pbj=1", headers, form: post_req))
   response = JSON.parse(response.body)
 
   if !response["response"]["continuationContents"]?
@@ -268,6 +268,8 @@ def fetch_reddit_comments(id, sort_by = "confidence")
   else
     raise InfoException.new("Could not fetch comments")
   end
+
+  client.close
 
   comments = result[1].data.as(RedditListing).children
   return comments, thread
@@ -581,12 +583,16 @@ def produce_comment_continuation(video_id, cursor = "", sort_by = "top")
   object = {
     "2:embedded" => {
       "2:string"    => video_id,
-      "24:varint"   => 1_i64,
-      "25:varint"   => 1_i64,
+      "25:varint"   => 0_i64,
       "28:varint"   => 1_i64,
       "36:embedded" => {
         "5:varint" => -1_i64,
         "8:varint" => 0_i64,
+      },
+      "40:embedded" => {
+        "1:varint" => 4_i64,
+        "3:string" => "https://www.youtube.com",
+        "4:string" => "",
       },
     },
     "3:varint"   => 6_i64,

@@ -28,6 +28,14 @@ class Invidious::Routes::Watch < Invidious::Routes::BaseRoute
       return env.redirect "/"
     end
 
+    embed_link = "/embed/#{id}"
+    if env.params.query.size > 1
+      embed_params = HTTP::Params.parse(env.params.query.to_s)
+      embed_params.delete_all("v")
+      embed_link += "?"
+      embed_link += embed_params.to_s
+    end
+
     plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
     continuation = process_continuation(PG_DB, env.params.query, plid, id)
 
@@ -54,7 +62,7 @@ class Invidious::Routes::Watch < Invidious::Routes::BaseRoute
     rescue ex : VideoRedirect
       return env.redirect env.request.resource.gsub(id, ex.video_id)
     rescue ex
-      logger.puts("#{id} : #{ex.message}")
+      logger.error("get_video: #{id} : #{ex.message}")
       return error_template(500, ex)
     end
 

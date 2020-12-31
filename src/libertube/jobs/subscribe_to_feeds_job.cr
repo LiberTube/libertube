@@ -8,12 +8,12 @@ class Invidious::Jobs::SubscribeToFeedsJob < Invidious::Jobs::BaseJob
   end
 
   def begin
-    max_threads = 1
+    max_fibers = 1
     if config.use_pubsub_feeds.is_a?(Int32)
-      max_threads = config.use_pubsub_feeds.as(Int32)
+      max_fibers = config.use_pubsub_feeds.as(Int32)
     end
 
-    active_threads = 0
+    active_fibers = 0
     active_channel = Channel(Bool).new
 
     loop do
@@ -21,23 +21,23 @@ class Invidious::Jobs::SubscribeToFeedsJob < Invidious::Jobs::BaseJob
         rs.each do
           ucid = rs.read(String)
 
-          if active_threads >= max_threads.as(Int32)
+          if active_fibers >= max_fibers.as(Int32)
             if active_channel.receive
-              active_threads -= 1
+              active_fibers -= 1
             end
           end
 
-          active_threads += 1
+          active_fibers += 1
 
           spawn do
             begin
               response = subscribe_pubsub(ucid, hmac_key, config)
 
               if response.status_code >= 400
-                logger.puts("#{ucid} : #{response.body}")
+                logger.error("SubscribeToFeedsJob: #{ucid} : #{response.body}")
               end
             rescue ex
-              logger.puts("#{ucid} : #{ex.message}")
+              logger.error("SubscribeToFeedsJob: #{ucid} : #{ex.message}")
             end
 
             active_channel.send(true)

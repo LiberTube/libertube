@@ -91,6 +91,8 @@ class Invidious::Jobs::BypassCaptchaJob < Invidious::Jobs::BaseJob
               },
             }.to_json).body)
 
+            captcha_client.close
+
             raise response["error"].as_s if response["error"]?
             task_id = response["taskId"].as_i
 
@@ -125,7 +127,7 @@ class Invidious::Jobs::BypassCaptchaJob < Invidious::Jobs::BaseJob
           end
         end
       rescue ex
-        logger.puts("Exception: #{ex.message}")
+        logger.error("BypassCaptchaJob: #{ex.message}")
       ensure
         sleep 1.minute
         Fiber.yield

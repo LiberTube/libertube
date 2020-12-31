@@ -83,6 +83,7 @@ def make_client(url : URI, region = nil)
   # TODO: Migrate any applicable endpoints to QUIC
   client = HTTPClient.new(url, OpenSSL::SSL::Context::Client.insecure)
   client.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::UNSPEC
+  client.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
   client.read_timeout = 10.seconds
   client.connect_timeout = 10.seconds
 
@@ -98,6 +99,15 @@ def make_client(url : URI, region = nil)
   end
 
   return client
+end
+
+def make_client(url : URI, region = nil, &block)
+  client = make_client(url, region)
+  begin
+    yield client
+  ensure
+    client.close
+  end
 end
 
 def decode_length_seconds(string)
@@ -360,7 +370,7 @@ def subscribe_pubsub(topic, key, config)
     "hub.secret"        => key.to_s,
   }
 
-  return make_client(PUBSUB_URL).post("/subscribe", form: body)
+  return make_client(PUBSUB_URL, &.post("/subscribe", form: body))
 end
 
 def parse_range(range)
