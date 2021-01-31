@@ -19,6 +19,11 @@ var options = {
             'playbackRateMenuButton',
             'fullscreenToggle'
         ]
+    },
+    html5: {
+        hls: {
+            overrideNative: true
+        }
     }
 }
 
@@ -42,7 +47,7 @@ var shareOptions = {
 }
 
 videojs.Hls.xhr.beforeRequest = function(options) {
-    if (options.uri.indexOf('local=true') === -1) {
+    if (options.uri.indexOf('videoplayback') === -1 && options.uri.indexOf('local=true') === -1) {
         options.uri = options.uri + '?local=true';
     }
     return options;
@@ -69,7 +74,7 @@ if (location.pathname.startsWith('/embed/')) {
 
 player.on('error', function (event) {
     if (player.error().code === 2 || player.error().code === 4) {
-        setInterval(setTimeout(function (event) {
+        setTimeout(function (event) {
             console.log('An error occured in the player, reloading...');
 
             var currentTime = player.currentTime();
@@ -88,7 +93,7 @@ player.on('error', function (event) {
             if (!paused) {
                 player.play();
             }
-        }, 5000), 5000);
+        }, 5000);
     }
 });
 

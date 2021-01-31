@@ -1,1 +1,11 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/a9e457ff379cd59ac3353809911112bc
+channel_threads: 1
+feed_threads: 1
+db:
+  user: kemal
+  password: kemal
+  host: localhost
+  port: 5432
+  dbname: invidious
+full_refresh: false
+https_only: false
+domain:

@@ -64,10 +64,13 @@ end
 class Config
   include YAML::Serializable
 
-  property channel_threads : Int32                 # Number of threads to use for crawling videos from channels (for updating subscriptions)
-  property feed_threads : Int32                    # Number of threads to use for updating feeds
+  property channel_threads : Int32 = 1             # Number of threads to use for crawling videos from channels (for updating subscriptions)
+  property feed_threads : Int32 = 1                # Number of threads to use for updating feeds
+  property output : String = "STDOUT"              # Log file path or STDOUT
+  property log_level : LogLevel = LogLevel::Info   # Default log level, valid YAML values are ints and strings, see src/invidious/helpers/logger.cr
   property db : DBConfig                           # Database configuration
-  property full_refresh : Bool                     # Used for crawling channels: threads should check all videos uploaded by a channel
+  property decrypt_polling : Bool = true           # Use polling to keep decryption function up to date
+  property full_refresh : Bool = false             # Used for crawling channels: threads should check all videos uploaded by a channel
   property https_only : Bool?                      # Used to tell Invidious it is behind a proxy, so links to resources should be https://
   property hmac_key : String?                      # HMAC signing key for CSRF tokens and verifying pubsub subscriptions
   property domain : String?                        # Domain to be used for links to resources on the site where an absolute URL is required
@@ -92,7 +95,6 @@ class Config
   property port : Int32 = 3000                                     # Port to listen for connections (overrided by command line argument)
   property host_binding : String = "0.0.0.0"                       # Host to bind (overrided by command line argument)
   property pool_size : Int32 = 100                                 # Pool size for HTTP requests to youtube.com and ytimg.com (each domain has a separate pool of `pool_size`)
-  property admin_email : String = "omarroth@protonmail.com"        # Email for bug reports
 
   @[YAML::Field(converter: Preferences::StringToCookies)]
   property cookies : HTTP::Cookies = HTTP::Cookies.new               # Saved cookies in "name1=value1; name2=value2..." format
@@ -112,6 +114,63 @@ class Config
     else
       return false
     end
+  end
+
+  def self.load
+    # Load config from file or YAML string env var
+    env_config_file = "INVIDIOUS_CONFIG_FILE"
+    env_config_yaml = "INVIDIOUS_CONFIG"
+
+    config_file = ENV.has_key?(env_config_file) ? ENV.fetch(env_config_file) : "config/config.yml"
+    config_yaml = ENV.has_key?(env_config_yaml) ? ENV.fetch(env_config_yaml) : File.read(config_file)
+
+    config = Config.from_yaml(config_yaml)
+
+    # Update config from env vars (upcased and prefixed with "INVIDIOUS_")
+    {% for ivar in Config.instance_vars %}
+        {% env_id = "INVIDIOUS_#{ivar.id.upcase}" %}
+
+        if ENV.has_key?({{env_id}})
+            # puts %(Config.{{ivar.id}} : Loading from env var {{env_id}})
+            env_value = ENV.fetch({{env_id}})
+            success = false
+
+            # Use YAML converter if specified
+            {% ann = ivar.annotation(::YAML::Field) %}
+            {% if ann && ann[:converter] %}
+                puts %(Config.{{ivar.id}} : Parsing "#{env_value}" as {{ivar.type}} with {{ann[:converter]}} converter)
+                config.{{ivar.id}} = {{ann[:converter]}}.from_yaml(YAML::ParseContext.new, YAML::Nodes.parse(ENV.fetch({{env_id}})).nodes[0])
+                puts %(Config.{{ivar.id}} : Set to #{config.{{ivar.id}}})
+                success = true
+
+            # Use regular YAML parser otherwise
+            {% else %}
+                {% ivar_types = ivar.type.union? ? ivar.type.union_types : [ivar.type] %}
+                # Sort types to avoid parsing nulls and numbers as strings
+                {% ivar_types = ivar_types.sort_by { |ivar_type| ivar_type == Nil ? 0 : ivar_type == Int32 ? 1 : 2 } %}
+                {{ivar_types}}.each do |ivar_type|
+                    if !success
+                        begin
+                            # puts %(Config.{{ivar.id}} : Trying to parse "#{env_value}" as #{ivar_type})
+                            config.{{ivar.id}} = ivar_type.from_yaml(env_value)
+                            puts %(Config.{{ivar.id}} : Set to #{config.{{ivar.id}}} (#{ivar_type}))
+                            success = true
+                        rescue
+                            # nop
+                        end
+                    end
+                end
+            {% end %}
+
+            # Exit on fail
+            if !success
+                puts %(Config.{{ivar.id}} failed to parse #{env_value} as {{ivar.type}})
+                exit(1)
+            end
+        end
+    {% end %}
+
+    return config
   end
 end
 
@@ -223,7 +282,7 @@ def extract_item(item : JSON::Any, author_fallback : String? = nil, author_id_fa
     author = i["title"]["simpleText"]?.try &.as_s || author_fallback || ""
     author_id = i["channelId"]?.try &.as_s || author_id_fallback || ""
 
-    author_thumbnail = i["thumbnail"]["thumbnails"]?.try &.as_a[0]?.try { |u| "https:#{u["url"]}" } || ""
+    author_thumbnail = i["thumbnail"]["thumbnails"]?.try &.as_a[0]?.try &.["url"]?.try &.as_s || ""
     subscriber_count = i["subscriberCountText"]?.try &.["simpleText"]?.try &.as_s.try { |s| short_text_to_number(s.split(" ")[0]) } || 0
 
     auto_generated = false
@@ -333,11 +392,11 @@ def extract_items(initial_data : Hash(String, JSON::Any), author_fallback : Stri
   items
 end
 
-def check_enum(db, logger, enum_name, struct_type = nil)
+def check_enum(db, enum_name, struct_type = nil)
   return # TODO
 
   if !db.query_one?("SELECT true FROM pg_type WHERE typname = $1", enum_name, as: Bool)
-    logger.info("check_enum: CREATE TYPE #{enum_name}")
+    LOGGER.info("check_enum: CREATE TYPE #{enum_name}")
 
     db.using_connection do |conn|
       conn.as(PG::Connection).exec_all(File.read("config/sql/#{enum_name}.sql"))
@@ -345,12 +404,12 @@ def check_enum(db, logger, enum_name, struct_type = nil)
   end
 end
 
-def check_table(db, logger, table_name, struct_type = nil)
+def check_table(db, table_name, struct_type = nil)
   # Create table if it doesn't exist
   begin
     db.exec("SELECT * FROM #{table_name} LIMIT 0")
   rescue ex
-    logger.info("check_table: check_table: CREATE TABLE #{table_name}")
+    LOGGER.info("check_table: check_table: CREATE TABLE #{table_name}")
 
     db.using_connection do |conn|
       conn.as(PG::Connection).exec_all(File.read("config/sql/#{table_name}.sql"))
@@ -370,7 +429,7 @@ def check_table(db, logger, table_name, struct_type = nil)
     if name != column_array[i]?
       if !column_array[i]?
         new_column = column_types.select { |line| line.starts_with? name }[0]
-        logger.info("check_table: ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+        LOGGER.info("check_table: ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
         db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
         next
       end
@@ -388,29 +447,29 @@ def check_table(db, logger, table_name, struct_type = nil)
 
           # There's a column we didn't expect
           if !new_column
-            logger.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]}")
+            LOGGER.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]}")
             db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
 
             column_array = get_column_array(db, table_name)
             next
           end
 
-          logger.info("check_table: ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+          LOGGER.info("check_table: ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
           db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
 
-          logger.info("check_table: UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}")
+          LOGGER.info("check_table: UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}")
           db.exec("UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}")
 
-          logger.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+          LOGGER.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
           db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
 
-          logger.info("check_table: ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}")
+          LOGGER.info("check_table: ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}")
           db.exec("ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}")
 
           column_array = get_column_array(db, table_name)
         end
       else
-        logger.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+        LOGGER.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
         db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
       end
     end
@@ -420,7 +479,7 @@ def check_table(db, logger, table_name, struct_type = nil)
 
   column_array.each do |column|
     if !struct_array.includes? column
-      logger.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column} CASCADE")
+      LOGGER.info("check_table: ALTER TABLE #{table_name} DROP COLUMN #{column} CASCADE")
       db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column} CASCADE")
     end
   end
