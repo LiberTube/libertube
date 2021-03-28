@@ -33,16 +33,7 @@ require "./invidious/jobs/**"
 CONFIG   = Config.load
 HMAC_KEY = CONFIG.hmac_key || Random::Secure.hex(32)
 
-PG_URL = URI.new(
-  scheme: "postgres",
-  user: CONFIG.db.user,
-  password: CONFIG.db.password,
-  host: CONFIG.db.host,
-  port: CONFIG.db.port,
-  path: CONFIG.db.dbname,
-)
-
-PG_DB           = DB.open PG_URL
+PG_DB           = DB.open CONFIG.database_url
 ARCHIVE_URL     = URI.parse("https://archive.org")
 LOGIN_URL       = URI.parse("https://accounts.google.com")
 PUBSUB_URL      = URI.parse("https://pubsubhubbub.appspot.com")
@@ -195,7 +186,7 @@ if CONFIG.captcha_key
 end
 
 connection_channel = Channel({Bool, Channel(PQ::Notification)}).new(32)
-Invidious::Jobs.register Invidious::Jobs::NotificationJob.new(connection_channel, PG_URL)
+Invidious::Jobs.register Invidious::Jobs::NotificationJob.new(connection_channel, CONFIG.database_url)
 
 Invidious::Jobs.start_all
 
@@ -298,6 +289,7 @@ before_all do |env|
   preferences.dark_mode = dark_mode
   preferences.thin_mode = thin_mode
   preferences.locale = locale
+  env.set "preferences", preferences
 
   current_page = env.request.path
   if env.request.query
@@ -760,10 +752,16 @@ post "/data_control" do |env|
           end
         end
       when "import_youtube"
-        subscriptions = JSON.parse(body)
-
-        user.subscriptions += subscriptions.as_a.compact_map do |entry|
-          entry["snippet"]["resourceId"]["channelId"].as_s
+        if body[0..4] == "<opml"
+          subscriptions = XML.parse(body)
+          user.subscriptions += subscriptions.xpath_nodes(%q(//outline[@type="rss"])).map do |channel|
+            channel["xmlUrl"].match(/UC[a-zA-Z0-9_-]{22}/).not_nil![0]
+          end
+        else
+          subscriptions = JSON.parse(body)
+          user.subscriptions += subscriptions.as_a.compact_map do |entry|
+            entry["snippet"]["resourceId"]["channelId"].as_s
+          end
         end
         user.subscriptions.uniq!
 
@@ -1557,12 +1555,12 @@ post "/feed/webhook/:token" do |env|
         views:              video.views,
       })
 
-      was_insert = PG_DB.query_one("INSERT INTO channel_videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-        ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
-        updated = $4, ucid = $5, author = $6, length_seconds = $7, \
+      was_insert = PG_DB.query_one("INSERT INTO channel_videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE SET title = $2, published = $3,
+        updated = $4, ucid = $5, author = $6, length_seconds = $7,
         live_now = $8, premiere_timestamp = $9, views = $10 returning (xmax=0) as was_insert", *video.to_tuple, as: Bool)
 
-      PG_DB.exec("UPDATE users SET notifications = array_append(notifications, $1), \
+      PG_DB.exec("UPDATE users SET notifications = array_append(notifications, $1),
         feed_needs_update = true WHERE $2 = ANY(subscriptions)", video.id, video.ucid) if was_insert
     end
   end
@@ -2056,6 +2054,9 @@ get "/api/v1/comments/:id" do |env|
   format = env.params.query["format"]?
   format ||= "json"
 
+  action = env.params.query["action"]?
+  action ||= "action_get_comments"
+
   continuation = env.params.query["continuation"]?
   sort_by = env.params.query["sort_by"]?.try &.downcase
 
@@ -2063,7 +2064,7 @@ get "/api/v1/comments/:id" do |env|
     sort_by ||= "top"
 
     begin
-      comments = fetch_youtube_comments(id, PG_DB, continuation, format, locale, thin_mode, region, sort_by: sort_by)
+      comments = fetch_youtube_comments(id, PG_DB, continuation, format, locale, thin_mode, region, sort_by: sort_by, action: action)
     rescue ex
       next error_json(500, ex)
     end
@@ -2560,12 +2561,12 @@ get "/api/v1/search" do |env|
   content_type ||= "video"
 
   begin
-    search_params = produce_search_params(sort_by, date, content_type, duration, features)
+    search_params = produce_search_params(page, sort_by, date, content_type, duration, features)
   rescue ex
     next error_json(400, ex)
   end
 
-  count, search_results = search(query, page, search_params, region).as(Tuple)
+  count, search_results = search(query, search_params, region).as(Tuple)
   JSON.build do |json|
     json.array do
       search_results.each do |item|
