@@ -65,37 +65,7 @@ SOFTWARE = {
   "branch"  => "#{CURRENT_BRANCH}",
 }
 
-LOCALES = {
-  "ar"    => load_locale("ar"),
-  "de"    => load_locale("de"),
-  "el"    => load_locale("el"),
-  "en-US" => load_locale("en-US"),
-  "eo"    => load_locale("eo"),
-  "es"    => load_locale("es"),
-  "fa"    => load_locale("fa"),
-  "fi"    => load_locale("fi"),
-  "fr"    => load_locale("fr"),
-  "he"    => load_locale("he"),
-  "hr"    => load_locale("hr"),
-  "id"    => load_locale("id"),
-  "is"    => load_locale("is"),
-  "it"    => load_locale("it"),
-  "ja"    => load_locale("ja"),
-  "nb-NO" => load_locale("nb-NO"),
-  "nl"    => load_locale("nl"),
-  "pl"    => load_locale("pl"),
-  "pt-BR" => load_locale("pt-BR"),
-  "pt-PT" => load_locale("pt-PT"),
-  "ro"    => load_locale("ro"),
-  "ru"    => load_locale("ru"),
-  "sv"    => load_locale("sv-SE"),
-  "tr"    => load_locale("tr"),
-  "uk"    => load_locale("uk"),
-  "zh-CN" => load_locale("zh-CN"),
-  "zh-TW" => load_locale("zh-TW"),
-}
-
-YT_POOL = QUICPool.new(YT_URL, capacity: CONFIG.pool_size, timeout: 2.0)
+YT_POOL = YoutubeConnectionPool.new(YT_URL, capacity: CONFIG.pool_size, timeout: 2.0, use_quic: CONFIG.use_quic)
 
 # CLI
 Kemal.config.extra_options do |parser|
@@ -308,9 +278,17 @@ end
 Invidious::Routing.get "/", Invidious::Routes::Misc, :home
 Invidious::Routing.get "/privacy", Invidious::Routes::Misc, :privacy
 Invidious::Routing.get "/licenses", Invidious::Routes::Misc, :licenses
-Invidious::Routing.get "/watch", Invidious::Routes::Watch
+
+Invidious::Routing.get "/watch", Invidious::Routes::Watch, :handle
+Invidious::Routing.get "/watch/:id", Invidious::Routes::Watch, :redirect
+Invidious::Routing.get "/shorts/:id", Invidious::Routes::Watch, :redirect
+Invidious::Routing.get "/w/:id", Invidious::Routes::Watch, :redirect
+Invidious::Routing.get "/v/:id", Invidious::Routes::Watch, :redirect
+Invidious::Routing.get "/e/:id", Invidious::Routes::Watch, :redirect
+
 Invidious::Routing.get "/embed/", Invidious::Routes::Embed, :redirect
 Invidious::Routing.get "/embed/:id", Invidious::Routes::Embed, :show
+
 Invidious::Routing.get "/view_all_playlists", Invidious::Routes::Playlists, :index
 Invidious::Routing.get "/create_playlist", Invidious::Routes::Playlists, :new
 Invidious::Routing.post "/create_playlist", Invidious::Routes::Playlists, :create
@@ -323,12 +301,15 @@ Invidious::Routing.get "/add_playlist_items", Invidious::Routes::Playlists, :add
 Invidious::Routing.post "/playlist_ajax", Invidious::Routes::Playlists, :playlist_ajax
 Invidious::Routing.get "/playlist", Invidious::Routes::Playlists, :show
 Invidious::Routing.get "/mix", Invidious::Routes::Playlists, :mix
+
 Invidious::Routing.get "/opensearch.xml", Invidious::Routes::Search, :opensearch
 Invidious::Routing.get "/results", Invidious::Routes::Search, :results
 Invidious::Routing.get "/search", Invidious::Routes::Search, :search
+
 Invidious::Routing.get "/login", Invidious::Routes::Login, :login_page
 Invidious::Routing.post "/login", Invidious::Routes::Login, :login
 Invidious::Routing.post "/signout", Invidious::Routes::Login, :signout
+
 Invidious::Routing.get "/preferences", Invidious::Routes::PreferencesRoute, :show
 Invidious::Routing.post "/preferences", Invidious::Routes::PreferencesRoute, :update
 Invidious::Routing.get "/toggle_theme", Invidious::Routes::PreferencesRoute, :toggle_theme
@@ -1699,7 +1680,7 @@ get "/channel/:ucid" do |env|
     sort_options = {"last", "oldest", "newest"}
     sort_by ||= "last"
 
-    items, continuation = fetch_channel_playlists(channel.ucid, channel.author, channel.auto_generated, continuation, sort_by)
+    items, continuation = fetch_channel_playlists(channel.ucid, channel.author, continuation, sort_by)
     items.uniq! do |item|
       if item.responds_to?(:title)
         item.title
@@ -1766,7 +1747,7 @@ get "/channel/:ucid/playlists" do |env|
     next env.redirect "/channel/#{channel.ucid}"
   end
 
-  items, continuation = fetch_channel_playlists(channel.ucid, channel.author, channel.auto_generated, continuation, sort_by)
+  items, continuation = fetch_channel_playlists(channel.ucid, channel.author, continuation, sort_by)
   items = items.select { |item| item.is_a?(SearchPlaylist) }.map { |item| item.as(SearchPlaylist) }
   items.each { |item| item.author = "" }
 
@@ -2467,7 +2448,7 @@ end
       next error_json(500, ex)
     end
 
-    items, continuation = fetch_channel_playlists(channel.ucid, channel.author, channel.auto_generated, continuation, sort_by)
+    items, continuation = fetch_channel_playlists(channel.ucid, channel.author, continuation, sort_by)
 
     JSON.build do |json|
       json.object do
