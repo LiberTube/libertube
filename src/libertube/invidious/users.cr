@@ -53,6 +53,7 @@ struct Preferences
   property latest_only : Bool = CONFIG.default_user_preferences.latest_only
   property listen : Bool = CONFIG.default_user_preferences.listen
   property local : Bool = CONFIG.default_user_preferences.local
+  property vr_mode : Bool = CONFIG.default_user_preferences.vr_mode
 
   @[JSON::Field(converter: Preferences::ProcessString)]
   property locale : String = CONFIG.default_user_preferences.locale
@@ -78,6 +79,7 @@ struct Preferences
   property thin_mode : Bool = CONFIG.default_user_preferences.thin_mode
   property unseen_only : Bool = CONFIG.default_user_preferences.unseen_only
   property video_loop : Bool = CONFIG.default_user_preferences.video_loop
+  property extend_desc : Bool = CONFIG.default_user_preferences.extend_desc
   property volume : Int32 = CONFIG.default_user_preferences.volume
 
   module BoolToString

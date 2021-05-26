@@ -242,8 +242,10 @@ struct VideoPreferences
   property speed : Float32 | Float64
   property video_end : Float64 | Int32
   property video_loop : Bool
+  property extend_desc : Bool
   property video_start : Float64 | Int32
   property volume : Int32
+  property vr_mode : Bool
 end
 
 struct Video
@@ -759,6 +761,10 @@ struct Video
     info["microformat"]?.try &.["playerMicroformatRenderer"]["isFamilySafe"]?.try &.as_bool || false
   end
 
+  def is_vr : Bool
+    info["streamingData"]?.try &.["adaptiveFormats"].as_a[0]?.try &.["projectionType"].as_s == "MESH" ? true : false || false
+  end
+
   def wilson_score : Float64
     ci_lower_bound(likes, likes + dislikes).round(4)
   end
@@ -818,7 +824,7 @@ end
 
 def extract_polymer_config(body)
   params = {} of String => JSON::Any
-  player_response = body.match(/(window\["ytInitialPlayerResponse"\]|var\sytInitialPlayerResponse)\s*=\s*(?<info>{.*?});/m)
+  player_response = body.match(/(window\["ytInitialPlayerResponse"\]|var\sytInitialPlayerResponse)\s*=\s*(?<info>{.*?});\s*var\s*meta/m)
     .try { |r| JSON.parse(r["info"]).as_h }
 
   if body.includes?("To continue with your YouTube experience, please fill out the form below.") ||
@@ -1050,7 +1056,9 @@ def process_video_params(query, preferences)
   related_videos = query["related_videos"]?.try { |q| (q == "true" || q == "1").to_unsafe }
   speed = query["speed"]?.try &.rchop("x").to_f?
   video_loop = query["loop"]?.try { |q| (q == "true" || q == "1").to_unsafe }
+  extend_desc = query["extend_desc"]?.try { |q| (q == "true" || q == "1").to_unsafe }
   volume = query["volume"]?.try &.to_i?
+  vr_mode = query["vr_mode"]?.try { |q| (q == "true" || q == "1").to_unsafe }
 
   if preferences
     # region ||= preferences.region
@@ -1068,7 +1076,9 @@ def process_video_params(query, preferences)
     related_videos ||= preferences.related_videos.to_unsafe
     speed ||= preferences.speed
     video_loop ||= preferences.video_loop.to_unsafe
+    extend_desc ||= preferences.extend_desc.to_unsafe
     volume ||= preferences.volume
+    vr_mode ||= preferences.vr_mode.to_unsafe
   end
 
   annotations ||= CONFIG.default_user_preferences.annotations.to_unsafe
@@ -1085,7 +1095,9 @@ def process_video_params(query, preferences)
   related_videos ||= CONFIG.default_user_preferences.related_videos.to_unsafe
   speed ||= CONFIG.default_user_preferences.speed
   video_loop ||= CONFIG.default_user_preferences.video_loop.to_unsafe
+  extend_desc ||= CONFIG.default_user_preferences.extend_desc.to_unsafe
   volume ||= CONFIG.default_user_preferences.volume
+  vr_mode ||= CONFIG.default_user_preferences.vr_mode.to_unsafe
 
   annotations = annotations == 1
   autoplay = autoplay == 1
@@ -1095,6 +1107,8 @@ def process_video_params(query, preferences)
   local = local == 1
   related_videos = related_videos == 1
   video_loop = video_loop == 1
+  extend_desc = extend_desc == 1
+  vr_mode = vr_mode == 1
 
   if CONFIG.disabled?("dash") && quality == "dash"
     quality = "high"
@@ -1141,8 +1155,10 @@ def process_video_params(query, preferences)
     speed:              speed,
     video_end:          video_end,
     video_loop:         video_loop,
+    extend_desc:        extend_desc,
     video_start:        video_start,
     volume:             volume,
+    vr_mode:            vr_mode,
   })
 
   return params
