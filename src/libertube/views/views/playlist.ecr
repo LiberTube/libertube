@@ -36,6 +36,11 @@
                     <a href="https://www.youtube.com/playlist?list=<%= playlist.id %>">
                         <%= translate(locale, "View playlist on YouTube") %>
                     </a>
+                    <span> | </span>
+                    <a href="/redirect?referer=<%= env.get?("current_page") %>">
+                      <%= translate(locale, "Switch Invidious Instance") %>
+                    </a>
+
             </div>
         <% end %>
     </div>
@@ -59,7 +64,9 @@
 </div>
 
 <div class="h-box">
-    <p><%= playlist.description_html %></p>
+    <div id="descriptionWrapper">
+        <p><%= playlist.description_html %></p>
+    </div>
 </div>
 
 <% if playlist.is_a?(InvidiousPlaylist) && playlist.author == user.try &.email %>

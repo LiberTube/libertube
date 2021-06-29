@@ -1,14 +1,14 @@
 {
     "`x` subscribers": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` pelanggan.([^.,0-9]|^)1([^.,0-9]|$)",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` pelanggan",
         "": "`x` pelanggan."
     },
     "`x` videos": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` video.([^.,0-9]|^)1([^.,0-9]|$)",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` video",
         "": "`x` video."
     },
     "`x` playlists": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` daftar putar.([^.,0-9]|^)1([^.,0-9]|$)",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` daftar putar",
         "": "`x` daftar putar."
     },
     "LIVE": "SIARAN LANGSUNG",
@@ -77,8 +77,8 @@
     "Fallback captions: ": "Subtitel fallback: ",
     "Show related videos: ": "Tampilkan video terkait: ",
     "Show annotations by default: ": "Tampilkan anotasi secara default: ",
-    "Automatically extend video description: ": "",
-    "Interactive 360 degree videos: ": "",
+    "Automatically extend video description: ": "Perluas deskripsi video secara otomatis: ",
+    "Interactive 360 degree videos: ": "Video interaktif 360°: ",
     "Visual preferences": "Preferensi visual",
     "Player style: ": "Gaya pemutar: ",
     "Dark mode: ": "Mode gelap: ",
@@ -86,6 +86,8 @@
     "dark": "gelap",
     "light": "terang",
     "Thin mode: ": "Mode tipis: ",
+    "Miscellaneous preferences": "Preferensi lainnya",
+    "Automaticatic instance redirection (fallback to redirect.invidious.io): ": "Pengalihan instans otomatis (fallback ke redirect.invidious.io): ",
     "Subscription preferences": "Preferensi langganan",
     "Show annotations by default for subscribed channels: ": "Tampilkan anotasi secara default untuk kanal langganan: ",
     "Redirect homepage to feed: ": "Arahkan kembali laman beranda ke umpan: ",
@@ -115,6 +117,7 @@
     "Administrator preferences": "Preferensi administrator",
     "Default homepage: ": "Laman beranda default: ",
     "Feed menu: ": "Menu umpan: ",
+    "Show nickname on top: ": "",
     "Top enabled: ": "Teratas diaktifkan: ",
     "CAPTCHA enabled: ": "CAPTCHA diaktifkan: ",
     "Login enabled: ": "Masuk diaktifkan: ",
@@ -125,11 +128,11 @@
     "Token manager": "Pengatur token",
     "Token": "Token",
     "`x` subscriptions": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` langganan.([^.,0-9]|^)1([^.,0-9]|$)",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` langganan",
         "": "`x` langganan."
     },
     "`x` tokens": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` token.([^.,0-9]|^)1([^.,0-9]|$)",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` token",
         "": "`x` token."
     },
     "Import/export": "Impor/ekspor",
@@ -137,7 +140,7 @@
     "revoke": "cabut",
     "Subscriptions": "Langganan",
     "`x` unseen notifications": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` pemberitahuan belum dilihat.([^.,0-9]|^)1([^.,0-9]|$)",
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` pemberitahuan belum dilihat",
         "": "`x` pemberitahuan belum dilihat."
     },
     "search": "cari",
@@ -158,9 +161,11 @@
     "Title": "Judul",
     "Playlist privacy": "Privasi daftar putar",
     "Editing playlist `x`": "Menyunting daftar putar `x`",
-    "Show more": "",
-    "Show less": "",
+    "Show more": "Tampilkan lainnya",
+    "Show less": "Tampilkan lebih sedikit",
     "Watch on YouTube": "Tonton di YouTube",
+    "Switch Invidious Instance": "Beralih Instance Invidious",
+    "Broken? Try another Invidious Instance": "Rusak? Coba Instance Invidious lain",
     "Hide annotations": "Sembunyikan anotasi",
     "Show annotations": "Tampilkan anotasi",
     "Genre: ": "Genre: ",
@@ -363,7 +368,7 @@
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` detik.([^.,0-9]|^)1([^.,0-9]|$)",
         "": "`x` detik."
     },
-    "Fallback comments: ": "",
+    "Fallback comments: ": "Komentar mundur: ",
     "Popular": "Populer",
     "Search": "Cari",
     "Top": "Teratas",
@@ -373,7 +378,7 @@
     "View as playlist": "Tampilkan sebagai daftar putar",
     "Default": "Asali",
     "Music": "Musik",
-    "Gaming": "Gaming",
+    "Gaming": "Permainan",
     "News": "Berita",
     "Movies": "Film",
     "Download": "Unduh",
@@ -415,5 +420,8 @@
     "location": "lokasi",
     "hdr": "hdr",
     "filter": "saring",
-    "Current version: ": "Versi saat ini: "
+    "Current version: ": "Versi saat ini: ",
+    "next_steps_error_message": "next_steps_error_message",
+    "next_steps_error_message_refresh": "",
+    "next_steps_error_message_go_to_youtube": ""
 }

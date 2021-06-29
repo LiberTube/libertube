@@ -1,15 +1,15 @@
 {
     "`x` subscribers": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 位订阅者",
-        "": "`x` 位订阅者"
+        "": "`x` 位订阅者."
     },
     "`x` videos": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个视频",
-        "": "`x` 个视频"
+        "": "`x` 个视频."
     },
     "`x` playlists": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个播放列表",
-        "": "`x` 个播放列表"
+        "": "`x` 个播放列表。"
     },
     "LIVE": "直播",
     "Shared `x` ago": "`x` 前分享",
@@ -20,7 +20,7 @@
     "newest": "最新",
     "oldest": "最老",
     "popular": "时下流行",
-    "last": "",
+    "last": "上一个",
     "Next page": "下一页",
     "Previous page": "上一页",
     "Clear watch history?": "清除观看历史？",
@@ -77,8 +77,8 @@
     "Fallback captions: ": "后备字幕语言: ",
     "Show related videos: ": "是否显示相关视频: ",
     "Show annotations by default: ": "是否默认显示视频注释: ",
-    "Automatically extend video description: ": "",
-    "Interactive 360 degree videos: ": "",
+    "Automatically extend video description: ": "自动展开视频描述： ",
+    "Interactive 360 degree videos: ": "互动式 360 度视频： ",
     "Visual preferences": "视觉选项",
     "Player style: ": "播放器样式: ",
     "Dark mode: ": "深色模式: ",
@@ -86,6 +86,8 @@
     "dark": "暗色",
     "light": "亮色",
     "Thin mode: ": "窄页模式: ",
+    "Miscellaneous preferences": "其他选项",
+    "Automaticatic instance redirection (fallback to redirect.invidious.io): ": "自动实例重定向(回退到redirect.invious.io): ",
     "Subscription preferences": "订阅设置",
     "Show annotations by default for subscribed channels: ": "默认情况下显示已订阅频道的注释: ",
     "Redirect homepage to feed: ": "跳转主页到 feed: ",
@@ -115,6 +117,7 @@
     "Administrator preferences": "管理员选项",
     "Default homepage: ": "默认主页: ",
     "Feed menu: ": "Feed 菜单: ",
+    "Show nickname on top: ": "在顶部显示昵称： ",
     "Top enabled: ": "是否启用“热门视频”页: ",
     "CAPTCHA enabled: ": "是否启用验证码: ",
     "Login enabled: ": "是否启用登录: ",
@@ -126,11 +129,11 @@
     "Token": "令牌",
     "`x` subscriptions": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个订阅",
-        "": "`x` 个订阅"
+        "": "`x` 个订阅."
     },
     "`x` tokens": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个令牌",
-        "": "`x` 个令牌"
+        "": "`x` 个令牌。"
     },
     "Import/export": "导入/导出",
     "unsubscribe": "取消订阅",
@@ -138,7 +141,7 @@
     "Subscriptions": "订阅",
     "`x` unseen notifications": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 条未读通知",
-        "": "`x` 条未读通知"
+        "": "`x` 条未读通知。"
     },
     "search": "搜索",
     "Log out": "登出",
@@ -158,9 +161,11 @@
     "Title": "标题",
     "Playlist privacy": "播放列表隐私设置",
     "Editing playlist `x`": "正在编辑播放列表 `x`",
-    "Show more": "",
-    "Show less": "",
+    "Show more": "显示更多",
+    "Show less": "显示较少",
     "Watch on YouTube": "在 YouTube 观看",
+    "Switch Invidious Instance": "切换 Invidious 实例",
+    "Broken? Try another Invidious Instance": "无法正常工作？ 尝试另一个 Invidious 实例",
     "Hide annotations": "隐藏注释",
     "Show annotations": "显示注释",
     "Genre: ": "风格: ",
@@ -173,7 +178,7 @@
     "Shared `x`": "`x`发布",
     "`x` views": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 播放",
-        "": "`x` 播放"
+        "": "`x` 次观看."
     },
     "Premieres in `x`": "首映于 `x` 后",
     "Premieres `x`": "首映于 `x`",
@@ -182,7 +187,7 @@
     "View more comments on Reddit": "在 Reddit 查看更多评论",
     "View `x` comments": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "查看 `x` 条评论",
-        "": "查看 `x` 条评论"
+        "": "查看 `x` 条评论."
     },
     "View Reddit comments": "查看 Reddit 评论",
     "Hide replies": "隐藏回复",
@@ -210,13 +215,13 @@
     "Could not fetch comments": "无法获取评论",
     "View `x` replies": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "查看 `x` 条回复",
-        "": "查看 `x` 条回复"
+        "": "查看 `x` 条回复."
     },
     "`x` ago": "`x` 前",
     "Load more": "加载更多",
     "`x` points": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 分",
-        "": "`x` 分"
+        "": "`x` 分."
     },
     "Could not create mix.": "无法创建合集。",
     "Empty playlist": "空播放列表",
@@ -337,35 +342,35 @@
     "Zulu": "祖鲁语",
     "`x` years": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 年",
-        "": "`x` 年"
+        "": "`x` 年."
     },
     "`x` months": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 月",
-        "": "`x` 月"
+        "": "`x` 个月."
     },
     "`x` weeks": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 周",
-        "": "`x` 周"
+        "": "`x` 周."
     },
     "`x` days": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 天",
-        "": "`x` 天"
+        "": "`x` 天."
     },
     "`x` hours": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 小时",
-        "": "`x` 小时"
+        "": "`x` 小时."
     },
     "`x` minutes": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 分钟",
-        "": "`x` 分钟"
+        "": "`x` 分钟."
     },
     "`x` seconds": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 秒",
-        "": "`x` 秒"
+        "": "`x` 秒."
     },
     "Fallback comments: ": "后备评论: ",
     "Popular": "热门频道",
-    "Search": "",
+    "Search": "搜索",
     "Top": "热门视频",
     "About": "关于",
     "Rating: ": "评分: ",
@@ -388,32 +393,35 @@
     "Videos": "视频",
     "Playlists": "播放列表",
     "Community": "社区",
-    "relevance": "",
-    "rating": "",
-    "date": "",
-    "views": "",
-    "content_type": "",
-    "duration": "",
-    "features": "",
-    "sort": "",
-    "hour": "",
-    "today": "",
-    "week": "",
-    "month": "",
-    "year": "",
-    "video": "",
-    "channel": "",
-    "playlist": "",
-    "movie": "",
-    "show": "",
-    "hd": "",
-    "subtitles": "",
-    "creative_commons": "",
-    "3d": "",
-    "live": "",
-    "4k": "",
-    "location": "",
-    "hdr": "",
-    "filter": "",
-    "Current version: ": "当前版本: "
+    "relevance": "相关度",
+    "rating": "评分",
+    "date": "日期",
+    "views": "观看次数",
+    "content_type": "content_type",
+    "duration": "持续时间",
+    "features": "功能",
+    "sort": "排序",
+    "hour": "小时",
+    "today": "今日",
+    "week": "周",
+    "month": "月",
+    "year": "年份",
+    "video": "视频",
+    "channel": "频道",
+    "playlist": "播放列表",
+    "movie": "电影",
+    "show": "真人秀",
+    "hd": "高清",
+    "subtitles": "字幕",
+    "creative_commons": "creative_commons 许可",
+    "3d": "3d",
+    "live": "直播",
+    "4k": "4k",
+    "location": "位置",
+    "hdr": "hdr",
+    "filter": "过滤器",
+    "Current version: ": "当前版本: ",
+    "next_steps_error_message": "next_steps_error_message",
+    "next_steps_error_message_refresh": "next_steps_error_message_refresh",
+    "next_steps_error_message_go_to_youtube": "next_steps_error_message_go_to_youtube"
 }

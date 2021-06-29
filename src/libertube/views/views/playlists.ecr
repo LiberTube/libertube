@@ -20,14 +20,16 @@
         </div>
     </div>
     <div class="pure-u-1-3" style="text-align:right">
-        <h3>
+        <h3 style="text-align:right">
             <a href="/feed/channel/<%= channel.ucid %>"><i class="icon ion-logo-rss"></i></a>
         </h3>
     </div>
 </div>
 
 <div class="h-box">
-    <p><span style="white-space:pre-wrap"><%= XML.parse_html(channel.description_html).xpath_node(%q(.//pre)).try &.content if !channel.description_html.empty? %></span></p>
+    <div id="descriptionWrapper">
+        <p><span style="white-space:pre-wrap"><%= XML.parse_html(channel.description_html).xpath_node(%q(.//pre)).try &.content if !channel.description_html.empty? %></span></p>
+    </div>
 </div>
 
 <div class="h-box">
@@ -42,6 +44,11 @@
         <div class="pure-u-1 pure-md-1-3">
             <a href="https://www.youtube.com/channel/<%= channel.ucid %>/playlists"><%= translate(locale, "View channel on YouTube") %></a>
         </div>
+
+        <div class="pure-u-1 pure-md-1-3">
+            <a href="/redirect?referer=<%= env.get?("current_page") %>"><%= translate(locale, "Switch Invidious Instance") %></a>
+        </div>
+
         <div class="pure-u-1 pure-md-1-3">
             <a href="/channel/<%= channel.ucid %>"><%= translate(locale, "Videos") %></a>
         </div>

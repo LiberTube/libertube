@@ -1,15 +1,15 @@
 {
     "`x` subscribers": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` רשומים.([^.,0-9]|^)1([^.,0-9]|$)",
-        "": "`x` רשומים."
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` רשומים",
+        "": "`x` רשומים"
     },
     "`x` videos": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` סרטונים.([^.,0-9]|^)1([^.,0-9]|$)",
-        "": "`x` סרטונים."
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` סרטונים",
+        "": "`x` סרטונים"
     },
     "`x` playlists": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` פלייליסטים.([^.,0-9]|^)1([^.,0-9]|$)",
-        "": "`x` פלייליסטים."
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` פלייליסטים",
+        "": "`x` פלייליסטים"
     },
     "LIVE": "שידור חי",
     "Shared `x` ago": "שותף לפני `x`",
@@ -86,6 +86,8 @@
     "dark": "כהה",
     "light": "בהיר",
     "Thin mode: ": "",
+    "Miscellaneous preferences": "",
+    "Automaticatic instance redirection (fallback to redirect.invidious.io): ": "",
     "Subscription preferences": "העדפות מינויים",
     "Show annotations by default for subscribed channels: ": "Show annotations by default for subscribed channels? ",
     "Redirect homepage to feed: ": "",
@@ -115,6 +117,7 @@
     "Administrator preferences": "הגדרות ניהול מערכת",
     "Default homepage: ": "Default homepage: ",
     "Feed menu: ": "תפריט ההזנה: ",
+    "Show nickname on top: ": "",
     "Top enabled: ": "",
     "CAPTCHA enabled: ": "",
     "Login enabled: ": "",
@@ -125,8 +128,8 @@
     "Token manager": "Token manager",
     "Token": "Token",
     "`x` subscriptions": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` מינויים.([^.,0-9]|^)1([^.,0-9]|$)",
-        "": "`x` מינויים."
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` מינויים",
+        "": "`x` מינויים"
     },
     "`x` tokens": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "",
@@ -137,8 +140,8 @@
     "revoke": "",
     "Subscriptions": "מינויים",
     "`x` unseen notifications": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` הודעות שלא נראו.([^.,0-9]|^)1([^.,0-9]|$)",
-        "": "`x` הודעות שלא נראו."
+        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` הודעות שלא נראו",
+        "": "`x` הודעות שלא נראו"
     },
     "search": "חיפוש",
     "Log out": "יציאה",
@@ -161,6 +164,8 @@
     "Show more": "",
     "Show less": "",
     "Watch on YouTube": "צפייה ב־YouTube",
+    "Switch Invidious Instance": "",
+    "Broken? Try another Invidious Instance": "",
     "Hide annotations": "",
     "Show annotations": "",
     "Genre: ": "Genre: ",
@@ -415,5 +420,8 @@
     "location": "מיקום",
     "hdr": "HDR",
     "filter": "סינון",
-    "Current version: ": "הגרסה הנוכחית: "
+    "Current version: ": "הגרסה הנוכחית: ",
+    "next_steps_error_message": "",
+    "next_steps_error_message_refresh": "",
+    "next_steps_error_message_go_to_youtube": ""
 }

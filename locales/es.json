@@ -1,7 +1,7 @@
 {
     "`x` subscribers": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` suscriptores",
-        "": "`x` suscriptores."
+        "": "`x` suscriptores"
     },
     "`x` videos": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` vídeos",
@@ -9,7 +9,7 @@
     },
     "`x` playlists": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` listas de reproducción",
-        "": "`x` listas de reproducción."
+        "": "`x` listas de reproducción"
     },
     "LIVE": "DIRECTO",
     "Shared `x` ago": "Compartido hace `x`",
@@ -78,7 +78,7 @@
     "Show related videos: ": "¿Mostrar vídeos relacionados? ",
     "Show annotations by default: ": "¿Mostrar anotaciones por defecto? ",
     "Automatically extend video description: ": "Extender automáticamente la descripción del vídeo: ",
-    "Interactive 360 degree videos: ": "",
+    "Interactive 360 degree videos: ": "Vídeos interactivos de 360 grados: ",
     "Visual preferences": "Preferencias visuales",
     "Player style: ": "Estilo de reproductor: ",
     "Dark mode: ": "Modo oscuro: ",
@@ -86,6 +86,8 @@
     "dark": "oscuro",
     "light": "claro",
     "Thin mode: ": "Modo compacto: ",
+    "Miscellaneous preferences": "",
+    "Automaticatic instance redirection (fallback to redirect.invidious.io): ": "",
     "Subscription preferences": "Preferencias de la suscripción",
     "Show annotations by default for subscribed channels: ": "¿Mostrar anotaciones por defecto para los canales suscritos? ",
     "Redirect homepage to feed: ": "Redirigir la página de inicio a la fuente: ",
@@ -115,6 +117,7 @@
     "Administrator preferences": "Preferencias de administrador",
     "Default homepage: ": "Página de inicio por defecto: ",
     "Feed menu: ": "Menú de fuentes: ",
+    "Show nickname on top: ": "",
     "Top enabled: ": "¿Habilitar los destacados? ",
     "CAPTCHA enabled: ": "¿Habilitar los CAPTCHA? ",
     "Login enabled: ": "¿Habilitar el inicio de sesión? ",
@@ -126,11 +129,11 @@
     "Token": "Token",
     "`x` subscriptions": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` suscripciones",
-        "": "`x` suscripciones."
+        "": "`x` suscripciones"
     },
     "`x` tokens": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` tokens",
-        "": "`x` tokens."
+        "": "`x` tokens"
     },
     "Import/export": "Importar/Exportar",
     "unsubscribe": "Desuscribirse",
@@ -138,7 +141,7 @@
     "Subscriptions": "Suscripciones",
     "`x` unseen notifications": {
         "([^.,0-9]|^)1([^.,0-9]|$)": "`x` notificaciones sin ver",
-        "": "`x` notificaciones sin ver."
+        "": "`x` notificaciones sin ver"
     },
     "search": "buscar",
     "Log out": "Cerrar la sesión",
@@ -161,6 +164,8 @@
     "Show more": "Mostrar más",
     "Show less": "Mostrar menos",
     "Watch on YouTube": "Ver el vídeo en Youtube",
+    "Switch Invidious Instance": "",
+    "Broken? Try another Invidious Instance": "",
     "Hide annotations": "Ocultar anotaciones",
     "Show annotations": "Mostrar anotaciones",
     "Genre: ": "Género: ",
@@ -415,5 +420,8 @@
     "location": "ubicación",
     "hdr": "hdr",
     "filter": "filtro",
-    "Current version: ": "Versión actual: "
+    "Current version: ": "Versión actual: ",
+    "next_steps_error_message": "",
+    "next_steps_error_message_refresh": "",
+    "next_steps_error_message_go_to_youtube": ""
 }

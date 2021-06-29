@@ -44,6 +44,7 @@ struct ConfigPreferences
   property quality_dash : String = "auto"
   property default_home : String? = "Popular"
   property feed_menu : Array(String) = ["Popular", "Trending", "Subscriptions", "Playlists"]
+  property automatic_instance_redirect : Bool = false
   property related_videos : Bool = true
   property sort : String = "published"
   property speed : Float32 = 1.0_f32
@@ -53,6 +54,7 @@ struct ConfigPreferences
   property extend_desc : Bool = false
   property volume : Int32 = 100
   property vr_mode : Bool = true
+  property show_nick : Bool = true
 
   def to_tuple
     {% begin %}
