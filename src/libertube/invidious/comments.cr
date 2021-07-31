@@ -312,15 +312,17 @@ def template_youtube_comments(comments, locale, thin_mode, is_replies = false)
         author_thumbnail = ""
       end
 
+      author_name = HTML.escape(child["author"].as_s)
+
       html << <<-END_HTML
       <div class="pure-g" style="width:100%">
         <div class="channel-profile pure-u-4-24 pure-u-md-2-24">
-          <img style="padding-right:1em;padding-top:1em;width:90%" src="#{author_thumbnail}">
+          <img style="margin-right:1em;margin-top:1em;width:90%" src="#{author_thumbnail}">
         </div>
         <div class="pure-u-20-24 pure-u-md-22-24">
           <p>
             <b>
-              <a class="#{child["authorIsChannelOwner"] == true ? "channel-owner" : ""}" href="#{child["authorUrl"]}">#{child["author"]}</a>
+              <a class="#{child["authorIsChannelOwner"] == true ? "channel-owner" : ""}" href="#{child["authorUrl"]}">#{author_name}</a>
             </b>
             <p style="white-space:pre-wrap">#{child["contentHtml"]}</p>
       END_HTML

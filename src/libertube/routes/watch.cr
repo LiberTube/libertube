@@ -150,11 +150,11 @@ class Invidious::Routes::Watch < Invidious::Routes::BaseRoute
     captions = video.captions
 
     preferred_captions = captions.select { |caption|
-      params.preferred_captions.includes?(caption.name.simpleText) ||
+      params.preferred_captions.includes?(caption.name) ||
         params.preferred_captions.includes?(caption.languageCode.split("-")[0])
     }
     preferred_captions.sort_by! { |caption|
-      (params.preferred_captions.index(caption.name.simpleText) ||
+      (params.preferred_captions.index(caption.name) ||
         params.preferred_captions.index(caption.languageCode.split("-")[0])).not_nil!
     }
     captions = captions - preferred_captions
@@ -167,9 +167,11 @@ class Invidious::Routes::Watch < Invidious::Routes::BaseRoute
       if params.listen
         url = audio_streams[0]["url"].as_s
 
-        audio_streams.each do |fmt|
-          if fmt["bitrate"].as_i == params.quality.rchop("k").to_i
-            url = fmt["url"].as_s
+        if params.quality.ends_with? "k"
+          audio_streams.each do |fmt|
+            if fmt["bitrate"].as_i == params.quality.rchop("k").to_i
+              url = fmt["url"].as_s
+            end
           end
         end
       else

@@ -700,50 +700,12 @@ def proxy_file(response, env)
   end
 end
 
-# See https://github.com/kemalcr/kemal/pull/576
-class HTTP::Server::Response::Output
-  def close
-    return if closed?
-
-    unless response.wrote_headers?
-      response.content_length = @out_count
-    end
-
-    ensure_headers_written
-
-    super
-
-    if @chunked
-      @io << "0\r\n\r\n"
+class HTTP::Server::Response
+  class Output
+    private def unbuffered_flush
       @io.flush
-    end
-  end
-end
-
-class HTTP::Client::Response
-  def pipe(io)
-    HTTP.serialize_body(io, headers, @body, @body_io, @version)
-  end
-end
-
-# Supports serialize_body without first writing headers
-module HTTP
-  def self.serialize_body(io, headers, body, body_io, version)
-    if body
-      io << body
-    elsif body_io
-      content_length = content_length(headers)
-      if content_length
-        copied = IO.copy(body_io, io)
-        if copied != content_length
-          raise ArgumentError.new("Content-Length header is #{content_length} but body had #{copied} bytes")
-        end
-      elsif Client::Response.supports_chunked?(version)
-        headers["Transfer-Encoding"] = "chunked"
-        serialize_chunked_body(io, body_io)
-      else
-        io << body
-      end
+    rescue ex : IO::Error
+      unbuffered_close
     end
   end
 end
