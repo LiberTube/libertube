@@ -268,7 +268,6 @@ def extract_item(item : JSON::Any, author_fallback : String? = nil, author_id_fa
                        .try &.["text"]?.try &.["simpleText"]?.try &.as_s.try { |t| decode_length_seconds(t) } || 0
 
     live_now = false
-    paid = false
     premium = false
 
     premiere_timestamp = i["upcomingEventData"]?.try &.["startTime"]?.try { |t| Time.unix(t.as_s.to_i64) }
@@ -281,8 +280,6 @@ def extract_item(item : JSON::Any, author_fallback : String? = nil, author_id_fa
       when "New", "4K", "CC"
         # TODO
       when "Premium"
-        paid = true
-
         # TODO: Potentially available as i["topStandaloneBadge"]["metadataBadgeRenderer"]
         premium = true
       else nil # Ignore
@@ -299,7 +296,6 @@ def extract_item(item : JSON::Any, author_fallback : String? = nil, author_id_fa
       description_html:   description_html,
       length_seconds:     length_seconds,
       live_now:           live_now,
-      paid:               paid,
       premium:            premium,
       premiere_timestamp: premiere_timestamp,
     })
@@ -509,12 +505,6 @@ def check_table(db, table_name, struct_type = nil)
   end
 end
 
-class PG::ResultSet
-  def field(index = @column_index)
-    @fields.not_nil![index]
-  end
-end
-
 def get_column_array(db, table_name)
   column_array = [] of String
   db.query("SELECT * FROM #{table_name} LIMIT 0") do |rs|
@@ -697,49 +687,5 @@ def proxy_file(response, env)
     end
   else
     IO.copy response.body_io, env.response
-  end
-end
-
-class HTTP::Server::Response
-  class Output
-    private def unbuffered_flush
-      @io.flush
-    rescue ex : IO::Error
-      unbuffered_close
-    end
-  end
-end
-
-class HTTP::Client
-  property family : Socket::Family = Socket::Family::UNSPEC
-
-  private def socket
-    socket = @socket
-    return socket if socket
-
-    hostname = @host.starts_with?('[') && @host.ends_with?(']') ? @host[1..-2] : @host
-    socket = TCPSocket.new hostname, @port, @dns_timeout, @connect_timeout, @family
-    socket.read_timeout = @read_timeout if @read_timeout
-    socket.sync = false
-
-    {% if !flag?(:without_openssl) %}
-      if tls = @tls
-        socket = OpenSSL::SSL::Socket::Client.new(socket, context: tls, sync_close: true, hostname: @host)
-      end
-    {% end %}
-
-    @socket = socket
-  end
-end
-
-class TCPSocket
-  def initialize(host, port, dns_timeout = nil, connect_timeout = nil, family = Socket::Family::UNSPEC)
-    Addrinfo.tcp(host, port, timeout: dns_timeout, family: family) do |addrinfo|
-      super(addrinfo.family, addrinfo.type, addrinfo.protocol)
-      connect(addrinfo, timeout: connect_timeout) do |error|
-        close
-        error
-      end
-    end
   end
 end

@@ -1,1 +1,40 @@
-/var/folders/15/5nqgf_n51czb2vfntylx44tw4mppxx/T/repo_cache/b8d7ac20ea9eb424f489143cb1c2b5d9
+FROM alpine:3.14 AS builder
+RUN apk add --no-cache 'crystal<2' shards sqlite-static yaml-static yaml-dev libxml2-dev zlib-static openssl-libs-static openssl-dev musl-dev
+
+WORKDIR /invidious
+COPY ./shard.yml ./shard.yml
+COPY ./shard.lock ./shard.lock
+RUN shards install
+
+COPY --from=quay.io/invidious/lsquic-compiled /root/liblsquic.a ./lib/lsquic/src/lsquic/ext/liblsquic.a
+
+COPY ./src/ ./src/
+# TODO: .git folder is required for building – this is destructive.
+# See definition of CURRENT_BRANCH, CURRENT_COMMIT and CURRENT_VERSION.
+COPY ./.git/ ./.git/
+
+RUN crystal spec --warnings all \
+    --link-flags "-lxml2 -llzma"
+
+RUN crystal build ./src/invidious.cr \
+    --release \
+    --static --warnings all \
+    --link-flags "-lxml2 -llzma"
+
+FROM alpine:latest
+RUN apk add --no-cache librsvg ttf-opensans
+WORKDIR /invidious
+RUN addgroup -g 1000 -S invidious && \
+    adduser -u 1000 -S invidious -G invidious
+COPY ./assets/ ./assets/
+COPY --chown=invidious ./config/config.* ./config/
+RUN mv -n config/config.example.yml config/config.yml
+RUN sed -i 's/host: \(127.0.0.1\|localhost\)/host: postgres/' config/config.yml
+COPY ./config/sql/ ./config/sql/
+COPY ./locales/ ./locales/
+COPY --from=builder /invidious/invidious .
+RUN chmod o+rX -R ./assets ./config ./locales
+
+EXPOSE 3000
+USER invidious
+CMD [ "/invidious/invidious" ]

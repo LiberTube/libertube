@@ -1,5 +1,5 @@
-class Invidious::Routes::Misc < Invidious::Routes::BaseRoute
-  def home(env)
+module Invidious::Routes::Misc
+  def self.home(env)
     preferences = env.get("preferences").as(Preferences)
     locale = LOCALES[preferences.locale]?
     user = env.get? "user"
@@ -17,7 +17,7 @@ class Invidious::Routes::Misc < Invidious::Routes::BaseRoute
       end
     when "Playlists"
       if user
-        env.redirect "/view_all_playlists"
+        env.redirect "/feed/playlists"
       else
         env.redirect "/feed/popular"
       end
@@ -26,17 +26,17 @@ class Invidious::Routes::Misc < Invidious::Routes::BaseRoute
     end
   end
 
-  def privacy(env)
+  def self.privacy(env)
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
     templated "privacy"
   end
 
-  def licenses(env)
+  def self.licenses(env)
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
     rendered "licenses"
   end
 
-  def cross_instance_redirect(env)
+  def self.cross_instance_redirect(env)
     referer = get_referer(env)
 
     if !env.get("preferences").as(Preferences).automatic_instance_redirect
