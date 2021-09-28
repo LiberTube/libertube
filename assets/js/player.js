@@ -149,9 +149,14 @@ player.on('error', function (event) {
 });
 
 // Enable VR video support
-if (video_data.vr && video_data.params.vr_mode) {
+if (!video_data.params.listen && video_data.vr && video_data.params.vr_mode) {
     player.crossOrigin("anonymous")
-    player.vr({projection: "EAC"});
+    switch (video_data.projection_type) {
+        case "EQUIRECTANGULAR":
+            player.vr({projection: "equirectangular"});
+        default: // Should only be "MESH" but we'll use this as a fallback.
+            player.vr({projection: "EAC"});
+    }
 }
 
 // Add markers

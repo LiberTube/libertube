@@ -67,7 +67,7 @@ SOFTWARE = {
   "branch"  => "#{CURRENT_BRANCH}",
 }
 
-YT_POOL = YoutubeConnectionPool.new(YT_URL, capacity: CONFIG.pool_size, timeout: 2.0, use_quic: CONFIG.use_quic)
+YT_POOL = YoutubeConnectionPool.new(YT_URL, capacity: CONFIG.pool_size, use_quic: CONFIG.use_quic)
 
 # CLI
 Kemal.config.extra_options do |parser|
@@ -151,10 +151,6 @@ end
 
 if CONFIG.popular_enabled
   Invidious::Jobs.register Invidious::Jobs::PullPopularVideosJob.new(PG_DB)
-end
-
-if CONFIG.captcha_key
-  Invidious::Jobs.register Invidious::Jobs::BypassCaptchaJob.new
 end
 
 connection_channel = Channel({Bool, Channel(PQ::Notification)}).new(32)
@@ -1550,4 +1546,5 @@ add_context_storage_type(User)
 Kemal.config.logger = LOGGER
 Kemal.config.host_binding = Kemal.config.host_binding != "0.0.0.0" ? Kemal.config.host_binding : CONFIG.host_binding
 Kemal.config.port = Kemal.config.port != 3000 ? Kemal.config.port : CONFIG.port
+Kemal.config.app_name = "Invidious"
 Kemal.run

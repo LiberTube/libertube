@@ -70,8 +70,24 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
 
   client_config = YoutubeAPI::ClientConfig.new(region: region)
   response = YoutubeAPI.next(continuation: ctoken, client_config: client_config)
+  contents = nil
 
-  if response["continuationContents"]?
+  if response["onResponseReceivedEndpoints"]?
+    onResponseReceivedEndpoints = response["onResponseReceivedEndpoints"]
+    header = nil
+    onResponseReceivedEndpoints.as_a.each do |item|
+      if item["reloadContinuationItemsCommand"]?
+        case item["reloadContinuationItemsCommand"]["slot"]
+        when "RELOAD_CONTINUATION_SLOT_HEADER"
+          header = item["reloadContinuationItemsCommand"]["continuationItems"][0]
+        when "RELOAD_CONTINUATION_SLOT_BODY"
+          contents = item["reloadContinuationItemsCommand"]["continuationItems"]
+        end
+      elsif item["appendContinuationItemsAction"]?
+        contents = item["appendContinuationItemsAction"]["continuationItems"]
+      end
+    end
+  elsif response["continuationContents"]?
     response = response["continuationContents"]
     if response["commentRepliesContinuation"]?
       body = response["commentRepliesContinuation"]
@@ -83,22 +99,6 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
     if body["continuations"]?
       moreRepliesContinuation = body["continuations"][0]["nextContinuationData"]["continuation"].as_s
     end
-  elsif response["onResponseReceivedEndpoints"]?
-    onResponseReceivedEndpoints = response["onResponseReceivedEndpoints"]
-    onResponseReceivedEndpoints.as_a.each do |item|
-      case item["reloadContinuationItemsCommand"]["slot"]
-      when "RELOAD_CONTINUATION_SLOT_HEADER"
-        header = item["reloadContinuationItemsCommand"]["continuationItems"][0]
-      when "RELOAD_CONTINUATION_SLOT_BODY"
-        contents = item["reloadContinuationItemsCommand"]["continuationItems"]
-        contents.as_a.reject! do |item|
-          if item["continuationItemRenderer"]?
-            moreRepliesContinuation = item["continuationItemRenderer"]["continuationEndpoint"]["continuationCommand"]["token"].as_s
-            true
-          end
-        end
-      end
-    end
   else
     raise InfoException.new("Could not fetch comments")
   end
@@ -108,6 +108,14 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
       return {"comments" => [] of String}.to_json
     else
       return {"contentHtml" => "", "commentCount" => 0}.to_json
+    end
+  end
+
+  continuationItemRenderer = nil
+  contents.as_a.reject! do |item|
+    if item["continuationItemRenderer"]?
+      continuationItemRenderer = item["continuationItemRenderer"]
+      true
     end
   end
 
@@ -126,7 +134,7 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
         json.array do
           contents.as_a.each do |node|
             json.object do
-              if !response["commentRepliesContinuation"]?
+              if node["commentThreadRenderer"]?
                 node = node["commentThreadRenderer"]
               end
 
@@ -134,7 +142,7 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
                 node_replies = node["replies"]["commentRepliesRenderer"]
               end
 
-              if !response["commentRepliesContinuation"]?
+              if node["comment"]?
                 node_comment = node["comment"]["commentRenderer"]
               else
                 node_comment = node["commentRenderer"]
@@ -224,8 +232,15 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
         end
       end
 
-      if moreRepliesContinuation
-        json.field "continuation", moreRepliesContinuation
+      if continuationItemRenderer
+        if continuationItemRenderer["continuationEndpoint"]?
+          continuationEndpoint = continuationItemRenderer["continuationEndpoint"]
+        elsif continuationItemRenderer["button"]?
+          continuationEndpoint = continuationItemRenderer["button"]["buttonRenderer"]["command"]
+        end
+        if continuationEndpoint
+          json.field "continuation", continuationEndpoint["continuationCommand"]["token"].as_s
+        end
       end
     end
   end
@@ -480,12 +495,16 @@ def replace_links(html)
   html.xpath_nodes(%q(//a)).each do |anchor|
     url = URI.parse(anchor["href"])
 
-    if {"www.youtube.com", "m.youtube.com", "youtu.be"}.includes?(url.host)
-      if url.path == "/redirect"
-        params = HTTP::Params.parse(url.query.not_nil!)
-        anchor["href"] = params["q"]?
+    if url.host.nil? || url.host.not_nil!.ends_with?("youtube.com") || url.host.not_nil!.ends_with?("youtu.be")
+      if url.host.try &.ends_with? "youtu.be"
+        url = "/watch?v=#{url.path.lstrip('/')}#{url.query_params}"
       else
-        anchor["href"] = url.request_target
+        if url.path == "/redirect"
+          params = HTTP::Params.parse(url.query.not_nil!)
+          anchor["href"] = params["q"]?
+        else
+          anchor["href"] = url.request_target
+        end
       end
     elsif url.to_s == "#"
       begin
@@ -552,7 +571,9 @@ def content_to_comment_html(content)
       if url = run["navigationEndpoint"]["urlEndpoint"]?.try &.["url"].as_s
         url = URI.parse(url)
 
-        if !url.host || {"m.youtube.com", "www.youtube.com", "youtu.be"}.includes? url.host
+        if url.host == "youtu.be"
+          url = "/watch?v=#{url.request_target.lstrip('/')}"
+        elsif url.host.nil? || url.host.not_nil!.ends_with?("youtube.com")
           if url.path == "/redirect"
             url = HTTP::Params.parse(url.query.not_nil!)["q"]
           else
