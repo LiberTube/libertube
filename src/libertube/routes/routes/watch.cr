@@ -1,3 +1,5 @@
+{% skip_file if flag?(:api_only) %}
+
 module Invidious::Routes::Watch
   def self.handle(env)
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
@@ -151,11 +153,11 @@ module Invidious::Routes::Watch
 
     preferred_captions = captions.select { |caption|
       params.preferred_captions.includes?(caption.name) ||
-        params.preferred_captions.includes?(caption.languageCode.split("-")[0])
+        params.preferred_captions.includes?(caption.language_code.split("-")[0])
     }
     preferred_captions.sort_by! { |caption|
       (params.preferred_captions.index(caption.name) ||
-        params.preferred_captions.index(caption.languageCode.split("-")[0])).not_nil!
+        params.preferred_captions.index(caption.language_code.split("-")[0])).not_nil!
     }
     captions = captions - preferred_captions
 

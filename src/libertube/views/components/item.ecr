@@ -5,7 +5,7 @@
             <a href="/channel/<%= item.ucid %>">
                 <% if !env.get("preferences").as(Preferences).thin_mode %>
                     <center>
-                        <img style="width:56.25%" src="/ggpht<%= URI.parse(item.author_thumbnail).request_target.gsub(/=s\d+/, "=s176") %>"/>
+                        <img loading="lazy" style="width:56.25%" src="/ggpht<%= URI.parse(item.author_thumbnail).request_target.gsub(/=s\d+/, "=s176") %>"/>
                     </center>
                 <% end %>
                 <p dir="auto"><%= HTML.escape(item.author) %></p>
@@ -23,7 +23,7 @@
             <a style="width:100%" href="<%= url %>">
                 <% if !env.get("preferences").as(Preferences).thin_mode %>
                     <div class="thumbnail">
-                        <img class="thumbnail" src="<%= URI.parse(item.thumbnail || "/").request_target %>"/>
+                        <img loading="lazy" class="thumbnail" src="<%= URI.parse(item.thumbnail || "/").request_target %>"/>
                         <p class="length"><%= number_with_separator(item.video_count) %> videos</p>
                     </div>
                 <% end %>
@@ -36,7 +36,7 @@
             <a href="/watch?v=<%= item.id %>&list=<%= item.rdid %>">
                 <% if !env.get("preferences").as(Preferences).thin_mode %>
                     <div class="thumbnail">
-                        <img class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
+                        <img loading="lazy" class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
                         <% if item.length_seconds != 0 %>
                             <p class="length"><%= recode_length_seconds(item.length_seconds) %></p>
                         <% end %>
@@ -48,10 +48,10 @@
                 <p dir="auto"><b><%= HTML.escape(item.author) %></b></p>
             </a>
         <% when PlaylistVideo %>
-            <a style="width:100%" href="/watch?v=<%= item.id %>&list=<%= item.plid %>">
+            <a style="width:100%" href="/watch?v=<%= item.id %>&list=<%= item.plid %>&index=<%= item.index %>">
                 <% if !env.get("preferences").as(Preferences).thin_mode %>
                     <div class="thumbnail">
-                        <img class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
+                        <img loading="lazy" class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
                         <% if plid = env.get?("remove_playlist_items") %>
                             <form data-onsubmit="return_false" action="/playlist_ajax?action_remove_video=1&set_video_id=<%= item.index %>&playlist_id=<%= plid %>&referer=<%= env.get("current_page") %>" method="post">
                                 <input type="hidden" name="csrf_token" value="<%= URI.encode_www_form(env.get?("csrf_token").try &.as(String) || "") %>">
@@ -79,6 +79,19 @@
                 <div class="flex-left"><a href="/channel/<%= item.ucid %>">
                     <p class="channel-name" dir="auto"><%= HTML.escape(item.author) %></p>
                 </a></div>
+                <div class="flex-right">
+                    <div class="icon-buttons">
+                        <a title="<%=translate(locale, "Watch on YouTube")%>" href="https://www.youtube.com/watch?v=<%= item.id %>&list=<%= item.plid %>">
+                            <i class="icon ion-logo-youtube"></i>
+                        </a>
+                        <a title="<%=translate(locale, "Audio mode")%>" href="/watch?v=<%= item.id %>&list=<%= item.plid %>&amp;listen=1">
+                            <i class="icon ion-md-headset"></i>
+                        </a>
+                        <a title="<%=translate(locale, "Switch Invidious Instance")%>" href="/redirect?referer=<%=URI.encode_www_form("watch?v=#{item.id}&list=#{item.plid}")%>">
+                            <i class="icon ion-md-jet"></i>
+                        </a>
+                    </div>
+                </div>
             </div>
 
             <div class="video-card-row flexible">
@@ -96,11 +109,12 @@
                 </div>
                 <% end %>
             </div>
+        <% when Category %>
         <% else %>
             <a style="width:100%" href="/watch?v=<%= item.id %>">
                 <% if !env.get("preferences").as(Preferences).thin_mode %>
                     <div class="thumbnail">
-                        <img class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
+                        <img loading="lazy" class="thumbnail" src="/vi/<%= item.id %>/mqdefault.jpg"/>
                         <% if env.get? "show_watched" %>
                             <form data-onsubmit="return_false" action="/watch_ajax?action_mark_watched=1&id=<%= item.id %>&referer=<%= env.get("current_page") %>" method="post">
                                 <input type="hidden" name="csrf_token" value="<%= URI.encode_www_form(env.get?("csrf_token").try &.as(String) || "") %>">
@@ -149,7 +163,7 @@
                         <a title="<%=translate(locale, "Audio mode")%>" href="/watch?v=<%= item.id %>&amp;listen=1">
                             <i class="icon ion-md-headset"></i>
                         </a>
-                        <a title="<%=translate(locale, "Switch Invidious Instance")%>" href="/redirect?referer=<%=HTML.escape("watch?v=#{item.id}")%>">
+                        <a title="<%=translate(locale, "Switch Invidious Instance")%>" href="/redirect?referer=<%=URI.encode_www_form("watch?v=#{item.id}")%>">
                             <i class="icon ion-md-jet"></i>
                         </a>
                     </div>

@@ -1,3 +1,5 @@
+{% skip_file if flag?(:api_only) %}
+
 module Invidious::Routes::Login
   def self.login_page(env)
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
@@ -393,7 +395,7 @@ module Invidious::Routes::Login
             return templated "login"
           end
 
-          tokens = env.params.body.select { |k, v| k.match(/^token\[\d+\]$/) }.map { |k, v| v }
+          tokens = env.params.body.select { |k, _| k.match(/^token\[\d+\]$/) }.map { |_, v| v }
 
           answer ||= ""
           captcha_type ||= "image"
@@ -417,7 +419,7 @@ module Invidious::Routes::Login
 
             found_valid_captcha = false
             error_exception = Exception.new
-            tokens.each_with_index do |token, i|
+            tokens.each do |token|
               begin
                 validate_request(token, answer, env.request, HMAC_KEY, PG_DB, locale)
                 found_valid_captcha = true

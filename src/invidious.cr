@@ -27,8 +27,10 @@ require "yaml"
 require "compress/zip"
 require "protodec/utils"
 require "./invidious/helpers/*"
+require "./invidious/yt_backend/*"
 require "./invidious/*"
 require "./invidious/channels/*"
+require "./invidious/user/*"
 require "./invidious/routes/**"
 require "./invidious/jobs/**"
 
@@ -312,80 +314,89 @@ before_all do |env|
   env.set "current_page", URI.encode_www_form(current_page)
 end
 
-Invidious::Routing.get "/", Invidious::Routes::Misc, :home
-Invidious::Routing.get "/privacy", Invidious::Routes::Misc, :privacy
-Invidious::Routing.get "/licenses", Invidious::Routes::Misc, :licenses
+{% unless flag?(:api_only) %}
+  Invidious::Routing.get "/", Invidious::Routes::Misc, :home
+  Invidious::Routing.get "/privacy", Invidious::Routes::Misc, :privacy
+  Invidious::Routing.get "/licenses", Invidious::Routes::Misc, :licenses
 
-Invidious::Routing.get "/channel/:ucid", Invidious::Routes::Channels, :home
-Invidious::Routing.get "/channel/:ucid/home", Invidious::Routes::Channels, :home
-Invidious::Routing.get "/channel/:ucid/videos", Invidious::Routes::Channels, :videos
-Invidious::Routing.get "/channel/:ucid/playlists", Invidious::Routes::Channels, :playlists
-Invidious::Routing.get "/channel/:ucid/community", Invidious::Routes::Channels, :community
-Invidious::Routing.get "/channel/:ucid/about", Invidious::Routes::Channels, :about
+  Invidious::Routing.get "/channel/:ucid", Invidious::Routes::Channels, :home
+  Invidious::Routing.get "/channel/:ucid/home", Invidious::Routes::Channels, :home
+  Invidious::Routing.get "/channel/:ucid/videos", Invidious::Routes::Channels, :videos
+  Invidious::Routing.get "/channel/:ucid/playlists", Invidious::Routes::Channels, :playlists
+  Invidious::Routing.get "/channel/:ucid/community", Invidious::Routes::Channels, :community
+  Invidious::Routing.get "/channel/:ucid/about", Invidious::Routes::Channels, :about
 
-["", "/videos", "/playlists", "/community", "/about"].each do |path|
-  # /c/LinusTechTips
-  Invidious::Routing.get "/c/:user#{path}", Invidious::Routes::Channels, :brand_redirect
-  # /user/linustechtips | Not always the same as /c/
-  Invidious::Routing.get "/user/:user#{path}", Invidious::Routes::Channels, :brand_redirect
-  # /attribution_link?a=anything&u=/channel/UCZYTClx2T1of7BRZ86-8fow
-  Invidious::Routing.get "/attribution_link#{path}", Invidious::Routes::Channels, :brand_redirect
-  # /profile?user=linustechtips
-  Invidious::Routing.get "/profile/#{path}", Invidious::Routes::Channels, :profile
-end
+  ["", "/videos", "/playlists", "/community", "/about"].each do |path|
+    # /c/LinusTechTips
+    Invidious::Routing.get "/c/:user#{path}", Invidious::Routes::Channels, :brand_redirect
+    # /user/linustechtips | Not always the same as /c/
+    Invidious::Routing.get "/user/:user#{path}", Invidious::Routes::Channels, :brand_redirect
+    # /attribution_link?a=anything&u=/channel/UCZYTClx2T1of7BRZ86-8fow
+    Invidious::Routing.get "/attribution_link#{path}", Invidious::Routes::Channels, :brand_redirect
+    # /profile?user=linustechtips
+    Invidious::Routing.get "/profile/#{path}", Invidious::Routes::Channels, :profile
+  end
 
-Invidious::Routing.get "/watch", Invidious::Routes::Watch, :handle
-Invidious::Routing.get "/watch/:id", Invidious::Routes::Watch, :redirect
-Invidious::Routing.get "/shorts/:id", Invidious::Routes::Watch, :redirect
-Invidious::Routing.get "/w/:id", Invidious::Routes::Watch, :redirect
-Invidious::Routing.get "/v/:id", Invidious::Routes::Watch, :redirect
-Invidious::Routing.get "/e/:id", Invidious::Routes::Watch, :redirect
-Invidious::Routing.get "/redirect", Invidious::Routes::Misc, :cross_instance_redirect
+  Invidious::Routing.get "/watch", Invidious::Routes::Watch, :handle
+  Invidious::Routing.get "/watch/:id", Invidious::Routes::Watch, :redirect
+  Invidious::Routing.get "/shorts/:id", Invidious::Routes::Watch, :redirect
+  Invidious::Routing.get "/w/:id", Invidious::Routes::Watch, :redirect
+  Invidious::Routing.get "/v/:id", Invidious::Routes::Watch, :redirect
+  Invidious::Routing.get "/e/:id", Invidious::Routes::Watch, :redirect
+  Invidious::Routing.get "/redirect", Invidious::Routes::Misc, :cross_instance_redirect
 
-Invidious::Routing.get "/embed/", Invidious::Routes::Embed, :redirect
-Invidious::Routing.get "/embed/:id", Invidious::Routes::Embed, :show
+  Invidious::Routing.get "/embed/", Invidious::Routes::Embed, :redirect
+  Invidious::Routing.get "/embed/:id", Invidious::Routes::Embed, :show
 
-Invidious::Routing.get "/create_playlist", Invidious::Routes::Playlists, :new
-Invidious::Routing.post "/create_playlist", Invidious::Routes::Playlists, :create
-Invidious::Routing.get "/subscribe_playlist", Invidious::Routes::Playlists, :subscribe
-Invidious::Routing.get "/delete_playlist", Invidious::Routes::Playlists, :delete_page
-Invidious::Routing.post "/delete_playlist", Invidious::Routes::Playlists, :delete
-Invidious::Routing.get "/edit_playlist", Invidious::Routes::Playlists, :edit
-Invidious::Routing.post "/edit_playlist", Invidious::Routes::Playlists, :update
-Invidious::Routing.get "/add_playlist_items", Invidious::Routes::Playlists, :add_playlist_items_page
-Invidious::Routing.post "/playlist_ajax", Invidious::Routes::Playlists, :playlist_ajax
-Invidious::Routing.get "/playlist", Invidious::Routes::Playlists, :show
-Invidious::Routing.get "/mix", Invidious::Routes::Playlists, :mix
+  Invidious::Routing.get "/create_playlist", Invidious::Routes::Playlists, :new
+  Invidious::Routing.post "/create_playlist", Invidious::Routes::Playlists, :create
+  Invidious::Routing.get "/subscribe_playlist", Invidious::Routes::Playlists, :subscribe
+  Invidious::Routing.get "/delete_playlist", Invidious::Routes::Playlists, :delete_page
+  Invidious::Routing.post "/delete_playlist", Invidious::Routes::Playlists, :delete
+  Invidious::Routing.get "/edit_playlist", Invidious::Routes::Playlists, :edit
+  Invidious::Routing.post "/edit_playlist", Invidious::Routes::Playlists, :update
+  Invidious::Routing.get "/add_playlist_items", Invidious::Routes::Playlists, :add_playlist_items_page
+  Invidious::Routing.post "/playlist_ajax", Invidious::Routes::Playlists, :playlist_ajax
+  Invidious::Routing.get "/playlist", Invidious::Routes::Playlists, :show
+  Invidious::Routing.get "/mix", Invidious::Routes::Playlists, :mix
 
-Invidious::Routing.get "/opensearch.xml", Invidious::Routes::Search, :opensearch
-Invidious::Routing.get "/results", Invidious::Routes::Search, :results
-Invidious::Routing.get "/search", Invidious::Routes::Search, :search
+  Invidious::Routing.get "/opensearch.xml", Invidious::Routes::Search, :opensearch
+  Invidious::Routing.get "/results", Invidious::Routes::Search, :results
+  Invidious::Routing.get "/search", Invidious::Routes::Search, :search
 
-Invidious::Routing.get "/login", Invidious::Routes::Login, :login_page
-Invidious::Routing.post "/login", Invidious::Routes::Login, :login
-Invidious::Routing.post "/signout", Invidious::Routes::Login, :signout
+  Invidious::Routing.get "/login", Invidious::Routes::Login, :login_page
+  Invidious::Routing.post "/login", Invidious::Routes::Login, :login
+  Invidious::Routing.post "/signout", Invidious::Routes::Login, :signout
 
-Invidious::Routing.get "/preferences", Invidious::Routes::PreferencesRoute, :show
-Invidious::Routing.post "/preferences", Invidious::Routes::PreferencesRoute, :update
-Invidious::Routing.get "/toggle_theme", Invidious::Routes::PreferencesRoute, :toggle_theme
+  Invidious::Routing.get "/preferences", Invidious::Routes::PreferencesRoute, :show
+  Invidious::Routing.post "/preferences", Invidious::Routes::PreferencesRoute, :update
+  Invidious::Routing.get "/toggle_theme", Invidious::Routes::PreferencesRoute, :toggle_theme
 
-# Feeds
-Invidious::Routing.get "/view_all_playlists", Invidious::Routes::Feeds, :view_all_playlists_redirect
-Invidious::Routing.get "/feed/playlists", Invidious::Routes::Feeds, :playlists
-Invidious::Routing.get "/feed/popular", Invidious::Routes::Feeds, :popular
-Invidious::Routing.get "/feed/trending", Invidious::Routes::Feeds, :trending
-Invidious::Routing.get "/feed/subscriptions", Invidious::Routes::Feeds, :subscriptions
-Invidious::Routing.get "/feed/history", Invidious::Routes::Feeds, :history
+  # Feeds
+  Invidious::Routing.get "/view_all_playlists", Invidious::Routes::Feeds, :view_all_playlists_redirect
+  Invidious::Routing.get "/feed/playlists", Invidious::Routes::Feeds, :playlists
+  Invidious::Routing.get "/feed/popular", Invidious::Routes::Feeds, :popular
+  Invidious::Routing.get "/feed/trending", Invidious::Routes::Feeds, :trending
+  Invidious::Routing.get "/feed/subscriptions", Invidious::Routes::Feeds, :subscriptions
+  Invidious::Routing.get "/feed/history", Invidious::Routes::Feeds, :history
 
-# RSS Feeds
-Invidious::Routing.get "/feed/channel/:ucid", Invidious::Routes::Feeds, :rss_channel
-Invidious::Routing.get "/feed/private", Invidious::Routes::Feeds, :rss_private
-Invidious::Routing.get "/feed/playlist/:plid", Invidious::Routes::Feeds, :rss_playlist
-Invidious::Routing.get "/feeds/videos.xml", Invidious::Routes::Feeds, :rss_videos
+  # RSS Feeds
+  Invidious::Routing.get "/feed/channel/:ucid", Invidious::Routes::Feeds, :rss_channel
+  Invidious::Routing.get "/feed/private", Invidious::Routes::Feeds, :rss_private
+  Invidious::Routing.get "/feed/playlist/:plid", Invidious::Routes::Feeds, :rss_playlist
+  Invidious::Routing.get "/feeds/videos.xml", Invidious::Routes::Feeds, :rss_videos
 
-# Support push notifications via PubSubHubbub
-Invidious::Routing.get "/feed/webhook/:token", Invidious::Routes::Feeds, :push_notifications_get
-Invidious::Routing.post "/feed/webhook/:token", Invidious::Routes::Feeds, :push_notifications_post
+  # Support push notifications via PubSubHubbub
+  Invidious::Routing.get "/feed/webhook/:token", Invidious::Routes::Feeds, :push_notifications_get
+  Invidious::Routing.post "/feed/webhook/:token", Invidious::Routes::Feeds, :push_notifications_post
+{% end %}
+
+Invidious::Routing.get "/ggpht/*", Invidious::Routes::Images, :ggpht
+Invidious::Routing.options "/sb/:authority/:id/:storyboard/:index", Invidious::Routes::Images, :options_storyboard
+Invidious::Routing.get "/sb/:authority/:id/:storyboard/:index", Invidious::Routes::Images, :get_storyboard
+Invidious::Routing.get "/s_p/:id/:name", Invidious::Routes::Images, :s_p_image
+Invidious::Routing.get "/yts/img/:name", Invidious::Routes::Images, :yts_image
+Invidious::Routing.get "/vi/:id/:name", Invidious::Routes::Images, :thumbnails
 
 # API routes (macro)
 define_v1_api_routes()
@@ -644,7 +655,7 @@ get "/subscription_manager" do |env|
   end
 
   subscriptions = PG_DB.query_all("SELECT * FROM channels WHERE id = ANY(#{values})", as: InvidiousChannel)
-  subscriptions.sort_by! { |channel| channel.author.downcase }
+  subscriptions.sort_by!(&.author.downcase)
 
   if action_takeout
     if format == "json"
@@ -692,13 +703,13 @@ get "/subscription_manager" do |env|
             xml.element("outline", text: title, title: title) do
               subscriptions.each do |channel|
                 if format == "newpipe"
-                  xmlUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=#{channel.id}"
+                  xml_url = "https://www.youtube.com/feeds/videos.xml?channel_id=#{channel.id}"
                 else
-                  xmlUrl = "#{HOST_URL}/feed/channel/#{channel.id}"
+                  xml_url = "#{HOST_URL}/feed/channel/#{channel.id}"
                 end
 
                 xml.element("outline", text: channel.author, title: channel.author,
-                  "type": "rss", xmlUrl: xmlUrl)
+                  "type": "rss", xmlUrl: xml_url)
               end
             end
           end
@@ -748,7 +759,7 @@ post "/data_control" do |env|
         body = JSON.parse(body)
 
         if body["subscriptions"]?
-          user.subscriptions += body["subscriptions"].as_a.map { |a| a.as_s }
+          user.subscriptions += body["subscriptions"].as_a.map(&.as_s)
           user.subscriptions.uniq!
 
           user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
@@ -757,7 +768,7 @@ post "/data_control" do |env|
         end
 
         if body["watch_history"]?
-          user.watched += body["watch_history"].as_a.map { |a| a.as_s }
+          user.watched += body["watch_history"].as_a.map(&.as_s)
           user.watched.uniq!
           PG_DB.exec("UPDATE users SET watched = $1 WHERE email = $2", user.watched, user.email)
         end
@@ -865,12 +876,12 @@ post "/data_control" do |env|
               File.write(tempfile.path, entry.io.gets_to_end)
               db = DB.open("sqlite3://" + tempfile.path)
 
-              user.watched += db.query_all("SELECT url FROM streams", as: String).map { |url| url.lchop("https://www.youtube.com/watch?v=") }
+              user.watched += db.query_all("SELECT url FROM streams", as: String).map(&.lchop("https://www.youtube.com/watch?v="))
               user.watched.uniq!
 
               PG_DB.exec("UPDATE users SET watched = $1 WHERE email = $2", user.watched, user.email)
 
-              user.subscriptions += db.query_all("SELECT url FROM subscriptions", as: String).map { |url| url.lchop("https://www.youtube.com/channel/") }
+              user.subscriptions += db.query_all("SELECT url FROM subscriptions", as: String).map(&.lchop("https://www.youtube.com/channel/"))
               user.subscriptions.uniq!
 
               user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
@@ -1271,194 +1282,6 @@ post "/api/v1/auth/notifications" do |env|
   create_notification_stream(env, topics, connection_channel)
 end
 
-get "/ggpht/*" do |env|
-  url = env.request.path.lchop("/ggpht")
-
-  headers = HTTP::Headers{":authority" => "yt3.ggpht.com"}
-  REQUEST_HEADERS_WHITELIST.each do |header|
-    if env.request.headers[header]?
-      headers[header] = env.request.headers[header]
-    end
-  end
-
-  begin
-    YT_POOL.client &.get(url, headers) do |response|
-      env.response.status_code = response.status_code
-      response.headers.each do |key, value|
-        if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
-          env.response.headers[key] = value
-        end
-      end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      if response.status_code >= 300
-        env.response.headers.delete("Transfer-Encoding")
-        break
-      end
-
-      proxy_file(response, env)
-    end
-  rescue ex
-  end
-end
-
-options "/sb/:authority/:id/:storyboard/:index" do |env|
-  env.response.headers["Access-Control-Allow-Origin"] = "*"
-  env.response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-  env.response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
-end
-
-get "/sb/:authority/:id/:storyboard/:index" do |env|
-  authority = env.params.url["authority"]
-  id = env.params.url["id"]
-  storyboard = env.params.url["storyboard"]
-  index = env.params.url["index"]
-
-  url = "/sb/#{id}/#{storyboard}/#{index}?#{env.params.query}"
-
-  headers = HTTP::Headers.new
-
-  headers[":authority"] = "#{authority}.ytimg.com"
-
-  REQUEST_HEADERS_WHITELIST.each do |header|
-    if env.request.headers[header]?
-      headers[header] = env.request.headers[header]
-    end
-  end
-
-  begin
-    YT_POOL.client &.get(url, headers) do |response|
-      env.response.status_code = response.status_code
-      response.headers.each do |key, value|
-        if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
-          env.response.headers[key] = value
-        end
-      end
-
-      env.response.headers["Connection"] = "close"
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      if response.status_code >= 300
-        env.response.headers.delete("Transfer-Encoding")
-        break
-      end
-
-      proxy_file(response, env)
-    end
-  rescue ex
-  end
-end
-
-get "/s_p/:id/:name" do |env|
-  id = env.params.url["id"]
-  name = env.params.url["name"]
-
-  url = env.request.resource
-
-  headers = HTTP::Headers{":authority" => "i9.ytimg.com"}
-  REQUEST_HEADERS_WHITELIST.each do |header|
-    if env.request.headers[header]?
-      headers[header] = env.request.headers[header]
-    end
-  end
-
-  begin
-    YT_POOL.client &.get(url, headers) do |response|
-      env.response.status_code = response.status_code
-      response.headers.each do |key, value|
-        if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
-          env.response.headers[key] = value
-        end
-      end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      if response.status_code >= 300 && response.status_code != 404
-        env.response.headers.delete("Transfer-Encoding")
-        break
-      end
-
-      proxy_file(response, env)
-    end
-  rescue ex
-  end
-end
-
-get "/yts/img/:name" do |env|
-  headers = HTTP::Headers.new
-  REQUEST_HEADERS_WHITELIST.each do |header|
-    if env.request.headers[header]?
-      headers[header] = env.request.headers[header]
-    end
-  end
-
-  begin
-    YT_POOL.client &.get(env.request.resource, headers) do |response|
-      env.response.status_code = response.status_code
-      response.headers.each do |key, value|
-        if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
-          env.response.headers[key] = value
-        end
-      end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      if response.status_code >= 300 && response.status_code != 404
-        env.response.headers.delete("Transfer-Encoding")
-        break
-      end
-
-      proxy_file(response, env)
-    end
-  rescue ex
-  end
-end
-
-get "/vi/:id/:name" do |env|
-  id = env.params.url["id"]
-  name = env.params.url["name"]
-
-  headers = HTTP::Headers{":authority" => "i.ytimg.com"}
-
-  if name == "maxres.jpg"
-    build_thumbnails(id).each do |thumb|
-      if YT_POOL.client &.head("/vi/#{id}/#{thumb[:url]}.jpg", headers).status_code == 200
-        name = thumb[:url] + ".jpg"
-        break
-      end
-    end
-  end
-  url = "/vi/#{id}/#{name}"
-
-  REQUEST_HEADERS_WHITELIST.each do |header|
-    if env.request.headers[header]?
-      headers[header] = env.request.headers[header]
-    end
-  end
-
-  begin
-    YT_POOL.client &.get(url, headers) do |response|
-      env.response.status_code = response.status_code
-      response.headers.each do |key, value|
-        if !RESPONSE_HEADERS_BLACKLIST.includes?(key.downcase)
-          env.response.headers[key] = value
-        end
-      end
-
-      env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-      if response.status_code >= 300 && response.status_code != 404
-        env.response.headers.delete("Transfer-Encoding")
-        break
-      end
-
-      proxy_file(response, env)
-    end
-  rescue ex
-  end
-end
-
 get "/Captcha" do |env|
   headers = HTTP::Headers{":authority" => "accounts.google.com"}
   response = YT_POOL.client &.get(env.request.resource, headers)
@@ -1528,7 +1351,7 @@ error 500 do |env, ex|
   error_template(500, ex)
 end
 
-static_headers do |response, filepath, filestat|
+static_headers do |response|
   response.headers.add("Cache-Control", "max-age=2629800")
 end
 
@@ -1547,4 +1370,11 @@ Kemal.config.logger = LOGGER
 Kemal.config.host_binding = Kemal.config.host_binding != "0.0.0.0" ? Kemal.config.host_binding : CONFIG.host_binding
 Kemal.config.port = Kemal.config.port != 3000 ? Kemal.config.port : CONFIG.port
 Kemal.config.app_name = "Invidious"
+
+# Use in kemal's production mode.
+# Users can also set the KEMAL_ENV environmental variable for this to be set automatically.
+{% if flag?(:release) || flag?(:production) %}
+  Kemal.config.env = "production" if !ENV.has_key?("KEMAL_ENV")
+{% end %}
+
 Kemal.run

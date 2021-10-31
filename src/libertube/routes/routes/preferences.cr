@@ -1,3 +1,5 @@
+{% skip_file if flag?(:api_only) %}
+
 module Invidious::Routes::PreferencesRoute
   def self.show(env)
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
@@ -100,6 +102,8 @@ module Invidious::Routes::PreferencesRoute
     automatic_instance_redirect ||= "off"
     automatic_instance_redirect = automatic_instance_redirect == "on"
 
+    region = env.params.body["region"]?.try &.as(String)
+
     locale = env.params.body["locale"]?.try &.as(String)
     locale ||= CONFIG.default_user_preferences.locale
 
@@ -150,6 +154,7 @@ module Invidious::Routes::PreferencesRoute
       default_home:                default_home,
       feed_menu:                   feed_menu,
       automatic_instance_redirect: automatic_instance_redirect,
+      region:                      region,
       related_videos:              related_videos,
       sort:                        sort,
       speed:                       speed,
@@ -197,6 +202,8 @@ module Invidious::Routes::PreferencesRoute
         statistics_enabled = env.params.body["statistics_enabled"]?.try &.as(String)
         statistics_enabled ||= "off"
         CONFIG.statistics_enabled = statistics_enabled == "on"
+
+        CONFIG.modified_source_code_url = env.params.body["modified_source_code_url"]?.try &.as(String)
 
         File.write("config/config.yml", CONFIG.to_yaml)
       end

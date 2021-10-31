@@ -72,10 +72,9 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
   response = YoutubeAPI.next(continuation: ctoken, client_config: client_config)
   contents = nil
 
-  if response["onResponseReceivedEndpoints"]?
-    onResponseReceivedEndpoints = response["onResponseReceivedEndpoints"]
+  if on_response_received_endpoints = response["onResponseReceivedEndpoints"]?
     header = nil
-    onResponseReceivedEndpoints.as_a.each do |item|
+    on_response_received_endpoints.as_a.each do |item|
       if item["reloadContinuationItemsCommand"]?
         case item["reloadContinuationItemsCommand"]["slot"]
         when "RELOAD_CONTINUATION_SLOT_HEADER"
@@ -97,7 +96,8 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
     contents = body["contents"]?
     header = body["header"]?
     if body["continuations"]?
-      moreRepliesContinuation = body["continuations"][0]["nextContinuationData"]["continuation"].as_s
+      # Removable? Doesn't seem like this is used.
+      more_replies_continuation = body["continuations"][0]["nextContinuationData"]["continuation"].as_s
     end
   else
     raise InfoException.new("Could not fetch comments")
@@ -111,10 +111,10 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
     end
   end
 
-  continuationItemRenderer = nil
+  continuation_item_renderer = nil
   contents.as_a.reject! do |item|
     if item["continuationItemRenderer"]?
-      continuationItemRenderer = item["continuationItemRenderer"]
+      continuation_item_renderer = item["continuationItemRenderer"]
       true
     end
   end
@@ -232,14 +232,14 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
         end
       end
 
-      if continuationItemRenderer
-        if continuationItemRenderer["continuationEndpoint"]?
-          continuationEndpoint = continuationItemRenderer["continuationEndpoint"]
-        elsif continuationItemRenderer["button"]?
-          continuationEndpoint = continuationItemRenderer["button"]["buttonRenderer"]["command"]
+      if continuation_item_renderer
+        if continuation_item_renderer["continuationEndpoint"]?
+          continuation_endpoint = continuation_item_renderer["continuationEndpoint"]
+        elsif continuation_item_renderer["button"]?
+          continuation_endpoint = continuation_item_renderer["button"]["buttonRenderer"]["command"]
         end
-        if continuationEndpoint
-          json.field "continuation", continuationEndpoint["continuationCommand"]["token"].as_s
+        if continuation_endpoint
+          json.field "continuation", continuation_endpoint["continuationCommand"]["token"].as_s
         end
       end
     end
@@ -329,7 +329,7 @@ def template_youtube_comments(comments, locale, thin_mode, is_replies = false)
       html << <<-END_HTML
       <div class="pure-g" style="width:100%">
         <div class="channel-profile pure-u-4-24 pure-u-md-2-24">
-          <img style="margin-right:1em;margin-top:1em;width:90%" src="#{author_thumbnail}">
+          <img loading="lazy" style="margin-right:1em;margin-top:1em;width:90%" src="#{author_thumbnail}">
         </div>
         <div class="pure-u-20-24 pure-u-md-22-24">
           <p>
@@ -349,7 +349,7 @@ def template_youtube_comments(comments, locale, thin_mode, is_replies = false)
           html << <<-END_HTML
           <div class="pure-g">
             <div class="pure-u-1 pure-u-md-1-2">
-              <img style="width:100%" src="/ggpht#{URI.parse(attachment["url"].as_s).request_target}">
+              <img loading="lazy" style="width:100%" src="/ggpht#{URI.parse(attachment["url"].as_s).request_target}">
             </div>
           </div>
           END_HTML
@@ -410,7 +410,7 @@ def template_youtube_comments(comments, locale, thin_mode, is_replies = false)
         html << <<-END_HTML
           <span class="creator-heart-container" title="#{translate(locale, "`x` marked it with a ❤", child["creatorHeart"]["creatorName"].as_s)}">
               <div class="creator-heart">
-                  <img class="creator-heart-background-hearted" src="#{creator_thumbnail}"></img>
+                  <img loading="lazy" class="creator-heart-background-hearted" src="#{creator_thumbnail}"></img>
                   <div class="creator-heart-small-hearted">
                       <div class="icon ion-ios-heart creator-heart-small-container"></div>
                   </div>
@@ -638,7 +638,7 @@ def produce_comment_continuation(video_id, cursor = "", sort_by = "top")
     object["6:embedded"].as(Hash)["4:embedded"].as(Hash)["6:varint"] = 0_i64
   end
 
-  continuation = object.try { |i| Protodec::Any.cast_json(object) }
+  continuation = object.try { |i| Protodec::Any.cast_json(i) }
     .try { |i| Protodec::Any.from_json(i) }
     .try { |i| Base64.urlsafe_encode(i) }
     .try { |i| URI.encode_www_form(i) }
@@ -673,7 +673,7 @@ def produce_comment_reply_continuation(video_id, ucid, comment_id)
     },
   }
 
-  continuation = object.try { |i| Protodec::Any.cast_json(object) }
+  continuation = object.try { |i| Protodec::Any.cast_json(i) }
     .try { |i| Protodec::Any.from_json(i) }
     .try { |i| Base64.urlsafe_encode(i) }
     .try { |i| URI.encode_www_form(i) }

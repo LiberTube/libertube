@@ -1,43 +1,56 @@
+# "bn_BD"   => load_locale("bn_BD"),   # Bengali (Bangladesh)  [Incomplete]
+# "eu"      => load_locale("eu"),      # Basque  [Incomplete]
+# "si"      => load_locale("si"),      # Sinhala  [Incomplete]
+# "sk"      => load_locale("sk"),      # Slovak  [Incomplete]
+# "sr"      => load_locale("sr"),      # Serbian  [Incomplete]
+# "sr_Cyrl" => load_locale("sr_Cyrl"), # Serbian (cyrillic)  [Incomplete]
 LOCALES = {
-  "ar"      => load_locale("ar"),      # Arabic
-  "bn_BD"   => load_locale("bn_BD"),   # Bengali (Bangladesh)
-  "cs"      => load_locale("cs"),      # Czech
-  "da"      => load_locale("da"),      # Danish
-  "de"      => load_locale("de"),      # German
-  "el"      => load_locale("el"),      # Greek
-  "en-US"   => load_locale("en-US"),   # English (US)
-  "eo"      => load_locale("eo"),      # Esperanto
-  "es"      => load_locale("es"),      # Spanish
-  "eu"      => load_locale("eu"),      # Basque
-  "fa"      => load_locale("fa"),      # Persian
-  "fi"      => load_locale("fi"),      # Finnish
-  "fr"      => load_locale("fr"),      # French
-  "he"      => load_locale("he"),      # Hebrew
-  "hr"      => load_locale("hr"),      # Croatian
-  "hu-HU"   => load_locale("hu-HU"),   # Hungarian
-  "id"      => load_locale("id"),      # Indonesian
-  "is"      => load_locale("is"),      # Icelandic
-  "it"      => load_locale("it"),      # Italian
-  "ja"      => load_locale("ja"),      # Japanese
-  "ko"      => load_locale("ko"),      # Korean
-  "lt"      => load_locale("lt"),      # Lithuanian
-  "nb-NO"   => load_locale("nb-NO"),   # Norwegian Bokmål
-  "nl"      => load_locale("nl"),      # Dutch
-  "pl"      => load_locale("pl"),      # Polish
-  "pt-BR"   => load_locale("pt-BR"),   # Portuguese (Brazil)
-  "pt-PT"   => load_locale("pt-PT"),   # Portuguese (Portugal)
-  "ro"      => load_locale("ro"),      # Romanian
-  "ru"      => load_locale("ru"),      # Russian
-  "si"      => load_locale("si"),      # Sinhala
-  "sk"      => load_locale("sk"),      # Slovak
-  "sr"      => load_locale("sr"),      # Serbian
-  "sr_Cyrl" => load_locale("sr_Cyrl"), # Serbian (cyrillic)
-  "sv-SE"   => load_locale("sv-SE"),   # Swedish
-  "tr"      => load_locale("tr"),      # Turkish
-  "uk"      => load_locale("uk"),      # Ukrainian
-  "vi"      => load_locale("vi"),      # Vietnamese
-  "zh-CN"   => load_locale("zh-CN"),   # Chinese (Simplified)
-  "zh-TW"   => load_locale("zh-TW"),   # Chinese (Traditional)
+  "ar"    => load_locale("ar"),    # Arabic
+  "cs"    => load_locale("cs"),    # Czech
+  "da"    => load_locale("da"),    # Danish
+  "de"    => load_locale("de"),    # German
+  "el"    => load_locale("el"),    # Greek
+  "en-US" => load_locale("en-US"), # English (US)
+  "eo"    => load_locale("eo"),    # Esperanto
+  "es"    => load_locale("es"),    # Spanish
+  "fa"    => load_locale("fa"),    # Persian
+  "fi"    => load_locale("fi"),    # Finnish
+  "fr"    => load_locale("fr"),    # French
+  "he"    => load_locale("he"),    # Hebrew
+  "hr"    => load_locale("hr"),    # Croatian
+  "hu-HU" => load_locale("hu-HU"), # Hungarian
+  "id"    => load_locale("id"),    # Indonesian
+  "is"    => load_locale("is"),    # Icelandic
+  "it"    => load_locale("it"),    # Italian
+  "ja"    => load_locale("ja"),    # Japanese
+  "ko"    => load_locale("ko"),    # Korean
+  "lt"    => load_locale("lt"),    # Lithuanian
+  "nb-NO" => load_locale("nb-NO"), # Norwegian Bokmål
+  "nl"    => load_locale("nl"),    # Dutch
+  "pl"    => load_locale("pl"),    # Polish
+  "pt"    => load_locale("pt"),    # Portuguese
+  "pt-BR" => load_locale("pt-BR"), # Portuguese (Brazil)
+  "pt-PT" => load_locale("pt-PT"), # Portuguese (Portugal)
+  "ro"    => load_locale("ro"),    # Romanian
+  "ru"    => load_locale("ru"),    # Russian
+  "sv-SE" => load_locale("sv-SE"), # Swedish
+  "tr"    => load_locale("tr"),    # Turkish
+  "uk"    => load_locale("uk"),    # Ukrainian
+  "vi"    => load_locale("vi"),    # Vietnamese
+  "zh-CN" => load_locale("zh-CN"), # Chinese (Simplified)
+  "zh-TW" => load_locale("zh-TW"), # Chinese (Traditional)
+}
+
+CONTENT_REGIONS = {
+  "AE", "AR", "AT", "AU", "AZ", "BA", "BD", "BE", "BG", "BH", "BO", "BR", "BY",
+  "CA", "CH", "CL", "CO", "CR", "CY", "CZ", "DE", "DK", "DO", "DZ", "EC", "EE",
+  "EG", "ES", "FI", "FR", "GB", "GE", "GH", "GR", "GT", "HK", "HN", "HR", "HU",
+  "ID", "IE", "IL", "IN", "IQ", "IS", "IT", "JM", "JO", "JP", "KE", "KR", "KW",
+  "KZ", "LB", "LI", "LK", "LT", "LU", "LV", "LY", "MA", "ME", "MK", "MT", "MX",
+  "MY", "NG", "NI", "NL", "NO", "NP", "NZ", "OM", "PA", "PE", "PG", "PH", "PK",
+  "PL", "PR", "PT", "PY", "QA", "RO", "RS", "RU", "SA", "SE", "SG", "SI", "SK",
+  "SN", "SV", "TH", "TN", "TR", "TW", "TZ", "UA", "UG", "US", "UY", "VE", "VN",
+  "YE", "ZA", "ZW",
 }
 
 def load_locale(name)

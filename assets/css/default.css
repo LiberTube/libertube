@@ -19,6 +19,7 @@ body {
   font-size: 1.17em;
   font-weight: bold;
   vertical-align: middle;
+  border-radius: 50%;
 }
 
 .channel-profile > img {
@@ -312,6 +313,11 @@ footer {
 footer a {
   color: #919191 !important;
   text-decoration: underline;
+}
+
+footer span {
+  margin: 4px 0;
+  display: block;
 }
 
 /* keyframes */

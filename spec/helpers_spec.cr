@@ -6,11 +6,11 @@ require "spec"
 require "yaml"
 require "../src/invidious/helpers/*"
 require "../src/invidious/channels/*"
+require "../src/invidious/videos"
 require "../src/invidious/comments"
 require "../src/invidious/playlists"
 require "../src/invidious/search"
 require "../src/invidious/trending"
-require "../src/invidious/users"
 
 CONFIG = Config.from_yaml(File.open("config/config.example.yml"))
 

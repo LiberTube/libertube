@@ -1,3 +1,5 @@
+{% skip_file if flag?(:api_only) %}
+
 module Invidious::Routes::Feeds
   def self.view_all_playlists_redirect(env)
     env.redirect "/feed/playlists"
@@ -46,7 +48,7 @@ module Invidious::Routes::Feeds
     trending_type ||= "Default"
 
     region = env.params.query["region"]?
-    region ||= "US"
+    region ||= env.get("preferences").as(Preferences).region
 
     begin
       trending, plid = fetch_trending(trending_type, region, locale)

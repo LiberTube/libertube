@@ -1,3 +1,5 @@
+{% skip_file if flag?(:api_only) %}
+
 module Invidious::Routes::Playlists
   def self.new(env)
     locale = LOCALES[env.get("preferences").as(Preferences).locale]?
@@ -243,7 +245,7 @@ module Invidious::Routes::Playlists
     if query
       begin
         search_query, count, items, operators = process_search_query(query, page, user, region: nil)
-        videos = items.select { |item| item.is_a? SearchVideo }.map { |item| item.as(SearchVideo) }
+        videos = items.select(SearchVideo).map(&.as(SearchVideo))
       rescue ex
         videos = [] of SearchVideo
         count = 0
