@@ -2,7 +2,7 @@
 
 module Invidious::Routes::PreferencesRoute
   def self.show(env)
-    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+    locale = env.get("preferences").as(Preferences).locale
 
     referer = get_referer(env)
 
@@ -12,7 +12,7 @@ module Invidious::Routes::PreferencesRoute
   end
 
   def self.update(env)
-    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+    locale = env.get("preferences").as(Preferences).locale
     referer = get_referer(env)
 
     video_loop = env.params.body["video_loop"]?.try &.as(String)
@@ -69,6 +69,10 @@ module Invidious::Routes::PreferencesRoute
     vr_mode = env.params.body["vr_mode"]?.try &.as(String)
     vr_mode ||= "off"
     vr_mode = vr_mode == "on"
+
+    save_player_pos = env.params.body["save_player_pos"]?.try &.as(String)
+    save_player_pos ||= "off"
+    save_player_pos = save_player_pos == "on"
 
     show_nick = env.params.body["show_nick"]?.try &.as(String)
     show_nick ||= "off"
@@ -165,6 +169,7 @@ module Invidious::Routes::PreferencesRoute
       extend_desc:                 extend_desc,
       vr_mode:                     vr_mode,
       show_nick:                   show_nick,
+      save_player_pos:             save_player_pos,
     }.to_json).to_json
 
     if user = env.get? "user"
@@ -227,7 +232,7 @@ module Invidious::Routes::PreferencesRoute
   end
 
   def self.toggle_theme(env)
-    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+    locale = env.get("preferences").as(Preferences).locale
     referer = get_referer(env, unroll: false)
 
     redirect = env.params.query["redirect"]?

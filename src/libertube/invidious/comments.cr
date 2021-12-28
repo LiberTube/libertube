@@ -60,8 +60,6 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
   case cursor
   when nil, ""
     ctoken = produce_comment_continuation(id, cursor: "", sort_by: sort_by)
-    # when .starts_with? "Ug"
-    #   ctoken = produce_comment_reply_continuation(id, video.ucid, cursor)
   when .starts_with? "ADSJ"
     ctoken = produce_comment_continuation(id, cursor: cursor, sort_by: sort_by)
   else
@@ -575,7 +573,9 @@ def content_to_comment_html(content)
           url = "/watch?v=#{url.request_target.lstrip('/')}"
         elsif url.host.nil? || url.host.not_nil!.ends_with?("youtube.com")
           if url.path == "/redirect"
-            url = HTTP::Params.parse(url.query.not_nil!)["q"]
+            # Sometimes, links can be corrupted (why?) so make sure to fallback
+            # nicely. See https://github.com/iv-org/invidious/issues/2682
+            url = HTTP::Params.parse(url.query.not_nil!)["q"]? || ""
           else
             url = url.request_target
           end
@@ -637,41 +637,6 @@ def produce_comment_continuation(video_id, cursor = "", sort_by = "top")
   else # top
     object["6:embedded"].as(Hash)["4:embedded"].as(Hash)["6:varint"] = 0_i64
   end
-
-  continuation = object.try { |i| Protodec::Any.cast_json(i) }
-    .try { |i| Protodec::Any.from_json(i) }
-    .try { |i| Base64.urlsafe_encode(i) }
-    .try { |i| URI.encode_www_form(i) }
-
-  return continuation
-end
-
-def produce_comment_reply_continuation(video_id, ucid, comment_id)
-  object = {
-    "2:embedded" => {
-      "2:string"    => video_id,
-      "24:varint"   => 1_i64,
-      "25:varint"   => 1_i64,
-      "28:varint"   => 1_i64,
-      "36:embedded" => {
-        "5:varint" => -1_i64,
-        "8:varint" => 0_i64,
-      },
-    },
-    "3:varint"   => 6_i64,
-    "6:embedded" => {
-      "3:embedded" => {
-        "2:string"   => comment_id,
-        "4:embedded" => {
-          "1:varint" => 0_i64,
-        },
-        "5:string" => ucid,
-        "6:string" => video_id,
-        "8:varint" => 1_i64,
-        "9:varint" => 10_i64,
-      },
-    },
-  }
 
   continuation = object.try { |i| Protodec::Any.cast_json(i) }
     .try { |i| Protodec::Any.from_json(i) }

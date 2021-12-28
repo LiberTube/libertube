@@ -1,7 +1,7 @@
 module Invidious::Routes::VideoPlayback
   # /videoplayback
   def self.get_video_playback(env)
-    locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+    locale = env.get("preferences").as(Preferences).locale
     query_params = env.params.query
 
     fvip = query_params["fvip"]? || "3"
@@ -240,7 +240,7 @@ module Invidious::Routes::VideoPlayback
       download_widget = JSON.parse(env.params.query["download_widget"])
 
       id = download_widget["id"].as_s
-      title = download_widget["title"].as_s
+      title = URI.decode_www_form(download_widget["title"].as_s)
 
       if label = download_widget["label"]?
         return env.redirect "/api/v1/captions/#{id}?label=#{label}&title=#{title}"
