@@ -268,18 +268,20 @@ def fetch_reddit_comments(id, sort_by = "confidence")
   headers = HTTP::Headers{"User-Agent" => "web:invidious:v#{CURRENT_VERSION} (by github.com/iv-org/invidious)"}
 
   # TODO: Use something like #479 for a static list of instances to use here
-  query = "(url:3D#{id}%20OR%20url:#{id})%20(site:invidio.us%20OR%20site:youtube.com%20OR%20site:youtu.be)"
-  search_results = client.get("/search.json?q=#{query}", headers)
+  query = URI::Params.encode({q: "(url:3D#{id} OR url:#{id}) AND (site:invidio.us OR site:youtube.com OR site:youtu.be)"})
+  search_results = client.get("/search.json?#{query}", headers)
 
   if search_results.status_code == 200
     search_results = RedditThing.from_json(search_results.body)
 
     # For videos that have more than one thread, choose the one with the highest score
-    thread = search_results.data.as(RedditListing).children.sort_by { |child| child.data.as(RedditLink).score }[-1]
-    thread = thread.data.as(RedditLink)
-
-    result = client.get("/r/#{thread.subreddit}/comments/#{thread.id}.json?limit=100&sort=#{sort_by}", headers).body
-    result = Array(RedditThing).from_json(result)
+    threads = search_results.data.as(RedditListing).children
+    thread = threads.max_by?(&.data.as(RedditLink).score).try(&.data.as(RedditLink))
+    result = thread.try do |t|
+      body = client.get("/r/#{t.subreddit}/comments/#{t.id}.json?limit=100&sort=#{sort_by}", headers).body
+      Array(RedditThing).from_json(body)
+    end
+    result ||= [] of RedditThing
   elsif search_results.status_code == 302
     # Previously, if there was only one result then the API would redirect to that result.
     # Now, it appears it will still return a listing so this section is likely unnecessary.
@@ -294,7 +296,8 @@ def fetch_reddit_comments(id, sort_by = "confidence")
 
   client.close
 
-  comments = result[1].data.as(RedditListing).children
+  comments = result[1]?.try(&.data.as(RedditListing).children)
+  comments ||= [] of RedditThing
   return comments, thread
 end
 
@@ -303,13 +306,19 @@ def template_youtube_comments(comments, locale, thin_mode, is_replies = false)
     root = comments["comments"].as_a
     root.each do |child|
       if child["replies"]?
+        replies_count_text = translate_count(locale,
+          "comments_view_x_replies",
+          child["replies"]["replyCount"].as_i64 || 0,
+          NumberFormatting::Separator
+        )
+
         replies_html = <<-END_HTML
         <div id="replies" class="pure-g">
           <div class="pure-u-1-24"></div>
           <div class="pure-u-23-24">
             <p>
               <a href="javascript:void(0)" data-continuation="#{child["replies"]["continuation"]}"
-                data-onclick="get_youtube_replies" data-load-replies>#{translate(locale, "View `x` replies", number_with_separator(child["replies"]["replyCount"]))}</a>
+                data-onclick="get_youtube_replies" data-load-replies>#{replies_count_text}</a>
             </p>
           </div>
         </div>
@@ -471,7 +480,7 @@ def template_reddit_comments(root, locale)
         <p>
           <a href="javascript:void(0)" data-onclick="toggle_parent">[ - ]</a>
           <b><a href="https://www.reddit.com/user/#{child.author}">#{child.author}</a></b>
-          #{translate(locale, "`x` points", number_with_separator(child.score))}
+          #{translate_count(locale, "comments_points_count", child.score, NumberFormatting::Separator)}
           <span title="#{child.created_utc.to_s(translate(locale, "%a %B %-d %T %Y UTC"))}">#{translate(locale, "`x` ago", recode_date(child.created_utc, locale))}</span>
           <a href="https://www.reddit.com#{child.permalink}" title="#{translate(locale, "permalink")}">#{translate(locale, "permalink")}</a>
           </p>
@@ -550,12 +559,12 @@ end
 
 def parse_content(content : JSON::Any) : String
   content["simpleText"]?.try &.as_s.rchop('\ufeff').try { |b| HTML.escape(b) }.to_s ||
-    content["runs"]?.try &.as_a.try { |r| content_to_comment_html(r).try &.to_s } || ""
+    content["runs"]?.try &.as_a.try { |r| content_to_comment_html(r).try &.to_s.gsub("\n", "<br>") } || ""
 end
 
 def content_to_comment_html(content)
   comment_html = content.map do |run|
-    text = HTML.escape(run["text"].as_s).gsub("\n", "<br>")
+    text = HTML.escape(run["text"].as_s)
 
     if run["bold"]?
       text = "<b>#{text}</b>"

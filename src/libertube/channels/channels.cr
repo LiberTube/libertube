@@ -114,8 +114,9 @@ class ChannelRedirect < Exception
   end
 end
 
-def get_batch_channels(channels, db, refresh = false, pull_all_videos = true, max_threads = 10)
+def get_batch_channels(channels)
   finished_channel = Channel(String | Nil).new
+  max_threads = 10
 
   spawn do
     active_threads = 0
@@ -130,7 +131,7 @@ def get_batch_channels(channels, db, refresh = false, pull_all_videos = true, ma
       active_threads += 1
       spawn do
         begin
-          get_channel(ucid, db, refresh, pull_all_videos)
+          get_channel(ucid)
           finished_channel.send(ucid)
         rescue ex
           finished_channel.send(nil)
@@ -151,30 +152,20 @@ def get_batch_channels(channels, db, refresh = false, pull_all_videos = true, ma
   return final
 end
 
-def get_channel(id, db, refresh = true, pull_all_videos = true)
-  if channel = db.query_one?("SELECT * FROM channels WHERE id = $1", id, as: InvidiousChannel)
-    if refresh && Time.utc - channel.updated > 10.minutes
-      channel = fetch_channel(id, db, pull_all_videos: pull_all_videos)
-      channel_array = channel.to_a
-      args = arg_array(channel_array)
+def get_channel(id) : InvidiousChannel
+  channel = Invidious::Database::Channels.select(id)
 
-      db.exec("INSERT INTO channels VALUES (#{args}) \
-        ON CONFLICT (id) DO UPDATE SET author = $2, updated = $3", args: channel_array)
-    end
-  else
-    channel = fetch_channel(id, db, pull_all_videos: pull_all_videos)
-    channel_array = channel.to_a
-    args = arg_array(channel_array)
-
-    db.exec("INSERT INTO channels VALUES (#{args})", args: channel_array)
+  if channel.nil? || (Time.utc - channel.updated) > 2.days
+    channel = fetch_channel(id, pull_all_videos: false)
+    Invidious::Database::Channels.insert(channel, update_on_conflict: true)
   end
 
   return channel
 end
 
-def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
+def fetch_channel(ucid, pull_all_videos : Bool)
   LOGGER.debug("fetch_channel: #{ucid}")
-  LOGGER.trace("fetch_channel: #{ucid} : pull_all_videos = #{pull_all_videos}, locale = #{locale}")
+  LOGGER.trace("fetch_channel: #{ucid} : pull_all_videos = #{pull_all_videos}")
 
   LOGGER.trace("fetch_channel: #{ucid} : Downloading RSS feed")
   rss = YT_POOL.client &.get("/feeds/videos.xml?channel_id=#{ucid}").body
@@ -241,15 +232,11 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
 
     # We don't include the 'premiere_timestamp' here because channel pages don't include them,
     # meaning the above timestamp is always null
-    was_insert = db.query_one("INSERT INTO channel_videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-      ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
-      updated = $4, ucid = $5, author = $6, length_seconds = $7, \
-      live_now = $8, views = $10 returning (xmax=0) as was_insert", *video.to_tuple, as: Bool)
+    was_insert = Invidious::Database::ChannelVideos.insert(video)
 
     if was_insert
       LOGGER.trace("fetch_channel: #{ucid} : video #{video_id} : Inserted, updating subscriptions")
-      db.exec("UPDATE users SET notifications = array_append(notifications, $1), \
-        feed_needs_update = true WHERE $2 = ANY(subscriptions)", video.id, video.ucid)
+      Invidious::Database::Users.add_notification(video)
     else
       LOGGER.trace("fetch_channel: #{ucid} : video #{video_id} : Updated")
     end
@@ -284,13 +271,8 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
         # We are notified of Red videos elsewhere (PubSub), which includes a correct published date,
         # so since they don't provide a published date here we can safely ignore them.
         if Time.utc - video.published > 1.minute
-          was_insert = db.query_one("INSERT INTO channel_videos VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-            ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
-            updated = $4, ucid = $5, author = $6, length_seconds = $7, \
-            live_now = $8, views = $10 returning (xmax=0) as was_insert", *video.to_tuple, as: Bool)
-
-          db.exec("UPDATE users SET notifications = array_append(notifications, $1), \
-            feed_needs_update = true WHERE $2 = ANY(subscriptions)", video.id, video.ucid) if was_insert
+          was_insert = Invidious::Database::ChannelVideos.insert(video)
+          Invidious::Database::Users.add_notification(video) if was_insert
         end
       end
 

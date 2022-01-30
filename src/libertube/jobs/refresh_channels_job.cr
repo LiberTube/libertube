@@ -13,7 +13,7 @@ class Invidious::Jobs::RefreshChannelsJob < Invidious::Jobs::BaseJob
 
     loop do
       LOGGER.debug("RefreshChannelsJob: Refreshing all channels")
-      db.query("SELECT id FROM channels ORDER BY updated") do |rs|
+      PG_DB.query("SELECT id FROM channels ORDER BY updated") do |rs|
         rs.each do
           id = rs.read(String)
 
@@ -30,16 +30,16 @@ class Invidious::Jobs::RefreshChannelsJob < Invidious::Jobs::BaseJob
           spawn do
             begin
               LOGGER.trace("RefreshChannelsJob: #{id} fiber : Fetching channel")
-              channel = fetch_channel(id, db, CONFIG.full_refresh)
+              channel = fetch_channel(id, pull_all_videos: CONFIG.full_refresh)
 
               lim_fibers = max_fibers
 
               LOGGER.trace("RefreshChannelsJob: #{id} fiber : Updating DB")
-              db.exec("UPDATE channels SET updated = $1, author = $2, deleted = false WHERE id = $3", Time.utc, channel.author, id)
+              Invidious::Database::Channels.update_author(id, channel.author)
             rescue ex
               LOGGER.error("RefreshChannelsJob: #{id} : #{ex.message}")
               if ex.message == "Deleted or invalid channel"
-                db.exec("UPDATE channels SET updated = $1, deleted = true WHERE id = $2", Time.utc, id)
+                Invidious::Database::Channels.update_mark_deleted(id)
               else
                 lim_fibers = 1
                 LOGGER.error("RefreshChannelsJob: #{id} fiber : backing off for #{backoff}s")

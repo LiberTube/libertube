@@ -142,4 +142,26 @@
         var csrf_token = target.parentNode.querySelector('input[name="csrf_token"]').value;
         xhr.send('csrf_token=' + csrf_token);
     }
+
+    // Handle keypresses
+    window.addEventListener('keydown', (event) => {
+        // Ignore modifier keys
+        if (event.ctrlKey || event.metaKey) return;
+
+        // Ignore shortcuts if any text input is focused
+        let focused_tag = document.activeElement.tagName.toLowerCase();
+        let focused_type = document.activeElement.type.toLowerCase();
+        let allowed = /^(button|checkbox|file|radio|submit)$/;
+
+        if (focused_tag === "textarea" ||
+           (focused_tag === "input" && !focused_type.match(allowed))
+        )
+            return;
+
+        // Focus search bar on '/'
+        if (event.key == "/") {
+            document.getElementById('searchbox').focus();
+            event.preventDefault();
+        }
+    });
 })();

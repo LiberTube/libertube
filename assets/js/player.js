@@ -23,7 +23,7 @@ var options = {
     },
     html5: {
         preloadTextTracks: false,
-        hls: {
+        vhs: {
             overrideNative: true
         }
     }
@@ -50,7 +50,7 @@ var shareOptions = {
     embedCode: "<iframe id='ivplayer' width='640' height='360' src='" + embed_url + "' style='border:none;'></iframe>"
 }
 
-videojs.Hls.xhr.beforeRequest = function(options) {
+videojs.Vhs.xhr.beforeRequest = function(options) {
     if (options.uri.indexOf('videoplayback') === -1 && options.uri.indexOf('local=true') === -1) {
         options.uri = options.uri + '?local=true';
     }
@@ -59,6 +59,16 @@ videojs.Hls.xhr.beforeRequest = function(options) {
 
 var player = videojs('player', options);
 
+const storage = (() => {
+    try {
+        if (localStorage.length !== -1) {
+            return localStorage;
+        }
+    } catch (e) {
+        console.info('No storage available: ' + e);
+    }
+    return undefined;
+})();
 
 if (location.pathname.startsWith('/embed/')) {
     player.overlay({
@@ -215,7 +225,7 @@ if (video_data.params.save_player_pos) {
         const raw = player.currentTime();
         const time = Math.floor(raw);
 
-        if(lastUpdated !== time) {
+        if(lastUpdated !== time && raw <= video_data.length_seconds - 15) {
             save_video_time(time);
             lastUpdated = time;
         }
@@ -386,25 +396,35 @@ function get_video_time() {
 }
 
 function set_all_video_times(times) {
-    const json = JSON.stringify(times);
-
-    localStorage.setItem(save_player_pos_key, json);
+    if (storage) {
+        if (times) {
+            try {
+                storage.setItem(save_player_pos_key, JSON.stringify(times));
+            } catch (e) {
+                console.debug('set_all_video_times: ' + e);
+            }
+        } else {
+            storage.removeItem(save_player_pos_key);
+        }
+    }
 }
 
 function get_all_video_times() {
-    try {
-        const raw = localStorage.getItem(save_player_pos_key);
-        const times = JSON.parse(raw);
-
-        return times || {};
+    if (storage) {
+        const raw = storage.getItem(save_player_pos_key);
+        if (raw !== null) {
+            try {
+                return JSON.parse(raw);
+            } catch (e) {
+                console.debug('get_all_video_times: ' + e);
+            }
+        }
     }
-    catch {
-        return {};
-    }
+    return {};
 }
 
 function remove_all_video_times() {
-    localStorage.removeItem(save_player_pos_key);
+    set_all_video_times(null);
 }
 
 function set_time_percent(percent) {

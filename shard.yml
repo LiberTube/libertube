@@ -29,6 +29,14 @@ dependencies:
     github: athena-framework/negotiation
     version: ~> 0.1.1
 
+development_dependencies:
+  spectator:
+    github: icy-arctic-fox/spectator
+    version: ~> 0.10.4
+  ameba:
+    github: crystal-ameba/ameba
+    version: ~> 0.14.3
+
 crystal: ">= 1.0.0, < 2.0.0"
 
 license: AGPLv3

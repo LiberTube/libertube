@@ -1,16 +1,9 @@
 {
-    "`x` subscribers": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 位订阅者",
-        "": "`x` 位订阅者"
-    },
-    "`x` videos": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个视频",
-        "": "`x` 个视频"
-    },
-    "`x` playlists": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个播放列表",
-        "": "`x` 个播放列表"
-    },
+    "generic_views_count_0": "{{count}} 播放",
+    "generic_videos_count_0": "{{count}} 个视频",
+    "generic_playlists_count_0": "{{count}} 个播放列表",
+    "generic_subscribers_count_0": "{{count}} 位订阅者",
+    "generic_subscriptions_count_0": "{{count}} 个订阅",
     "LIVE": "直播",
     "Shared `x` ago": "`x` 前分享",
     "Unsubscribe": "取消订阅",
@@ -127,22 +120,12 @@
     "Subscription manager": "订阅管理器",
     "Token manager": "令牌管理器",
     "Token": "令牌",
-    "`x` subscriptions": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个订阅",
-        "": "`x` 个订阅"
-    },
-    "`x` tokens": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 个令牌",
-        "": "`x` 个令牌"
-    },
+    "tokens_count_0": "{{count}} 个令牌",
     "Import/export": "导入/导出",
     "unsubscribe": "取消订阅",
     "revoke": "吊销",
     "Subscriptions": "订阅",
-    "`x` unseen notifications": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 条未读通知",
-        "": "`x` 条未读通知"
-    },
+    "subscriptions_unseen_notifs_count_0": "{{count}} 条未读通知",
     "search": "搜索",
     "Log out": "登出",
     "Released under the AGPLv3 on Github.": "依据 AGPLv3 许可证发布于 Github。",
@@ -176,10 +159,6 @@
     "Whitelisted regions: ": "白名单地区: ",
     "Blacklisted regions: ": "黑名单地区: ",
     "Shared `x`": "`x`发布",
-    "`x` views": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 播放",
-        "": "`x` 次观看"
-    },
     "Premieres in `x`": "首映于 `x` 后",
     "Premieres `x`": "首映于 `x`",
     "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.": "你好！看起来你关闭了 JavaScript。点击这里阅读评论。注意它们加载的时间可能会稍长。",
@@ -213,16 +192,10 @@
     "This channel does not exist.": "频道不存在。",
     "Could not get channel info.": "无法获取频道信息。",
     "Could not fetch comments": "无法获取评论",
-    "View `x` replies": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "查看 `x` 条回复",
-        "": "查看 `x` 条回复"
-    },
+    "comments_view_x_replies_0": "查看 {{count}} 条回复",
     "`x` ago": "`x` 前",
     "Load more": "加载更多",
-    "`x` points": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 分",
-        "": "`x` 分"
-    },
+    "comments_points_count_0": "{{count}} 分",
     "Could not create mix.": "无法创建合集。",
     "Empty playlist": "空播放列表",
     "Not a playlist.": "非播放列表。",
@@ -340,34 +313,13 @@
     "Yiddish": "意第绪语",
     "Yoruba": "约鲁巴语",
     "Zulu": "祖鲁语",
-    "`x` years": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 年",
-        "": "`x` 年"
-    },
-    "`x` months": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 月",
-        "": "`x` 个月"
-    },
-    "`x` weeks": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 周",
-        "": "`x` 周"
-    },
-    "`x` days": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 天",
-        "": "`x` 天"
-    },
-    "`x` hours": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 小时",
-        "": "`x` 小时"
-    },
-    "`x` minutes": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 分钟",
-        "": "`x` 分钟"
-    },
-    "`x` seconds": {
-        "([^.,0-9]|^)1([^.,0-9]|$)": "`x` 秒",
-        "": "`x` 秒"
-    },
+    "generic_count_years_0": "{{count}} 年",
+    "generic_count_months_0": "{{count}} 月",
+    "generic_count_weeks_0": "{{count}} 周",
+    "generic_count_days_0": "{{count}} 天",
+    "generic_count_hours_0": "{{count}} 小时",
+    "generic_count_minutes_0": "{{count}} 分钟",
+    "generic_count_seconds_0": "{{count}} 秒",
     "Fallback comments: ": "后备评论: ",
     "Popular": "热门频道",
     "Search": "搜索",
@@ -433,5 +385,41 @@
     "footer_original_source_code": "原始源代码",
     "footer_donate_page": "捐赠",
     "preferences_region_label": "内容国家： ",
-    "preferences_quality_dash_label": "首选 DASH 视频分辨率： "
+    "preferences_quality_dash_label": "首选 DASH 视频分辨率： ",
+    "crash_page_you_found_a_bug": "你似乎找到了 Invidious 的一个 bug！",
+    "crash_page_before_reporting": "报告 bug 之前，请确保你已经：",
+    "crash_page_refresh": "试着 <a href=\"`x`\">刷新页面</a>",
+    "crash_page_switch_instance": "试着<a href=\"`x`\">使用另一个实例</a>",
+    "crash_page_read_the_faq": "阅读<a href=\"`x`\">常见问题</a>",
+    "crash_page_search_issue": "搜索过 <a href=\"`x`\">Github 上的现有 issue</a>",
+    "crash_page_report_issue": "如果以上这些都没用的话，请<a href=\"`x`\">在 Github 上新开一个 issue</a>（最好用英语撰写），并在你的消息中包含以下文本(不要翻译该文本)：",
+    "videoinfo_invidious_embed_link": "嵌入链接",
+    "download_subtitles": "字幕 - `x` (.vtt)",
+    "preferences_quality_dash_option_360p": "360p",
+    "videoinfo_watch_on_youTube": "在 YouTube 上观看",
+    "videoinfo_youTube_embed_link": "嵌入的",
+    "preferences_quality_dash_option_1080p": "1080p",
+    "preferences_quality_option_hd720": "HD720",
+    "preferences_quality_dash_option_240p": "240p",
+    "preferences_quality_dash_option_worst": "最差",
+    "preferences_quality_dash_option_720p": "720p",
+    "preferences_quality_dash_option_480p": "480p",
+    "preferences_quality_dash_option_144p": "144p",
+    "preferences_quality_option_medium": "中等",
+    "preferences_quality_option_small": "小",
+    "preferences_quality_dash_option_auto": "自动",
+    "preferences_quality_option_dash": "DASH (自适应画质)",
+    "preferences_quality_dash_option_best": "最佳",
+    "preferences_quality_dash_option_4320p": "4320p",
+    "preferences_quality_dash_option_2160p": "2160p",
+    "preferences_quality_dash_option_1440p": "1440p",
+    "invidious": "Invidious",
+    "videoinfo_started_streaming_x_ago": "`x` 前开始播放",
+    "user_created_playlists": "`x` 创建了播放列表",
+    "user_saved_playlists": "`x` 保存了播放列表",
+    "Video unavailable": "视频不可用",
+    "purchased": "已购买",
+    "360": "360°",
+    "none": "无",
+    "preferences_save_player_pos_label": "保存播放位置： "
 }

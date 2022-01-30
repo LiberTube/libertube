@@ -125,7 +125,7 @@ struct Playlist
 
       json.field "videos" do
         json.array do
-          videos = get_playlist_videos(PG_DB, self, offset: offset, locale: locale, video_id: video_id)
+          videos = get_playlist_videos(self, offset: offset, locale: locale, video_id: video_id)
           videos.each do |video|
             video.to_json(json)
           end
@@ -200,12 +200,12 @@ struct InvidiousPlaylist
 
       json.field "videos" do
         json.array do
-          if !offset || offset == 0
-            index = PG_DB.query_one?("SELECT index FROM playlist_videos WHERE plid = $1 AND id = $2 LIMIT 1", self.id, video_id, as: Int64)
+          if (!offset || offset == 0) && !video_id.nil?
+            index = Invidious::Database::PlaylistVideos.select_index(self.id, video_id)
             offset = self.index.index(index) || 0
           end
 
-          videos = get_playlist_videos(PG_DB, self, offset: offset, locale: locale, video_id: video_id)
+          videos = get_playlist_videos(self, offset: offset, locale: locale, video_id: video_id)
           videos.each_with_index do |video, index|
             video.to_json(json, offset + index)
           end
@@ -225,7 +225,8 @@ struct InvidiousPlaylist
   end
 
   def thumbnail
-    @thumbnail_id ||= PG_DB.query_one?("SELECT id FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 1", self.id, self.index, as: String) || "-----------"
+    # TODO: Get playlist thumbnail from playlist data rather than first video
+    @thumbnail_id ||= Invidious::Database::PlaylistVideos.select_one_id(self.id, self.index) || "-----------"
     "/vi/#{@thumbnail_id}/mqdefault.jpg"
   end
 
@@ -242,11 +243,11 @@ struct InvidiousPlaylist
   end
 
   def description_html
-    HTML.escape(self.description).gsub("\n", "<br>")
+    HTML.escape(self.description)
   end
 end
 
-def create_playlist(db, title, privacy, user)
+def create_playlist(title, privacy, user)
   plid = "IVPL#{Random::Secure.urlsafe_base64(24)[0, 31]}"
 
   playlist = InvidiousPlaylist.new({
@@ -261,15 +262,12 @@ def create_playlist(db, title, privacy, user)
     index:       [] of Int64,
   })
 
-  playlist_array = playlist.to_a
-  args = arg_array(playlist_array)
-
-  db.exec("INSERT INTO playlists VALUES (#{args})", args: playlist_array)
+  Invidious::Database::Playlists.insert(playlist)
 
   return playlist
 end
 
-def subscribe_playlist(db, user, playlist)
+def subscribe_playlist(user, playlist)
   playlist = InvidiousPlaylist.new({
     title:       playlist.title.byte_slice(0, 150),
     id:          playlist.id,
@@ -282,10 +280,7 @@ def subscribe_playlist(db, user, playlist)
     index:       [] of Int64,
   })
 
-  playlist_array = playlist.to_a
-  args = arg_array(playlist_array)
-
-  db.exec("INSERT INTO playlists VALUES (#{args})", args: playlist_array)
+  Invidious::Database::Playlists.insert(playlist)
 
   return playlist
 end
@@ -305,16 +300,14 @@ def produce_playlist_continuation(id, index)
     .try { |i| Protodec::Any.from_json(i) }
     .try { |i| Base64.urlsafe_encode(i, padding: false) }
 
-  data_wrapper = {"1:varint" => request_count, "15:string" => "PT:#{data}"}
-    .try { |i| Protodec::Any.cast_json(i) }
-    .try { |i| Protodec::Any.from_json(i) }
-    .try { |i| Base64.urlsafe_encode(i) }
-    .try { |i| URI.encode_www_form(i) }
-
   object = {
     "80226972:embedded" => {
-      "2:string"  => plid,
-      "3:string"  => data_wrapper,
+      "2:string" => plid,
+      "3:base64" => {
+        "1:varint"     => request_count,
+        "15:string"    => "PT:#{data}",
+        "104:embedded" => {"1:0:varint" => 0_i64},
+      },
       "35:string" => id,
     },
   }
@@ -327,9 +320,9 @@ def produce_playlist_continuation(id, index)
   return continuation
 end
 
-def get_playlist(db, plid, locale, refresh = true, force_refresh = false)
+def get_playlist(plid, locale, refresh = true, force_refresh = false)
   if plid.starts_with? "IV"
-    if playlist = db.query_one?("SELECT * FROM playlists WHERE id = $1", plid, as: InvidiousPlaylist)
+    if playlist = Invidious::Database::Playlists.select(id: plid)
       return playlist
     else
       raise InfoException.new("Playlist does not exist.")
@@ -352,7 +345,7 @@ def fetch_playlist(plid, locale)
   playlist_info = playlist_sidebar_renderer[0]["playlistSidebarPrimaryInfoRenderer"]?
   raise InfoException.new("Could not extract playlist info") if !playlist_info
 
-  title = playlist_info["title"]?.try &.["runs"][0]?.try &.["text"]?.try &.as_s || ""
+  title = playlist_info.dig?("title", "runs", 0, "text").try &.as_s || ""
 
   desc_item = playlist_info["description"]?
 
@@ -409,7 +402,7 @@ def fetch_playlist(plid, locale)
   })
 end
 
-def get_playlist_videos(db, playlist, offset, locale = nil, video_id = nil)
+def get_playlist_videos(playlist, offset, locale = nil, video_id = nil)
   # Show empy playlist if requested page is out of range
   # (e.g, when a new playlist has been created, offset will be negative)
   if offset >= playlist.video_count || offset < 0
@@ -417,8 +410,7 @@ def get_playlist_videos(db, playlist, offset, locale = nil, video_id = nil)
   end
 
   if playlist.is_a? InvidiousPlaylist
-    db.query_all("SELECT * FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 100 OFFSET $3",
-      playlist.id, playlist.index, offset, as: PlaylistVideo)
+    Invidious::Database::PlaylistVideos.select(playlist.id, playlist.index, offset, limit: 100)
   else
     if video_id
       initial_data = YoutubeAPI.next({

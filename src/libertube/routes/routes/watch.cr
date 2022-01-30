@@ -39,7 +39,7 @@ module Invidious::Routes::Watch
     end
 
     plid = env.params.query["list"]?.try &.gsub(/[^a-zA-Z0-9_-]/, "")
-    continuation = process_continuation(PG_DB, env.params.query, plid, id)
+    continuation = process_continuation(env.params.query, plid, id)
 
     nojs = env.params.query["nojs"]?
 
@@ -60,7 +60,7 @@ module Invidious::Routes::Watch
     env.params.query.delete_all("listen")
 
     begin
-      video = get_video(id, PG_DB, region: params.region)
+      video = get_video(id, region: params.region)
     rescue ex : VideoRedirect
       return env.redirect env.request.resource.gsub(id, ex.video_id)
     rescue ex
@@ -76,11 +76,11 @@ module Invidious::Routes::Watch
     env.params.query.delete_all("iv_load_policy")
 
     if watched && !watched.includes? id
-      PG_DB.exec("UPDATE users SET watched = array_append(watched, $1) WHERE email = $2", id, user.as(User).email)
+      Invidious::Database::Users.mark_watched(user.as(User), id)
     end
 
     if notifications && notifications.includes? id
-      PG_DB.exec("UPDATE users SET notifications = array_remove(notifications, $1) WHERE email = $2", id, user.as(User).email)
+      Invidious::Database::Users.remove_notification(user.as(User), id)
       env.get("user").as(User).notifications.delete(id)
       notifications.delete(id)
     end
@@ -199,5 +199,71 @@ module Invidious::Routes::Watch
     end
 
     return env.redirect url
+  end
+
+  def self.mark_watched(env)
+    locale = env.get("preferences").as(Preferences).locale
+
+    user = env.get? "user"
+    sid = env.get? "sid"
+    referer = get_referer(env, "/feed/subscriptions")
+
+    redirect = env.params.query["redirect"]?
+    redirect ||= "true"
+    redirect = redirect == "true"
+
+    if !user
+      if redirect
+        return env.redirect referer
+      else
+        return error_json(403, "No such user")
+      end
+    end
+
+    user = user.as(User)
+    sid = sid.as(String)
+    token = env.params.body["csrf_token"]?
+
+    id = env.params.query["id"]?
+    if !id
+      env.response.status_code = 400
+      return
+    end
+
+    begin
+      validate_request(token, sid, env.request, HMAC_KEY, locale)
+    rescue ex
+      if redirect
+        return error_template(400, ex)
+      else
+        return error_json(400, ex)
+      end
+    end
+
+    if env.params.query["action_mark_watched"]?
+      action = "action_mark_watched"
+    elsif env.params.query["action_mark_unwatched"]?
+      action = "action_mark_unwatched"
+    else
+      return env.redirect referer
+    end
+
+    case action
+    when "action_mark_watched"
+      if !user.watched.includes? id
+        Invidious::Database::Users.mark_watched(user, id)
+      end
+    when "action_mark_unwatched"
+      Invidious::Database::Users.mark_unwatched(user, id)
+    else
+      return error_json(400, "Unsupported action #{action}")
+    end
+
+    if redirect
+      env.redirect referer
+    else
+      env.response.content_type = "application/json"
+      "{}"
+    end
   end
 end
