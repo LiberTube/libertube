@@ -20,12 +20,14 @@ module Invidious::Routes::API::V1::Videos
   end
 
   def self.captions(env)
-    locale = env.get("preferences").as(Preferences).locale
-
     env.response.content_type = "application/json"
 
     id = env.params.url["id"]
-    region = env.params.query["region"]?
+    region = env.params.query["region"]? || env.params.body["region"]?
+
+    if id.nil? || id.size != 11 || !id.matches?(/^[\w-]+$/)
+      return error_json(400, "Invalid video ID")
+    end
 
     # See https://github.com/ytdl-org/youtube-dl/blob/6ab30ff50bf6bd0585927cb73c7421bef184f87a/youtube_dl/extractor/youtube.py#L1354
     # It is possible to use `/api/timedtext?type=list&v=#{id}` and
@@ -73,9 +75,9 @@ module Invidious::Routes::API::V1::Videos
     env.response.content_type = "text/vtt; charset=UTF-8"
 
     if lang
-      caption = captions.select { |caption| caption.language_code == lang }
+      caption = captions.select(&.language_code.== lang)
     else
-      caption = captions.select { |caption| caption.name == label }
+      caption = captions.select(&.name.== label)
     end
 
     if caption.empty?
@@ -132,7 +134,13 @@ module Invidious::Routes::API::V1::Videos
         end
       end
     else
+      # Some captions have "align:[start/end]" and "position:[num]%"
+      # attributes. Those are causing issues with VideoJS, which is unable
+      # to properly align the captions on the video, so we remove them.
+      #
+      # See: https://github.com/iv-org/invidious/issues/2391
       webvtt = YT_POOL.client &.get("#{url}&format=vtt").body
+        .gsub(/([0-9:.]{12} --> [0-9:.]{12}).+/, "\\1")
     end
 
     if title = env.params.query["title"]?
@@ -149,8 +157,6 @@ module Invidious::Routes::API::V1::Videos
   # thumbnails for individual scenes in a video.
   # See https://support.jwplayer.com/articles/how-to-add-preview-thumbnails
   def self.storyboards(env)
-    locale = env.get("preferences").as(Preferences).locale
-
     env.response.content_type = "application/json"
 
     id = env.params.url["id"]
@@ -183,7 +189,7 @@ module Invidious::Routes::API::V1::Videos
 
     env.response.content_type = "text/vtt"
 
-    storyboard = storyboards.select { |storyboard| width == "#{storyboard[:width]}" || height == "#{storyboard[:height]}" }
+    storyboard = storyboards.select { |sb| width == "#{sb[:width]}" || height == "#{sb[:height]}" }
 
     if storyboard.empty?
       haltf env, 404
@@ -223,8 +229,6 @@ module Invidious::Routes::API::V1::Videos
   end
 
   def self.annotations(env)
-    locale = env.get("preferences").as(Preferences).locale
-
     env.response.content_type = "text/xml"
 
     id = env.params.url["id"]

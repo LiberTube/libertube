@@ -30,6 +30,7 @@ LOCALES_LIST = {
   "pt-PT"   => "Português de Portugal", # Portuguese (Portugal)
   "ro"      => "Română",                # Romanian
   "ru"      => "русский",               # Russian
+  "sq"      => "Shqip",                 # Albanian
   "sr"      => "srpski (latinica)",     # Serbian (Latin)
   "sr_Cyrl" => "српски (ћирилица)",     # Serbian (Cyrillic)
   "sv-SE"   => "Svenska",               # Swedish
@@ -94,8 +95,8 @@ def translate(locale : String?, key : String, text : String | Nil = nil) : Strin
     translation = ""
     match_length = 0
 
-    raw_data.as_h.each do |key, value|
-      if md = text.try &.match(/#{key}/)
+    raw_data.as_h.each do |hash_key, value|
+      if md = text.try &.match(/#{hash_key}/)
         if md[0].size >= match_length
           translation = value.as_s
           match_length = md[0].size
@@ -135,7 +136,7 @@ def translate_count(locale : String, key : String, count : Int, format = NumberF
       # Try #2: Fallback to english
       translation = translate_count("en-US", key, count)
     else
-      # Return key if we're already in english, as the tranlation is missing
+      # Return key if we're already in english, as the translation is missing
       LOGGER.warn("i18n: Missing translation key \"#{key}\"")
       return key
     end
