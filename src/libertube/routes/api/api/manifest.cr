@@ -56,12 +56,15 @@ module Invidious::Routes::API::Manifest
         xml.element("Period") do
           i = 0
 
-          {"audio/mp4", "audio/webm"}.each do |mime_type|
+          {"audio/mp4"}.each do |mime_type|
             mime_streams = audio_streams.select { |stream| stream["mimeType"].as_s.starts_with? mime_type }
             next if mime_streams.empty?
 
             xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true) do
               mime_streams.each do |fmt|
+                # OTF streams aren't supported yet (See https://github.com/TeamNewPipe/NewPipe/issues/2415)
+                next if !(fmt.has_key?("indexRange") && fmt.has_key?("initRange"))
+
                 codecs = fmt["mimeType"].as_s.split("codecs=")[1].strip('"')
                 bandwidth = fmt["bitrate"].as_i
                 itag = fmt["itag"].as_i
@@ -83,13 +86,16 @@ module Invidious::Routes::API::Manifest
 
           potential_heights = {4320, 2160, 1440, 1080, 720, 480, 360, 240, 144}
 
-          {"video/mp4", "video/webm"}.each do |mime_type|
+          {"video/mp4"}.each do |mime_type|
             mime_streams = video_streams.select { |stream| stream["mimeType"].as_s.starts_with? mime_type }
             next if mime_streams.empty?
 
             heights = [] of Int32
             xml.element("AdaptationSet", id: i, mimeType: mime_type, startWithSAP: 1, subsegmentAlignment: true, scanType: "progressive") do
               mime_streams.each do |fmt|
+                # OTF streams aren't supported yet (See https://github.com/TeamNewPipe/NewPipe/issues/2415)
+                next if !(fmt.has_key?("indexRange") && fmt.has_key?("initRange"))
+
                 codecs = fmt["mimeType"].as_s.split("codecs=")[1].strip('"')
                 bandwidth = fmt["bitrate"].as_i
                 itag = fmt["itag"].as_i
