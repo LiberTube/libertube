@@ -143,8 +143,10 @@ def fetch_youtube_comments(id, cursor, format, locale, thin_mode, region, sort_b
                 node_comment = node["commentRenderer"]
               end
 
-              content_html = node_comment["contentText"]?.try { |t| parse_content(t) } || ""
+              content_html = node_comment["contentText"]?.try { |t| parse_content(t, id) } || ""
               author = node_comment["authorText"]?.try &.["simpleText"]? || ""
+
+              json.field "verified", (node_comment["authorCommentBadge"]? != nil)
 
               json.field "author", author
               json.field "authorThumbnails" do
@@ -329,7 +331,11 @@ def template_youtube_comments(comments, locale, thin_mode, is_replies = false)
       end
 
       author_name = HTML.escape(child["author"].as_s)
-
+      if child["verified"]?.try &.as_bool && child["authorIsChannelOwner"]?.try &.as_bool
+        author_name += "&nbsp;<i class=\"icon ion ion-md-checkmark-circle\"></i>"
+      elsif child["verified"]?.try &.as_bool
+        author_name += "&nbsp;<i class=\"icon ion ion-md-checkmark\"></i>"
+      end
       html << <<-END_HTML
       <div class="pure-g" style="width:100%">
         <div class="channel-profile pure-u-4-24 pure-u-md-2-24">
@@ -554,36 +560,73 @@ def fill_links(html, scheme, host)
   return html.to_xml(options: XML::SaveOptions::NO_DECL)
 end
 
-def parse_content(content : JSON::Any) : String
-  content["simpleText"]?.try &.as_s.rchop('\ufeff').try { |b| HTML.escape(b) }.to_s ||
-    content["runs"]?.try &.as_a.try { |r| content_to_comment_html(r).try &.to_s.gsub("\n", "<br>") } || ""
+def text_to_parsed_content(text : String) : JSON::Any
+  nodes = [] of JSON::Any
+  # For each line convert line to array of nodes
+  text.split('\n').each do |line|
+    # In first case line is just a simple node before
+    # check patterns inside line
+    # { 'text': line }
+    currentNodes = [] of JSON::Any
+    initialNode = {"text" => line}
+    currentNodes << (JSON.parse(initialNode.to_json))
+
+    # For each match with url pattern, get last node and preserve
+    # last node before create new node with url information
+    # { 'text': match, 'navigationEndpoint': { 'urlEndpoint' : 'url': match } }
+    line.scan(/https?:\/\/[^ ]*/).each do |urlMatch|
+      # Retrieve last node and update node without match
+      lastNode = currentNodes[currentNodes.size - 1].as_h
+      splittedLastNode = lastNode["text"].as_s.split(urlMatch[0])
+      lastNode["text"] = JSON.parse(splittedLastNode[0].to_json)
+      currentNodes[currentNodes.size - 1] = JSON.parse(lastNode.to_json)
+      # Create new node with match and navigation infos
+      currentNode = {"text" => urlMatch[0], "navigationEndpoint" => {"urlEndpoint" => {"url" => urlMatch[0]}}}
+      currentNodes << (JSON.parse(currentNode.to_json))
+      # If text remain after match create new simple node with text after match
+      afterNode = {"text" => splittedLastNode.size > 0 ? splittedLastNode[1] : ""}
+      currentNodes << (JSON.parse(afterNode.to_json))
+    end
+
+    # After processing of matches inside line
+    # Add \n at end of last node for preserve carriage return
+    lastNode = currentNodes[currentNodes.size - 1].as_h
+    lastNode["text"] = JSON.parse("#{currentNodes[currentNodes.size - 1]["text"]}\n".to_json)
+    currentNodes[currentNodes.size - 1] = JSON.parse(lastNode.to_json)
+
+    # Finally add final nodes to nodes returned
+    currentNodes.each do |node|
+      nodes << (node)
+    end
+  end
+  return JSON.parse({"runs" => nodes}.to_json)
 end
 
-def content_to_comment_html(content)
-  comment_html = content.map do |run|
+def parse_content(content : JSON::Any, video_id : String? = "") : String
+  content["simpleText"]?.try &.as_s.rchop('\ufeff').try { |b| HTML.escape(b) }.to_s ||
+    content["runs"]?.try &.as_a.try { |r| content_to_comment_html(r, video_id).try &.to_s.gsub("\n", "<br>") } || ""
+end
+
+def content_to_comment_html(content, video_id : String? = "")
+  html_array = content.map do |run|
+    # Sometimes, there is an empty element.
+    # See: https://github.com/iv-org/invidious/issues/3096
+    next if run.as_h.empty?
+
     text = HTML.escape(run["text"].as_s)
-
-    if run["bold"]?
-      text = "<b>#{text}</b>"
-    end
-
-    if run["italics"]?
-      text = "<i>#{text}</i>"
-    end
 
     if run["navigationEndpoint"]?
       if url = run["navigationEndpoint"]["urlEndpoint"]?.try &.["url"].as_s
         url = URI.parse(url)
-        displayed_url = url
+        displayed_url = text
 
         if url.host == "youtu.be"
           url = "/watch?v=#{url.request_target.lstrip('/')}"
-          displayed_url = "youtube.com#{url}"
         elsif url.host.nil? || url.host.not_nil!.ends_with?("youtube.com")
           if url.path == "/redirect"
             # Sometimes, links can be corrupted (why?) so make sure to fallback
             # nicely. See https://github.com/iv-org/invidious/issues/2682
-            url = HTTP::Params.parse(url.query.not_nil!)["q"]? || ""
+            url = url.query_params["q"]? || ""
             displayed_url = url
           else
             url = url.request_target
@@ -593,18 +636,29 @@ def content_to_comment_html(content)
 
         text = %(<a href="#{url}">#{reduce_uri(displayed_url)}</a>)
       elsif watch_endpoint = run["navigationEndpoint"]["watchEndpoint"]?
-        length_seconds = watch_endpoint["startTimeSeconds"]?
-        video_id = watch_endpoint["videoId"].as_s
+        start_time = watch_endpoint["startTimeSeconds"]?.try &.as_i
+        link_video_id = watch_endpoint["videoId"].as_s
 
-        if length_seconds && length_seconds.as_i >= 0
-          text = %(<a href="javascript:void(0)" data-onclick="jump_to_time" data-jump-time="#{length_seconds}">#{text}</a>)
+        url = "/watch?v=#{link_video_id}"
+        url += "&t=#{start_time}" if !start_time.nil?
+
+        # If the current video ID (passed through from the caller function)
+        # is the same as the video ID in the link, add HTML attributes for
+        # the JS handler function that bypasses page reload.
+        #
+        # See: https://github.com/iv-org/invidious/issues/3063
+        if link_video_id == video_id
+          start_time ||= 0
+          text = %(<a href="#{url}" data-onclick="jump_to_time" data-jump-time="#{start_time}">#{reduce_uri(text)}</a>)
         else
-          text = %(<a href="/watch?v=#{video_id}">#{"youtube.com/watch?v=#{video_id}"}</a>)
+          text = %(<a href="#{url}">#{text}</a>)
         end
       elsif url = run.dig?("navigationEndpoint", "commandMetadata", "webCommandMetadata", "url").try &.as_s
-        if text.starts_with?(/\s?@/)
-          # Handle "pings" in comments differently
-          # See: https://github.com/iv-org/invidious/issues/3038
+        if text.starts_with?(/\s?[@#]/)
+          # Handle "pings" in comments and hasthags differently
+          # See:
+          #  - https://github.com/iv-org/invidious/issues/3038
+          #  - https://github.com/iv-org/invidious/issues/3062
           text = %(<a href="#{url}">#{text}</a>)
         else
           text = %(<a href="#{url}">#{reduce_uri(url)}</a>)
@@ -612,10 +666,13 @@ def content_to_comment_html(content)
       end
     end
 
-    text
-  end.join("").delete('\ufeff')
+    text = "<b>#{text}</b>" if run["bold"]?
+    text = "<i>#{text}</i>" if run["italics"]?
 
-  return comment_html
+    text
+  end
+
+  return html_array.join("").delete('\ufeff')
 end
 
 def produce_comment_continuation(video_id, cursor = "", sort_by = "top")
