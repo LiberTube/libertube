@@ -31,7 +31,12 @@ def get_about_info(ucid, locale) : AboutChannel
   end
 
   if initdata.dig?("alerts", 0, "alertRenderer", "type") == "ERROR"
-    raise InfoException.new(initdata["alerts"][0]["alertRenderer"]["text"]["simpleText"].as_s)
+    error_message = initdata["alerts"][0]["alertRenderer"]["text"]["simpleText"].as_s
+    if error_message == "This channel does not exist."
+      raise NotFoundException.new(error_message)
+    else
+      raise InfoException.new(error_message)
+    end
   end
 
   if browse_endpoint = initdata["onResponseReceivedActions"]?.try &.[0]?.try &.["navigateAction"]?.try &.["endpoint"]?.try &.["browseEndpoint"]?
@@ -54,9 +59,6 @@ def get_about_info(ucid, locale) : AboutChannel
     banner = banners.try &.[-1]?.try &.["url"].as_s?
 
     description_node = initdata["header"]["interactiveTabbedHeaderRenderer"]["description"]
-
-    is_family_friendly = initdata["microformat"]["microformatDataRenderer"]["familySafe"].as_bool
-    allowed_regions = initdata["microformat"]["microformatDataRenderer"]["availableCountries"].as_a.map(&.as_s)
   else
     author = initdata["metadata"]["channelMetadataRenderer"]["title"].as_s
     author_url = initdata["metadata"]["channelMetadataRenderer"]["channelUrl"].as_s
@@ -74,13 +76,17 @@ def get_about_info(ucid, locale) : AboutChannel
     # end
 
     description_node = initdata["metadata"]["channelMetadataRenderer"]?.try &.["description"]?
-
-    is_family_friendly = initdata["microformat"]["microformatDataRenderer"]["familySafe"].as_bool
-    allowed_regions = initdata["microformat"]["microformatDataRenderer"]["availableCountries"].as_a.map(&.as_s)
   end
+
+  is_family_friendly = initdata["microformat"]["microformatDataRenderer"]["familySafe"].as_bool
+
+  allowed_regions = initdata
+    .dig?("microformat", "microformatDataRenderer", "availableCountries")
+    .try &.as_a.map(&.as_s) || [] of String
 
   description = !description_node.nil? ? description_node.as_s : ""
   description_html = HTML.escape(description)
+
   if !description_node.nil?
     if description_node.as_h?.nil?
       description_node = text_to_parsed_content(description_node.as_s)

@@ -6,20 +6,18 @@ def fetch_channel_community(ucid, continuation, locale, format, thin_mode)
   end
 
   if response.status_code != 200
-    raise InfoException.new("This channel does not exist.")
+    raise NotFoundException.new("This channel does not exist.")
   end
 
   ucid = response.body.match(/https:\/\/www.youtube.com\/channel\/(?<ucid>UC[a-zA-Z0-9_-]{22})/).not_nil!["ucid"]
 
   if !continuation || continuation.empty?
     initial_data = extract_initial_data(response.body)
-    body = initial_data["contents"]?.try &.["twoColumnBrowseResultsRenderer"]["tabs"].as_a.select { |tab| tab["tabRenderer"]?.try &.["selected"].as_bool.== true }[0]?
+    body = extract_selected_tab(initial_data["contents"]["twoColumnBrowseResultsRenderer"]["tabs"])["content"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]
 
     if !body
       raise InfoException.new("Could not extract community tab.")
     end
-
-    body = body["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]
   else
     continuation = produce_channel_community_continuation(ucid, continuation)
 
@@ -49,7 +47,11 @@ def fetch_channel_community(ucid, continuation, locale, format, thin_mode)
     error_message = (message["text"]["simpleText"]? ||
                      message["text"]["runs"]?.try &.[0]?.try &.["text"]?)
       .try &.as_s || ""
-    raise InfoException.new(error_message)
+    if error_message == "This channel does not exist."
+      raise NotFoundException.new(error_message)
+    else
+      raise InfoException.new(error_message)
+    end
   end
 
   response = JSON.build do |json|
