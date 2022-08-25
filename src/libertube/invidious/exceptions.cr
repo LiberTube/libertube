@@ -1,3 +1,11 @@
+# InfoExceptions are for displaying information to the user.
+#
+# An InfoException might or might not indicate that something went wrong.
+# Historically Invidious didn't differentiate between these two options, so to
+# maintain previous functionality InfoExceptions do not print backtraces.
+class InfoException < Exception
+end
+
 # Exception used to hold the bogus UCID during a channel search.
 class ChannelSearchException < InfoException
   getter channel : String
@@ -21,4 +29,7 @@ end
 
 # Exception threw when an element is not found.
 class NotFoundException < InfoException
+end
+
+class VideoNotAvailableException < Exception
 end
