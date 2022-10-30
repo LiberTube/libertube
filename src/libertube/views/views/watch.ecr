@@ -7,7 +7,7 @@
 <meta name="thumbnail" content="<%= thumbnail %>">
 <meta name="description" content="<%= HTML.escape(video.short_description) %>">
 <meta name="keywords" content="<%= video.keywords.join(",") %>">
-<meta property="og:site_name" content="Invidious">
+<meta property="og:site_name" content="<%= author %> | Invidious">
 <meta property="og:url" content="<%= HOST_URL %>/watch?v=<%= video.id %>">
 <meta property="og:title" content="<%= title %>">
 <meta property="og:image" content="/vi/<%= video.id %>/maxres.jpg">
@@ -19,7 +19,6 @@
 <meta property="og:video:width" content="1280">
 <meta property="og:video:height" content="720">
 <meta name="twitter:card" content="player">
-<meta name="twitter:site" content="@omarroth1">
 <meta name="twitter:url" content="<%= HOST_URL %>/watch?v=<%= video.id %>">
 <meta name="twitter:title" content="<%= title %>">
 <meta name="twitter:description" content="<%= HTML.escape(video.short_description) %>">
