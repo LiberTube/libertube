@@ -381,7 +381,7 @@
     "footer_documentation": "Documentação",
     "footer_source_code": "Código fonte",
     "footer_original_source_code": "Código fonte original",
-    "footer_modfied_source_code": "Código Fonte Modificado",
+    "footer_modfied_source_code": "Código-fonte modificado",
     "preferences_quality_dash_label": "Qualidade de vídeo do painel preferida: ",
     "preferences_region_label": "País do conteúdo: ",
     "preferences_quality_dash_option_4320p": "4320p",
@@ -476,5 +476,8 @@
     "channel_tab_channels_label": "Canais",
     "channel_tab_playlists_label": "Listas de reprodução",
     "channel_tab_shorts_label": "Curtos",
-    "channel_tab_streams_label": "Ao Vivo"
+    "channel_tab_streams_label": "Ao Vivo",
+    "Music in this video": "Música neste vídeo",
+    "Artist: ": "Artista: ",
+    "Album: ": "Álbum: "
 }
