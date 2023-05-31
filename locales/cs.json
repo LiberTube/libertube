@@ -13,7 +13,7 @@
     "Previous page": "Předchozí strana",
     "Clear watch history?": "Smazat historii?",
     "New password": "Nové heslo",
-    "New passwords must match": "Hesla se musí schodovat",
+    "New passwords must match": "Hesla se musí shodovat",
     "Cannot change password for Google accounts": "Nelze změnit heslo pro účty Google",
     "Authorize token?": "Autorizovat token?",
     "Authorize token for `x`?": "Autorizovat token pro `x`?",
@@ -499,5 +499,6 @@
     "Channel Sponsor": "Sponzor kanálu",
     "Song: ": "Skladba: ",
     "Standard YouTube license": "Standardní licence YouTube",
-    "Download is disabled": "Stahování je zakázáno"
+    "Download is disabled": "Stahování je zakázáno",
+    "Import YouTube playlist (.csv)": "Importovat YouTube playlist (.csv)"
 }
