@@ -57,9 +57,8 @@ end
 # Simple alias to make code easier to read
 alias IV = Invidious
 
-CONFIG              = Config.load
-HMAC_KEY_CONFIGURED = CONFIG.hmac_key != nil
-HMAC_KEY            = CONFIG.hmac_key || Random::Secure.hex(32)
+CONFIG   = Config.load
+HMAC_KEY = CONFIG.hmac_key
 
 PG_DB       = DB.open CONFIG.database_url
 ARCHIVE_URL = URI.parse("https://archive.org")
@@ -91,7 +90,7 @@ SOFTWARE = {
   "branch"  => "#{CURRENT_BRANCH}",
 }
 
-YT_POOL = YoutubeConnectionPool.new(YT_URL, capacity: CONFIG.pool_size, use_quic: CONFIG.use_quic)
+YT_POOL = YoutubeConnectionPool.new(YT_URL, capacity: CONFIG.pool_size)
 
 # CLI
 Kemal.config.extra_options do |parser|
@@ -99,14 +98,6 @@ Kemal.config.extra_options do |parser|
   parser.on("-c THREADS", "--channel-threads=THREADS", "Number of threads for refreshing channels (default: #{CONFIG.channel_threads})") do |number|
     begin
       CONFIG.channel_threads = number.to_i
-    rescue ex
-      puts "THREADS must be integer"
-      exit
-    end
-  end
-  parser.on("-f THREADS", "--feed-threads=THREADS", "Number of threads for refreshing feeds (default: #{CONFIG.feed_threads})") do |number|
-    begin
-      CONFIG.feed_threads = number.to_i
     rescue ex
       puts "THREADS must be integer"
       exit
@@ -154,19 +145,19 @@ Invidious::Database.check_integrity(CONFIG)
   {% puts "\nDone checking player dependencies, now compiling Invidious...\n" %}
 {% end %}
 
+# Misc
+
+DECRYPT_FUNCTION =
+  if sig_helper_address = CONFIG.signature_server.presence
+    IV::DecryptFunction.new(sig_helper_address)
+  else
+    nil
+  end
+
 # Start jobs
 
 if CONFIG.channel_threads > 0
   Invidious::Jobs.register Invidious::Jobs::RefreshChannelsJob.new(PG_DB)
-end
-
-if CONFIG.feed_threads > 0
-  Invidious::Jobs.register Invidious::Jobs::RefreshFeedsJob.new(PG_DB)
-end
-
-DECRYPT_FUNCTION = DecryptFunction.new(CONFIG.decrypt_polling)
-if CONFIG.decrypt_polling
-  Invidious::Jobs.register Invidious::Jobs::UpdateDecryptFunctionJob.new
 end
 
 if CONFIG.statistics_enabled
@@ -229,10 +220,6 @@ Kemal.config.logger = LOGGER
 Kemal.config.host_binding = Kemal.config.host_binding != "0.0.0.0" ? Kemal.config.host_binding : CONFIG.host_binding
 Kemal.config.port = Kemal.config.port != 3000 ? Kemal.config.port : CONFIG.port
 Kemal.config.app_name = "Invidious"
-
-if !HMAC_KEY_CONFIGURED
-  LOGGER.warn("Please configure hmac_key by July 1st, see more here: https://github.com/iv-org/invidious/issues/3854")
-end
 
 # Use in kemal's production mode.
 # Users can also set the KEMAL_ENV environmental variable for this to be set automatically.
