@@ -1,6 +1,6 @@
 #########################################
 #
-#  Database and other external servers
+#  Database configuration
 #
 #########################################
 
@@ -40,19 +40,6 @@ db:
 ##
 #check_tables: false
 
-
-##
-## Path to an external signature resolver, used to emulate
-## the Youtube client's Javascript. If no such server is
-## available, some videos will not be playable.
-##
-## When this setting is commented out, no external
-## resolver will be used.
-##
-## Accepted values: a path to a UNIX socket or "<IP>:<Port>"
-## Default: <none>
-##
-#signature_server:
 
 
 #########################################
@@ -173,31 +160,6 @@ https_only: false
 ##
 #force_resolve:
 
-
-##
-## Use Innertube's transcripts API instead of timedtext for closed captions
-##
-## Useful for larger instances as InnerTube is **not ratelimited**. See https://github.com/iv-org/invidious/issues/2567
-##
-## Subtitle experience may differ slightly on Invidious.
-##
-## Accepted values: true, false
-## Default: false
-##
-# use_innertube_for_captions: false
-
-##
-## Send Google session informations. This is useful when Invidious is blocked
-## by the message "This helps protect our community."
-## See https://github.com/iv-org/invidious/issues/4734.
-##
-## Warning: These strings gives much more identifiable information to Google!
-##
-## Accepted values: String
-## Default: <none>
-##
-# po_token: ""
-# visitor_data: ""
 
 # -----------------------------
 #  Logging
@@ -368,6 +330,21 @@ full_refresh: false
 ##
 feed_threads: 1
 
+##
+## Enable/Disable the polling job that keeps the decryption
+## function (for "secured" videos) up to date.
+##
+## Note: This part of the code generate a small amount of data every minute.
+## This may not be desired if you have bandwidth limits set by your ISP.
+##
+## Note 2: This part of the code is currently broken, so changing
+## this setting has no impact.
+##
+## Accepted values: true, false
+## Default: false
+##
+#decrypt_polling: false
+
 
 jobs:
 
@@ -400,6 +377,27 @@ jobs:
     ## Default: true
     ##
     enable: true
+
+
+# -----------------------------
+#  Captcha API
+# -----------------------------
+
+##
+## URL of the captcha solving service.
+##
+## Accepted values: any URL
+## Default: https://api.anti-captcha.com
+##
+#captcha_api_url: https://api.anti-captcha.com
+
+##
+## API key for the captcha solving service.
+##
+## Accepted values: a string
+## Default: <none>
+##
+#captcha_key:
 
 
 # -----------------------------

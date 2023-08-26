@@ -53,7 +53,7 @@ module Invidious::Routes::Account
       return error_template(401, "Password is a required field")
     end
 
-    new_passwords = env.params.body.select { |k, _| k.match(/^new_password\[\d+\]$/) }.map { |_, v| v }
+    new_passwords = env.params.body.select { |k, v| k.match(/^new_password\[\d+\]$/) }.map { |k, v| v }
 
     if new_passwords.size <= 1 || new_passwords.uniq.size != 1
       return error_template(400, "New passwords must match")
@@ -123,8 +123,10 @@ module Invidious::Routes::Account
       return error_template(400, ex)
     end
 
+    view_name = "subscriptions_#{sha256(user.email)}"
     Invidious::Database::Users.delete(user)
     Invidious::Database::SessionIDs.delete(email: user.email)
+    PG_DB.exec("DROP MATERIALIZED VIEW #{view_name}")
 
     env.request.cookies.each do |cookie|
       cookie.expires = Time.utc(1990, 1, 1)
@@ -238,7 +240,7 @@ module Invidious::Routes::Account
       return error_template(400, ex)
     end
 
-    scopes = env.params.body.select { |k, _| k.match(/^scopes\[\d+\]$/) }.map { |_, v| v }
+    scopes = env.params.body.select { |k, v| k.match(/^scopes\[\d+\]$/) }.map { |k, v| v }
     callback_url = env.params.body["callbackUrl"]?
     expire = env.params.body["expire"]?.try &.to_i?
 

@@ -42,7 +42,7 @@ module Invidious::Routes::VideoPlayback
       headers["Range"] = "bytes=#{range_for_head}"
     end
 
-    client = make_client(URI.parse(host), region, force_resolve = true)
+    client = make_client(URI.parse(host), region)
     response = HTTP::Client::Response.new(500)
     error = ""
     5.times do
@@ -57,7 +57,7 @@ module Invidious::Routes::VideoPlayback
           if new_host != host
             host = new_host
             client.close
-            client = make_client(URI.parse(new_host), region, force_resolve = true)
+            client = make_client(URI.parse(new_host), region)
           end
 
           url = "#{location.request_target}&host=#{location.host}#{region ? "&region=#{region}" : ""}"
@@ -71,7 +71,7 @@ module Invidious::Routes::VideoPlayback
         fvip = "3"
 
         host = "https://r#{fvip}---#{mn}.googlevideo.com"
-        client = make_client(URI.parse(host), region, force_resolve = true)
+        client = make_client(URI.parse(host), region)
       rescue ex
         error = ex.message
       end
@@ -80,14 +80,9 @@ module Invidious::Routes::VideoPlayback
     # Remove the Range header added previously.
     headers.delete("Range") if range_header.nil?
 
-    playback_statistics = get_playback_statistic()
-    playback_statistics["totalRequests"] += 1
-
     if response.status_code >= 400
       env.response.content_type = "text/plain"
       haltf env, response.status_code
-    else
-      playback_statistics["successfulRequests"] += 1
     end
 
     if url.includes? "&file=seg.ts"
@@ -196,7 +191,7 @@ module Invidious::Routes::VideoPlayback
             break
           else
             client.close
-            client = make_client(URI.parse(host), region, force_resolve = true)
+            client = make_client(URI.parse(host), region)
           end
         end
 

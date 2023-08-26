@@ -1,4 +1,4 @@
-def produce_channel_content_continuation(ucid, content_type, page = 1, auto_generated = nil, sort_by = "newest", v2 = false)
+def produce_channel_videos_continuation(ucid, page = 1, auto_generated = nil, sort_by = "newest", v2 = false)
   object_inner_2 = {
     "2:0:embedded" => {
       "1:0:varint" => 0_i64,
@@ -16,13 +16,6 @@ def produce_channel_content_continuation(ucid, content_type, page = 1, auto_gene
     .try { |i| Base64.urlsafe_encode(i) }
     .try { |i| URI.encode_www_form(i) }
 
-  content_type_numerical =
-    case content_type
-    when "videos"      then 15
-    when "livestreams" then 14
-    else                    15 # Fallback to "videos"
-    end
-
   sort_by_numerical =
     case sort_by
     when "newest"  then 1_i64
@@ -34,7 +27,7 @@ def produce_channel_content_continuation(ucid, content_type, page = 1, auto_gene
   object_inner_1 = {
     "110:embedded" => {
       "3:embedded" => {
-        "#{content_type_numerical}:embedded" => {
+        "15:embedded" => {
           "1:embedded" => {
             "1:string" => object_inner_2_encoded,
           },
@@ -69,8 +62,10 @@ def produce_channel_content_continuation(ucid, content_type, page = 1, auto_gene
   return continuation
 end
 
-def make_initial_content_ctoken(ucid, content_type, sort_by) : String
-  return produce_channel_content_continuation(ucid, content_type, sort_by: sort_by)
+# Used in bypass_captcha_job.cr
+def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "newest", v2 = false)
+  continuation = produce_channel_videos_continuation(ucid, page, auto_generated, sort_by, v2)
+  return "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
 end
 
 module Invidious::Channel::Tabs
@@ -79,6 +74,10 @@ module Invidious::Channel::Tabs
   # -------------------
   #  Regular videos
   # -------------------
+
+  def make_initial_video_ctoken(ucid, sort_by) : String
+    return produce_channel_videos_continuation(ucid, sort_by: sort_by)
+  end
 
   # Wrapper for AboutChannel, as we still need to call get_videos with
   # an author name and ucid directly (e.g in RSS feeds).
@@ -101,7 +100,7 @@ module Invidious::Channel::Tabs
   end
 
   def get_videos(author : String, ucid : String, *, continuation : String? = nil, sort_by = "newest")
-    continuation ||= make_initial_content_ctoken(ucid, "videos", sort_by)
+    continuation ||= make_initial_video_ctoken(ucid, sort_by)
     initial_data = YoutubeAPI.browse(continuation: continuation)
 
     return extract_items(initial_data, author, ucid)
@@ -145,18 +144,21 @@ module Invidious::Channel::Tabs
   #  Livestreams
   # -------------------
 
-  def get_livestreams(channel : AboutChannel, continuation : String? = nil, sort_by = "newest")
-    continuation ||= make_initial_content_ctoken(channel.ucid, "livestreams", sort_by)
-
-    initial_data = YoutubeAPI.browse(continuation: continuation)
+  def get_livestreams(channel : AboutChannel, continuation : String? = nil)
+    if continuation.nil?
+      # EgdzdHJlYW1z8gYECgJ6AA%3D%3D is the protobuf object to load "streams"
+      initial_data = YoutubeAPI.browse(channel.ucid, params: "EgdzdHJlYW1z8gYECgJ6AA%3D%3D")
+    else
+      initial_data = YoutubeAPI.browse(continuation: continuation)
+    end
 
     return extract_items(initial_data, channel.author, channel.ucid)
   end
 
-  def get_60_livestreams(channel : AboutChannel, *, continuation : String? = nil, sort_by = "newest")
+  def get_60_livestreams(channel : AboutChannel, continuation : String? = nil)
     if continuation.nil?
-      # Fetch the first "page" of stream
-      items, next_continuation = get_livestreams(channel, sort_by: sort_by)
+      # Fetch the first "page" of streams
+      items, next_continuation = get_livestreams(channel)
     else
       # Fetch a "page" of streams using the given continuation token
       items, next_continuation = get_livestreams(channel, continuation: continuation)

@@ -103,6 +103,14 @@ Kemal.config.extra_options do |parser|
       exit
     end
   end
+  parser.on("-f THREADS", "--feed-threads=THREADS", "Number of threads for refreshing feeds (default: #{CONFIG.feed_threads})") do |number|
+    begin
+      CONFIG.feed_threads = number.to_i
+    rescue ex
+      puts "THREADS must be integer"
+      exit
+    end
+  end
   parser.on("-o OUTPUT", "--output=OUTPUT", "Redirect output (default: #{CONFIG.output})") do |output|
     CONFIG.output = output
   end
@@ -145,19 +153,19 @@ Invidious::Database.check_integrity(CONFIG)
   {% puts "\nDone checking player dependencies, now compiling Invidious...\n" %}
 {% end %}
 
-# Misc
-
-DECRYPT_FUNCTION =
-  if sig_helper_address = CONFIG.signature_server.presence
-    IV::DecryptFunction.new(sig_helper_address)
-  else
-    nil
-  end
-
 # Start jobs
 
 if CONFIG.channel_threads > 0
   Invidious::Jobs.register Invidious::Jobs::RefreshChannelsJob.new(PG_DB)
+end
+
+if CONFIG.feed_threads > 0
+  Invidious::Jobs.register Invidious::Jobs::RefreshFeedsJob.new(PG_DB)
+end
+
+DECRYPT_FUNCTION = DecryptFunction.new(CONFIG.decrypt_polling)
+if CONFIG.decrypt_polling
+  Invidious::Jobs.register Invidious::Jobs::UpdateDecryptFunctionJob.new
 end
 
 if CONFIG.statistics_enabled

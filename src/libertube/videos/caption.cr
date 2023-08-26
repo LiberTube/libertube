@@ -1,89 +1,100 @@
 require "json"
 
 module Invidious::Videos
-  module Captions
-    struct Metadata
-      property name : String
-      property language_code : String
-      property base_url : String
+  struct Caption
+    property name : String
+    property language_code : String
+    property base_url : String
 
-      property auto_generated : Bool
+    def initialize(@name, @language_code, @base_url)
+    end
 
-      def initialize(@name, @language_code, @base_url, @auto_generated)
+    # Parse the JSON structure from Youtube
+    def self.from_yt_json(container : JSON::Any) : Array(Caption)
+      caption_tracks = container
+        .dig?("playerCaptionsTracklistRenderer", "captionTracks")
+        .try &.as_a
+
+      captions_list = [] of Caption
+      return captions_list if caption_tracks.nil?
+
+      caption_tracks.each do |caption|
+        name = caption["name"]["simpleText"]? || caption["name"]["runs"][0]["text"]
+        name = name.to_s.split(" - ")[0]
+
+        language_code = caption["languageCode"].to_s
+        base_url = caption["baseUrl"].to_s
+
+        captions_list << Caption.new(name, language_code, base_url)
       end
 
-      # Parse the JSON structure from Youtube
-      def self.from_yt_json(container : JSON::Any) : Array(Captions::Metadata)
-        caption_tracks = container
-          .dig?("playerCaptionsTracklistRenderer", "captionTracks")
-          .try &.as_a
+      return captions_list
+    end
 
-        captions_list = [] of Captions::Metadata
-        return captions_list if caption_tracks.nil?
+    def timedtext_to_vtt(timedtext : String, tlang = nil) : String
+      # In the future, we could just directly work with the url. This is more of a POC
+      cues = [] of XML::Node
+      tree = XML.parse(timedtext)
+      tree = tree.children.first
 
-        caption_tracks.each do |caption|
-          name = caption["name"]["simpleText"]? || caption["name"]["runs"][0]["text"]
-          name = name.to_s.split(" - ")[0]
-
-          language_code = caption["languageCode"].to_s
-          base_url = caption["baseUrl"].to_s
-
-          auto_generated = (caption["kind"]? == "asr")
-
-          captions_list << Captions::Metadata.new(name, language_code, base_url, auto_generated)
-        end
-
-        return captions_list
-      end
-
-      def timedtext_to_vtt(timedtext : String, tlang = nil) : String
-        # In the future, we could just directly work with the url. This is more of a POC
-        cues = [] of XML::Node
-        tree = XML.parse(timedtext)
-        tree = tree.children.first
-
-        tree.children.each do |item|
-          if item.name == "body"
-            item.children.each do |cue|
-              if cue.name == "p" && !(cue.children.size == 1 && cue.children[0].content == "\n")
-                cues << cue
-              end
+      tree.children.each do |item|
+        if item.name == "body"
+          item.children.each do |cue|
+            if cue.name == "p" && !(cue.children.size == 1 && cue.children[0].content == "\n")
+              cues << cue
             end
-            break
           end
+          break
         end
-
-        settings_field = {
-          "Kind"     => "captions",
-          "Language" => "#{tlang || @language_code}",
-        }
-
-        result = WebVTT.build(settings_field) do |vtt|
-          cues.each_with_index do |node, i|
-            start_time = node["t"].to_f.milliseconds
-
-            duration = node["d"]?.try &.to_f.milliseconds
-
-            duration ||= start_time
-
-            if cues.size > i + 1
-              end_time = cues[i + 1]["t"].to_f.milliseconds
-            else
-              end_time = start_time + duration
-            end
-
-            text = String.build do |io|
-              node.children.each do |s|
-                io << s.content
-              end
-            end
-
-            vtt.cue(start_time, end_time, text)
-          end
-        end
-
-        return result
       end
+      result = String.build do |result|
+        result << <<-END_VTT
+        WEBVTT
+        Kind: captions
+        Language: #{tlang || @language_code}
+
+
+        END_VTT
+
+        result << "\n\n"
+
+        cues.each_with_index do |node, i|
+          start_time = node["t"].to_f.milliseconds
+
+          duration = node["d"]?.try &.to_f.milliseconds
+
+          duration ||= start_time
+
+          if cues.size > i + 1
+            end_time = cues[i + 1]["t"].to_f.milliseconds
+          else
+            end_time = start_time + duration
+          end
+
+          # start_time
+          result << start_time.hours.to_s.rjust(2, '0')
+          result << ':' << start_time.minutes.to_s.rjust(2, '0')
+          result << ':' << start_time.seconds.to_s.rjust(2, '0')
+          result << '.' << start_time.milliseconds.to_s.rjust(3, '0')
+
+          result << " --> "
+
+          # end_time
+          result << end_time.hours.to_s.rjust(2, '0')
+          result << ':' << end_time.minutes.to_s.rjust(2, '0')
+          result << ':' << end_time.seconds.to_s.rjust(2, '0')
+          result << '.' << end_time.milliseconds.to_s.rjust(3, '0')
+
+          result << "\n"
+
+          node.children.each do |s|
+            result << s.content
+          end
+          result << "\n"
+          result << "\n"
+        end
+      end
+      return result
     end
 
     # List of all caption languages available on Youtube.

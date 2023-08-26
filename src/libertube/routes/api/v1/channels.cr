@@ -90,7 +90,6 @@ module Invidious::Routes::API::V1::Channels
 
         json.field "allowedRegions", channel.allowed_regions
         json.field "tabs", channel.tabs
-        json.field "tags", channel.tags
         json.field "authorVerified", channel.verified
 
         json.field "latestVideos" do
@@ -208,12 +207,11 @@ module Invidious::Routes::API::V1::Channels
     get_channel()
 
     # Retrieve continuation from URL parameters
-    sort_by = env.params.query["sort_by"]?.try &.downcase || "newest"
     continuation = env.params.query["continuation"]?
 
     begin
       videos, next_continuation = Channel::Tabs.get_60_livestreams(
-        channel, continuation: continuation, sort_by: sort_by
+        channel, continuation: continuation
       )
     rescue ex
       return error_json(500, ex)
@@ -343,59 +341,6 @@ module Invidious::Routes::API::V1::Channels
     rescue ex
       return error_json(500, ex)
     end
-  end
-
-  def self.post(env)
-    locale = env.get("preferences").as(Preferences).locale
-
-    env.response.content_type = "application/json"
-    id = env.params.url["id"].to_s
-    ucid = env.params.query["ucid"]?
-
-    thin_mode = env.params.query["thin_mode"]?
-    thin_mode = thin_mode == "true"
-
-    format = env.params.query["format"]?
-    format ||= "json"
-
-    if ucid.nil?
-      response = YoutubeAPI.resolve_url("https://www.youtube.com/post/#{id}")
-      return error_json(400, "Invalid post ID") if response["error"]?
-      ucid = response.dig("endpoint", "browseEndpoint", "browseId").as_s
-    else
-      ucid = ucid.to_s
-    end
-
-    begin
-      fetch_channel_community_post(ucid, id, locale, format, thin_mode)
-    rescue ex
-      return error_json(500, ex)
-    end
-  end
-
-  def self.post_comments(env)
-    locale = env.get("preferences").as(Preferences).locale
-
-    env.response.content_type = "application/json"
-
-    id = env.params.url["id"]
-
-    thin_mode = env.params.query["thin_mode"]?
-    thin_mode = thin_mode == "true"
-
-    format = env.params.query["format"]?
-    format ||= "json"
-
-    continuation = env.params.query["continuation"]?
-
-    case continuation
-    when nil, ""
-      ucid = env.params.query["ucid"]
-      comments = Comments.fetch_community_post_comments(ucid, id)
-    else
-      comments = YoutubeAPI.browse(continuation: continuation)
-    end
-    return Comments.parse_youtube(id, comments, format, locale, thin_mode, is_post: true)
   end
 
   def self.channels(env)

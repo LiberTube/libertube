@@ -109,6 +109,7 @@ private module Parsers
       end
 
       live_now = false
+      paid = false
       premium = false
 
       premiere_timestamp = item_contents.dig?("upcomingEventData", "startTime").try { |t| Time.unix(t.as_s.to_i64) }
@@ -174,18 +175,17 @@ private module Parsers
       # Always simpleText
       # TODO change default value to nil
 
-      subscriber_count = item_contents.dig?("subscriberCountText", "simpleText").try &.as_s
-      channel_handle = subscriber_count if (subscriber_count.try &.starts_with? "@")
+      subscriber_count = item_contents.dig?("subscriberCountText", "simpleText")
 
       # Since youtube added channel handles, `VideoCountText` holds the number of
       # subscribers and `subscriberCountText` holds the handle, except when the
       # channel doesn't have a handle (e.g: some topic music channels).
       # See https://github.com/iv-org/invidious/issues/3394#issuecomment-1321261688
-      if !subscriber_count || !subscriber_count.includes? " subscriber"
-        subscriber_count = item_contents.dig?("videoCountText", "simpleText").try &.as_s
+      if !subscriber_count || !subscriber_count.as_s.includes? " subscriber"
+        subscriber_count = item_contents.dig?("videoCountText", "simpleText")
       end
       subscriber_count = subscriber_count
-        .try { |s| short_text_to_number(s.split(" ")[0]).to_i32 } || 0
+        .try { |s| short_text_to_number(s.as_s.split(" ")[0]).to_i32 } || 0
 
       # Auto-generated channels doesn't have videoCountText
       # Taken from: https://github.com/iv-org/invidious/pull/2228#discussion_r717620922
@@ -200,7 +200,6 @@ private module Parsers
         author_thumbnail: author_thumbnail,
         subscriber_count: subscriber_count,
         video_count:      video_count,
-        channel_handle:   channel_handle,
         description_html: description_html,
         auto_generated:   auto_generated,
         author_verified:  author_verified,
@@ -821,9 +820,9 @@ module HelperExtractors
   end
 
   # Retrieves the ID required for querying the InnerTube browse endpoint.
-  # Returns an empty string when it's unable to do so
+  # Raises when it's unable to do so
   def self.get_browse_id(container)
-    return container.dig?("navigationEndpoint", "browseEndpoint", "browseId").try &.as_s || ""
+    return container.dig("navigationEndpoint", "browseEndpoint", "browseId").as_s
   end
 end
 
@@ -855,7 +854,7 @@ end
 #
 # This function yields the container so that items can be parsed separately.
 #
-def extract_items(initial_data : InitialData, &)
+def extract_items(initial_data : InitialData, &block)
   if unpackaged_data = initial_data["contents"]?.try &.as_h
   elsif unpackaged_data = initial_data["response"]?.try &.as_h
   elsif unpackaged_data = initial_data.dig?("onResponseReceivedActions", 1).try &.as_h

@@ -87,76 +87,70 @@ module Invidious::Routes::API::V1::Videos
       caption = caption[0]
     end
 
-    if CONFIG.use_innertube_for_captions
-      params = Invidious::Videos::Transcript.generate_param(id, caption.language_code, caption.auto_generated)
+    url = URI.parse("#{caption.base_url}&tlang=#{tlang}").request_target
 
-      transcript = Invidious::Videos::Transcript.from_raw(
-        YoutubeAPI.get_transcript(params),
-        caption.language_code,
-        caption.auto_generated
-      )
+    # Auto-generated captions often have cues that aren't aligned properly with the video,
+    # as well as some other markup that makes it cumbersome, so we try to fix that here
+    if caption.name.includes? "auto-generated"
+      caption_xml = YT_POOL.client &.get(url).body
 
-      webvtt = transcript.to_vtt
-    else
-      # Timedtext API handling
-      url = URI.parse("#{caption.base_url}&tlang=#{tlang}").request_target
+      if caption_xml.starts_with?("<?xml")
+        webvtt = caption.timedtext_to_vtt(caption_xml, tlang)
+      else
+        caption_xml = XML.parse(caption_xml)
 
-      # Auto-generated captions often have cues that aren't aligned properly with the video,
-      # as well as some other markup that makes it cumbersome, so we try to fix that here
-      if caption.name.includes? "auto-generated"
-        caption_xml = YT_POOL.client &.get(url).body
+        webvtt = String.build do |str|
+          str << <<-END_VTT
+          WEBVTT
+          Kind: captions
+          Language: #{tlang || caption.language_code}
 
-        settings_field = {
-          "Kind"     => "captions",
-          "Language" => "#{tlang || caption.language_code}",
-        }
 
-        if caption_xml.starts_with?("<?xml")
-          webvtt = caption.timedtext_to_vtt(caption_xml, tlang)
-        else
-          caption_xml = XML.parse(caption_xml)
+          END_VTT
 
-          webvtt = WebVTT.build(settings_field) do |webvtt|
-            caption_nodes = caption_xml.xpath_nodes("//transcript/text")
-            caption_nodes.each_with_index do |node, i|
-              start_time = node["start"].to_f.seconds
-              duration = node["dur"]?.try &.to_f.seconds
-              duration ||= start_time
+          caption_nodes = caption_xml.xpath_nodes("//transcript/text")
+          caption_nodes.each_with_index do |node, i|
+            start_time = node["start"].to_f.seconds
+            duration = node["dur"]?.try &.to_f.seconds
+            duration ||= start_time
 
-              if caption_nodes.size > i + 1
-                end_time = caption_nodes[i + 1]["start"].to_f.seconds
-              else
-                end_time = start_time + duration
-              end
-
-              text = HTML.unescape(node.content)
-              text = text.gsub(/<font color="#[a-fA-F0-9]{6}">/, "")
-              text = text.gsub(/<\/font>/, "")
-              if md = text.match(/(?<name>.*) : (?<text>.*)/)
-                text = "<v #{md["name"]}>#{md["text"]}</v>"
-              end
-
-              webvtt.cue(start_time, end_time, text)
+            if caption_nodes.size > i + 1
+              end_time = caption_nodes[i + 1]["start"].to_f.seconds
+            else
+              end_time = start_time + duration
             end
+
+            start_time = "#{start_time.hours.to_s.rjust(2, '0')}:#{start_time.minutes.to_s.rjust(2, '0')}:#{start_time.seconds.to_s.rjust(2, '0')}.#{start_time.milliseconds.to_s.rjust(3, '0')}"
+            end_time = "#{end_time.hours.to_s.rjust(2, '0')}:#{end_time.minutes.to_s.rjust(2, '0')}:#{end_time.seconds.to_s.rjust(2, '0')}.#{end_time.milliseconds.to_s.rjust(3, '0')}"
+
+            text = HTML.unescape(node.content)
+            text = text.gsub(/<font color="#[a-fA-F0-9]{6}">/, "")
+            text = text.gsub(/<\/font>/, "")
+            if md = text.match(/(?<name>.*) : (?<text>.*)/)
+              text = "<v #{md["name"]}>#{md["text"]}</v>"
+            end
+
+            str << <<-END_CUE
+            #{start_time} --> #{end_time}
+            #{text}
+
+
+            END_CUE
           end
         end
+      end
+    else
+      # Some captions have "align:[start/end]" and "position:[num]%"
+      # attributes. Those are causing issues with VideoJS, which is unable
+      # to properly align the captions on the video, so we remove them.
+      #
+      # See: https://github.com/iv-org/invidious/issues/2391
+      webvtt = YT_POOL.client &.get("#{url}&format=vtt").body
+      if webvtt.starts_with?("<?xml")
+        webvtt = caption.timedtext_to_vtt(webvtt)
       else
-        uri = URI.parse(url)
-        query_params = uri.query_params
-        query_params["fmt"] = "vtt"
-        uri.query_params = query_params
-        webvtt = YT_POOL.client &.get(uri.request_target).body
-
-        if webvtt.starts_with?("<?xml")
-          webvtt = caption.timedtext_to_vtt(webvtt)
-        else
-          # Some captions have "align:[start/end]" and "position:[num]%"
-          # attributes. Those are causing issues with VideoJS, which is unable
-          # to properly align the captions on the video, so we remove them.
-          #
-          # See: https://github.com/iv-org/invidious/issues/2391
-          webvtt = webvtt.gsub(/([0-9:.]{12} --> [0-9:.]{12}).+/, "\\1")
-        end
+        webvtt = YT_POOL.client &.get("#{url}&format=vtt").body
+          .gsub(/([0-9:.]{12} --> [0-9:.]{12}).+/, "\\1")
       end
     end
 
@@ -213,20 +207,28 @@ module Invidious::Routes::API::V1::Videos
       storyboard = storyboard[0]
     end
 
-    WebVTT.build do |vtt|
+    String.build do |str|
+      str << <<-END_VTT
+      WEBVTT
+      END_VTT
+
       start_time = 0.milliseconds
       end_time = storyboard[:interval].milliseconds
 
       storyboard[:storyboard_count].times do |i|
         url = storyboard[:url]
-        authority = /(i\d?).ytimg.com/.match!(url)[1]?
+        authority = /(i\d?).ytimg.com/.match(url).not_nil![1]?
         url = url.gsub("$M", i).gsub(%r(https://i\d?.ytimg.com/sb/), "")
         url = "#{HOST_URL}/sb/#{authority}/#{url}"
 
         storyboard[:storyboard_height].times do |j|
           storyboard[:storyboard_width].times do |k|
-            current_cue_url = "#{url}#xywh=#{storyboard[:width] * k},#{storyboard[:height] * j},#{storyboard[:width] - 2},#{storyboard[:height]}"
-            vtt.cue(start_time, end_time, current_cue_url)
+            str << <<-END_CUE
+            #{start_time}.000 --> #{end_time}.000
+            #{url}#xywh=#{storyboard[:width] * k},#{storyboard[:height] * j},#{storyboard[:width] - 2},#{storyboard[:height]}
+
+
+            END_CUE
 
             start_time += storyboard[:interval].milliseconds
             end_time += storyboard[:interval].milliseconds
@@ -254,7 +256,7 @@ module Invidious::Routes::API::V1::Videos
       if CONFIG.cache_annotations && (cached_annotation = Invidious::Database::Annotations.select(id))
         annotations = cached_annotation.annotations
       else
-        index = CHARS_SAFE.index!(id[0]).to_s.rjust(2, '0')
+        index = CHARS_SAFE.index(id[0]).not_nil!.to_s.rjust(2, '0')
 
         # IA doesn't handle leading hyphens,
         # so we use https://archive.org/details/youtubeannotations_64
@@ -369,49 +371,6 @@ module Invidious::Routes::API::V1::Videos
         }
 
         return response.to_json
-      end
-    end
-  end
-
-  def self.clips(env)
-    locale = env.get("preferences").as(Preferences).locale
-
-    env.response.content_type = "application/json"
-
-    clip_id = env.params.url["id"]
-    region = env.params.query["region"]?
-    proxy = {"1", "true"}.any? &.== env.params.query["local"]?
-
-    response = YoutubeAPI.resolve_url("https://www.youtube.com/clip/#{clip_id}")
-    return error_json(400, "Invalid clip ID") if response["error"]?
-
-    video_id = response.dig?("endpoint", "watchEndpoint", "videoId").try &.as_s
-    return error_json(400, "Invalid clip ID") if video_id.nil?
-
-    start_time = nil
-    end_time = nil
-    clip_title = nil
-
-    if params = response.dig?("endpoint", "watchEndpoint", "params").try &.as_s
-      start_time, end_time, clip_title = parse_clip_parameters(params)
-    end
-
-    begin
-      video = get_video(video_id, region: region)
-    rescue ex : NotFoundException
-      return error_json(404, ex)
-    rescue ex
-      return error_json(500, ex)
-    end
-
-    return JSON.build do |json|
-      json.object do
-        json.field "startTime", start_time
-        json.field "endTime", end_time
-        json.field "clipTitle", clip_title
-        json.field "video" do
-          Invidious::JSONify::APIv1.video(video, json, locale: locale, proxy: proxy)
-        end
       end
     end
   end

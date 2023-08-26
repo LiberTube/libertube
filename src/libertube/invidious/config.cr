@@ -48,7 +48,7 @@ struct ConfigPreferences
   def to_tuple
     {% begin %}
       {
-        {{(@type.instance_vars.map { |var| "#{var.name}: #{var.name}".id }).splat}}
+        {{*@type.instance_vars.map { |var| "#{var.name}: #{var.name}".id }}}
       }
     {% end %}
   end
@@ -62,6 +62,8 @@ class Config
   # Time interval between two executions of the job that crawls channel videos (subscriptions update).
   @[YAML::Field(converter: Preferences::TimeSpanConverter)]
   property channel_refresh_interval : Time::Span = 30.minutes
+  # Number of threads to use for updating feeds
+  property feed_threads : Int32 = 1
   # Log file path or STDOUT
   property output : String = "STDOUT"
   # Default log level, valid YAML values are ints and strings, see src/invidious/helpers/logger.cr
@@ -72,6 +74,8 @@ class Config
   # Database configuration using 12-Factor "Database URL" syntax
   @[YAML::Field(converter: Preferences::URIConverter)]
   property database_url : URI = URI.parse("")
+  # Use polling to keep decryption function up to date
+  property decrypt_polling : Bool = false
   # Used for crawling channels: threads should check all videos uploaded by a channel
   property full_refresh : Bool = false
 
@@ -116,10 +120,6 @@ class Config
   # Connect to YouTube over 'ipv6', 'ipv4'. Will sometimes resolve fix issues with rate-limiting (see https://github.com/ytdl-org/youtube-dl/issues/21729)
   @[YAML::Field(converter: Preferences::FamilyConverter)]
   property force_resolve : Socket::Family = Socket::Family::UNSPEC
-
-  # External signature solver server socket (either a path to a UNIX domain socket or "<IP>:<Port>")
-  property signature_server : String? = nil
-
   # Port to listen for connections (overridden by command line argument)
   property port : Int32 = 3000
   # Host to bind (overridden by command line argument)
@@ -127,17 +127,13 @@ class Config
   # Pool size for HTTP requests to youtube.com and ytimg.com (each domain has a separate pool of `pool_size`)
   property pool_size : Int32 = 100
 
-  # Use Innertube's transcripts API instead of timedtext for closed captions
-  property use_innertube_for_captions : Bool = false
-
-  # visitor data ID for Google session
-  property visitor_data : String? = nil
-  # poToken for passing bot attestation
-  property po_token : String? = nil
-
   # Saved cookies in "name1=value1; name2=value2..." format
   @[YAML::Field(converter: Preferences::StringToCookies)]
   property cookies : HTTP::Cookies = HTTP::Cookies.new
+  # Key for Anti-Captcha
+  property captcha_key : String? = nil
+  # API URL for Anti-Captcha
+  property captcha_api_url : String = "https://api.anti-captcha.com"
 
   # Playlist length limit
   property playlist_length_limit : Int32 = 500

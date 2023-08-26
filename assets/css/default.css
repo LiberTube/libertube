@@ -13,7 +13,6 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  margin: auto;
 }
 
 .h-box {
@@ -198,7 +197,6 @@ img.thumbnail {
   display: block; /* See: https://stackoverflow.com/a/11635197 */
   width: 100%;
   object-fit: cover;
-  aspect-ratio: 16 / 9;
 }
 
 .thumbnail-placeholder {
@@ -394,17 +392,9 @@ p.video-data   { margin: 0; font-weight: bold; font-size: 80%; }
  * Comments & community posts
  */
 
-.comments {
+#comments {
   max-width: 800px;
   margin: auto;
-}
-
-/*
- * We don't want the top and bottom margin on the post page.
- */
-.comments.post-comments {
-  margin-bottom: 0;
-  margin-top: 0;
 }
 
 .video-iframe-wrapper {
@@ -443,26 +433,16 @@ p.video-data   { margin: 0; font-weight: bold; font-size: 80%; }
  */
 
 footer {
+  color: #919191;
   margin-top: auto;
   padding: 1.5em 0;
   text-align: center;
   max-height: 30vh;
 }
 
-.light-theme footer {
-  color: #7c7c7c;
-}
-
-.dark-theme footer {
-  color: #adadad;
-}
-
-.light-theme footer a {
-  color: #7c7c7c !important;
-}
-
-.dark-theme footer a {
-  color: #adadad !important;
+footer a {
+  color: #919191 !important;
+  text-decoration: underline;
 }
 
 footer span {
@@ -568,14 +548,6 @@ span > select {
     color: #303030;
   }
 
-  .no-theme footer {
-    color: #7c7c7c;
-  }
-
-  .no-theme footer a {
-    color: #7c7c7c !important;
-  }
-
   .light-theme .pure-menu-heading {
     color: #565d64;
   }
@@ -609,7 +581,7 @@ span > select {
 }
 
 .dark-theme a {
-  color: #adadad;
+  color: #a0a0a0;
   text-decoration: none;
 }
 
@@ -663,7 +635,7 @@ body.dark-theme {
   }
 
   .no-theme a {
-    color: #adadad;
+    color: #a0a0a0;
     text-decoration: none;
   }
 
@@ -693,14 +665,6 @@ body.dark-theme {
   .no-theme .searchbar input {
     background-color: inherit;
     color: inherit;
-  }
-
-  .no-theme footer {
-    color: #adadad;
-  }
-
-  .no-theme footer a {
-    color: #adadad !important;
   }
 }
 
@@ -794,8 +758,4 @@ h1, h2, h3, h4, h5, p,
 
 .channel-emoji {
   margin: 0 2px;
-}
-
-#download_widget {
-    width: 100%;
 }

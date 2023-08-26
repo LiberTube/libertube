@@ -1,6 +1,7 @@
 def add_yt_headers(request)
-  request.headers.delete("User-Agent") if request.headers["User-Agent"] == "Crystal"
-  request.headers["User-Agent"] ||= "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+  if request.headers["User-Agent"] == "Crystal"
+    request.headers["User-Agent"] ||= "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+  end
 
   request.headers["Accept-Charset"] ||= "ISO-8859-1,utf-8;q=0.7,*;q=0.7"
   request.headers["Accept"] ||= "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -24,20 +25,25 @@ struct YoutubeConnectionPool
     @pool = build_pool()
   end
 
-  def client(&)
-    conn = pool.checkout
-    begin
+  def client(region = nil, &block)
+    if region
+      conn = make_client(url, region)
       response = yield conn
-    rescue ex
-      conn.close
-      conn = HTTP::Client.new(url)
+    else
+      conn = pool.checkout
+      begin
+        response = yield conn
+      rescue ex
+        conn.close
+        conn = HTTP::Client.new(url)
 
-      conn.family = CONFIG.force_resolve
-      conn.family = Socket::Family::INET if conn.family == Socket::Family::UNSPEC
-      conn.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
-      response = yield conn
-    ensure
-      pool.release(conn)
+        conn.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::INET
+        conn.family = Socket::Family::INET if conn.family == Socket::Family::UNSPEC
+        conn.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
+        response = yield conn
+      ensure
+        pool.release(conn)
+      end
     end
 
     response
@@ -46,7 +52,7 @@ struct YoutubeConnectionPool
   private def build_pool
     DB::Pool(HTTP::Client).new(initial_pool_size: 0, max_pool_size: capacity, max_idle_pool_size: capacity, checkout_timeout: timeout) do
       conn = HTTP::Client.new(url)
-      conn.family = CONFIG.force_resolve
+      conn.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::INET
       conn.family = Socket::Family::INET if conn.family == Socket::Family::UNSPEC
       conn.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
       conn
@@ -54,23 +60,29 @@ struct YoutubeConnectionPool
   end
 end
 
-def make_client(url : URI, region = nil, force_resolve : Bool = false)
-  client = HTTP::Client.new(url)
-
-  # Force the usage of a specific configured IP Family
-  if force_resolve
-    client.family = CONFIG.force_resolve
-  end
-
+def make_client(url : URI, region = nil)
+  client = HTTPClient.new(url, OpenSSL::SSL::Context::Client.insecure)
+  client.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::UNSPEC
   client.before_request { |r| add_yt_headers(r) } if url.host == "www.youtube.com"
   client.read_timeout = 10.seconds
   client.connect_timeout = 10.seconds
 
+  if region
+    PROXY_LIST[region]?.try &.sample(40).each do |proxy|
+      begin
+        proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
+        client.set_proxy(proxy)
+        break
+      rescue ex
+      end
+    end
+  end
+
   return client
 end
 
-def make_client(url : URI, region = nil, force_resolve : Bool = false, &)
-  client = make_client(url, region, force_resolve)
+def make_client(url : URI, region = nil, &block)
+  client = make_client(url, region)
   begin
     yield client
   ensure
