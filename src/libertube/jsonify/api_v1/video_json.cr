@@ -63,7 +63,7 @@ module Invidious::JSONify::APIv1
       json.field "isListed", video.is_listed
       json.field "liveNow", video.live_now
       json.field "isPostLiveDvr", video.post_live_dvr
-      json.field "isUpcoming", video.is_upcoming
+      json.field "isUpcoming", video.upcoming?
 
       if video.premiere_timestamp
         json.field "premiereTimestamp", video.premiere_timestamp.try &.to_unix
@@ -109,7 +109,7 @@ module Invidious::JSONify::APIv1
               # On livestreams, it's not present, so always fall back to the
               # current unix timestamp (up to mS precision) for compatibility.
               last_modified = fmt["lastModified"]?
-              last_modified ||= "#{Time.utc.to_unix_ms.to_s}000"
+              last_modified ||= "#{Time.utc.to_unix_ms}000"
               json.field "lmt", last_modified
 
               json.field "projectionType", fmt["projectionType"]
@@ -162,7 +162,13 @@ module Invidious::JSONify::APIv1
         json.array do
           video.fmt_stream.each do |fmt|
             json.object do
-              json.field "url", fmt["url"]
+              if proxy
+                json.field "url", Invidious::HttpServer::Utils.proxy_video_url(
+                  fmt["url"].to_s, absolute: true
+                )
+              else
+                json.field "url", fmt["url"]
+              end
               json.field "itag", fmt["itag"].as_i.to_s
               json.field "type", fmt["mimeType"]
               json.field "quality", fmt["quality"]
@@ -271,17 +277,17 @@ module Invidious::JSONify::APIv1
 
   def storyboards(json, id, storyboards)
     json.array do
-      storyboards.each do |storyboard|
+      storyboards.each do |sb|
         json.object do
-          json.field "url", "/api/v1/storyboards/#{id}?width=#{storyboard[:width]}&height=#{storyboard[:height]}"
-          json.field "templateUrl", storyboard[:url]
-          json.field "width", storyboard[:width]
-          json.field "height", storyboard[:height]
-          json.field "count", storyboard[:count]
-          json.field "interval", storyboard[:interval]
-          json.field "storyboardWidth", storyboard[:storyboard_width]
-          json.field "storyboardHeight", storyboard[:storyboard_height]
-          json.field "storyboardCount", storyboard[:storyboard_count]
+          json.field "url", "/api/v1/storyboards/#{id}?width=#{sb.width}&height=#{sb.height}"
+          json.field "templateUrl", sb.url.to_s
+          json.field "width", sb.width
+          json.field "height", sb.height
+          json.field "count", sb.count
+          json.field "interval", sb.interval
+          json.field "storyboardWidth", sb.columns
+          json.field "storyboardHeight", sb.rows
+          json.field "storyboardCount", sb.images_count
         end
       end
     end
