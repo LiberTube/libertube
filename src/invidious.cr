@@ -23,6 +23,7 @@ require "kilt"
 require "./ext/kemal_content_for.cr"
 require "./ext/kemal_static_file_handler.cr"
 
+require "http_proxy"
 require "athena-negotiation"
 require "openssl/hmac"
 require "option_parser"
@@ -91,6 +92,10 @@ SOFTWARE = {
 }
 
 YT_POOL = YoutubeConnectionPool.new(YT_URL, capacity: CONFIG.pool_size)
+
+# Image request pool
+
+GGPHT_POOL = YoutubeConnectionPool.new(URI.parse("https://yt3.ggpht.com"), capacity: CONFIG.pool_size)
 
 # CLI
 Kemal.config.extra_options do |parser|
@@ -188,6 +193,8 @@ CONNECTION_CHANNEL = ::Channel({Bool, ::Channel(PQ::Notification)}).new(32)
 Invidious::Jobs.register Invidious::Jobs::NotificationJob.new(CONNECTION_CHANNEL, CONFIG.database_url)
 
 Invidious::Jobs.register Invidious::Jobs::ClearExpiredItemsJob.new
+
+Invidious::Jobs.register Invidious::Jobs::InstanceListRefreshJob.new
 
 Invidious::Jobs.start_all
 
