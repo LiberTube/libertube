@@ -4,7 +4,7 @@
 ## Contact & Support
 
 - **Website:** [LiberTube.io](https://Libertube.io)  
-- **CA:** SOON  
+- **CA:** `YzBGbMSBCn7GVMcE3eZcBfDmtVcAXicsQaE8LeVpump`  
 - **Telegram:** [t.me/libertubeio](https://t.me/libertubeio)  
 - **X:** [x.com/libertubeio](https://x.com/libertubeio)  
 
